@@ -13,7 +13,7 @@
 # - poppler-utils（PDF 渲染）
 # - tesseract-ocr + tesseract-ocr-chi-sim（OCR 文字识别）
 # - whisper base 模型（ASR 语音转写，构建时预下载）
-# - mineru 2.x（pyproject 已 pin <3.0.0，3.0 起 CLI 改为 `mineru parse`）+ VLM / layout / OCR 模型（构建时预下载约 2-4GB）
+# - mineru V3 + VLM / layout / OCR 模型（构建时预下载约 2-4GB）
 # - mineru / docling / paddleocr 解析器
 
 FROM python:3.12.13-slim AS base
@@ -85,10 +85,7 @@ ENV HF_ENDPOINT=https://hf-mirror.com \
     MINERU_MODEL_SOURCE=${MINERU_SOURCE}
 
 # ── 第 2 层：raganything 安装（按 RAG_PROFILE 决定依赖胖瘦；源码隔离到 /opt，避免污染 /app）──
-#   full : 显式装 [image,text,audio,office,markdown,video,local] —— 等价于 all 但去掉 paddleocr。
-#          paddleocr→paddlex→paddlepaddle+opencv-contrib-python，与 mineru 2.x 的
-#          opencv-python + numpy 约束互斥，会导致 pip 回溯超限（ResolutionTooDeep）。
-#          RAG_PARSER=mineru 场景用不到 paddleocr 解析器，故排除。
+#   full : [all,local] —— 含本地 mineru CLI + 音视频/paddleocr 等全部可选依赖
 #   slim : [image,text] —— online/selfhost 纯 HTTP 客户端，不装 mineru/whisper，
 #          连带去掉 torch + CUDA(nvidia) + modelscope 等（~3.9GB+）。
 #          ⚠️ slim 镜像下 RAG_PARSER=mineru（本地）会因缺依赖在运行时报错，属预期取舍。
@@ -100,7 +97,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       pip install -e "/opt/raganything[image,text]"; \
     else \
       echo "[RAG_PROFILE=full] 安装完整依赖（含本地 mineru CLI 与音视频 ASR）"; \
-      pip install -e "/opt/raganything[image,text,audio,office,markdown,video,local]"; \
+      pip install -e "/opt/raganything[all,local]"; \
     fi
 
 # ── 第 3 层：平台基础依赖（sqlalchemy / redis / pydantic 等）──
@@ -131,6 +128,26 @@ RUN --mount=type=cache,target=/root/.cache/whisper \
       echo "[SKIP] 模型预下载跳过"; \
       rm -f /tmp/download_models.py; \
     fi
+
+# ── 第 6.5 层：tiktoken 离线词表（工程内 vendored，构建期不联网）──
+#   用途：stages.py 的 PushChunksStage 推送前用 tiktoken 实测每个 chunk 的 token 数，
+#   判断是否超过 LightRAG 的 CHUNK_SIZE(1200)——超限会被二次切分，切出的第二片仍带
+#   整块的 file_source 元数据，导致表头/行号/页码锚点错位。
+#   不内置时 tiktoken 退回默认路径 /tmp/data-gym-cache，而 /tmp 随容器重建清空，
+#   于是每次启动都重下 3.6MB 的 o200k_base。实测该下载 17~90s（网络波动极大），
+#   占 atomic-rag 启动耗时 94%（2026-09-16 实测 71.6s / 总 76s）。
+#   故改为 vendored：文件名 = 源 URL 的 sha1（tiktoken 的查找键，不可改），
+#   内容 sha256 = tiktoken 内置 expected_hash，下方构建期即校验，损坏则拒绝出镜像。
+#   获取/更新方法见 deploy/resources/tiktoken/README.md。
+COPY deploy/resources/tiktoken/ /app/data/tiktoken/
+RUN echo "446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d  /app/data/tiktoken/fb374d419588a4632f3f557e76b4b70aebbca790" \
+      | sha256sum -c - \
+    || { echo "[ERROR] vendored tiktoken 词表缺失或损坏（sha256 校验失败）。" >&2; \
+         echo "[ERROR] 请参照 deploy/resources/tiktoken/README.md 重新获取后重试。" >&2; \
+         exit 1; }
+
+# 显式指向镜像内路径（不依赖 tiktoken 的 /tmp 默认值）
+ENV TIKTOKEN_CACHE_DIR=/app/data/tiktoken
 
 # ── 第 7 层前置校验：构建上下文缺失平台源码则终止构建（不产镜像）──
 #    BuildKit 无法在 COPY 前直接检查宿主上下文，故以 type=bind 将构建上下文

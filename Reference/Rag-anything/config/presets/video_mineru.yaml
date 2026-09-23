@@ -1,0 +1,20 @@
+description: MinerU 视频解析 — 委托自建/远端 mineru-api（VLM 粗读 + ASR + OCR 兜底）
+version: "1.0"
+updated_at: "2026-09-20T00:00:00Z"
+updated_by: "jonex"
+config:
+  # ── 视频解析后端 ──
+  # mineru：整条委托 MinerU（内部自带三步）；local：内置 ffmpeg + VLM 管线
+  video_analysis_binding: mineru
+
+  # ── 端点由 env 提供，不写入 preset ──
+  # MINERU_VIDEO_BASE_URL（未设则回退 MINERU_SELFHOST_BASE_URL）
+  # MINERU_VIDEO_MODE / MINERU_VIDEO_COARSE_PROMPT / MINERU_VIDEO_POLL_*
+
+  # ── 解析与模态 ──
+  parser: mineru
+  modalities:
+    - video
+  enable_image_processing: false
+  enable_table_processing: false
+  enable_equation_processing: false

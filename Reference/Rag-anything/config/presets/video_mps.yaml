@@ -6,7 +6,7 @@ config:
   # ── 模型选择 ──
   # MPS 模式下不需要 VLM 和 ASR 模型（MPS 云端处理）
   # 仅需 LLM 用于后续文本理解 / 实体抽取
-  llm: deepseek-v4-flash-202605
+  # llm: 不写死 —— 由环境变量 LLM_MODEL（兜底 DEFAULT_LLM_MODEL）提供；模型名的唯一来源是环境变量
   embedding: qwen3-embedding:8b
 
   # ── 连接信息（host / api_key）默认从 env 读取，不写入 preset ──
