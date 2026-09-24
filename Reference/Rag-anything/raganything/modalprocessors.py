@@ -64,6 +64,33 @@ def _pick_prompt(prompt_overrides, base_code: str, has_context: bool,
 
 
 
+# ── [jonex] §standalone-image-whole-vlm OCR 参考段 ─────────────────────
+# 独立图片整图 VLM 理解：OCR 文本随 item 私有字段 _whole_image_ocr 从 stage
+# 传入，在最终 VLM 提示词后追加「OCR 参考段」并显式注明内容是 OCR 识别所得，
+# 避免 VLM 误判为人工标注/正文。私有字段在兜底文本中剥离，防止异常时把大段
+# OCR 泄漏进 chunk。
+
+_WHOLE_IMAGE_OCR_FIELD = "_whole_image_ocr"
+_OCR_REFERENCE_HEADER = (
+    "【以下为该图片 OCR 识别出的文字内容，供理解图片时参考；"
+    "如与图片实际不符，请以图片实际内容为准】"
+)
+
+
+def _append_ocr_reference(prompt: str, ocr_text: str) -> str:
+    """在提示词末尾追加 OCR 参考段（自动，无需占位符）。
+
+    - ocr 空串 → 原样返回；
+    - prompt 已含 header → 防重原样返回；
+    - 否则追加 "\\n\\n{header}\\n{ocr}"。
+    """
+    if not ocr_text or not ocr_text.strip():
+        return prompt
+    if _OCR_REFERENCE_HEADER in prompt:
+        return prompt
+    return f"{prompt}\n\n{_OCR_REFERENCE_HEADER}\n{ocr_text.strip()}"
+
+
 # ── [jonex] §image-refs P0-6 图片版面主题锚点 ─────────────────────────
 # 背景（docs/image-reference-accuracy-fix-plan.md E 方案 §26/§27）：VLM
 # 图片描述的主题关联不稳定（低量化 VLM 在多候选上下文中选错主题，描述
@@ -1075,6 +1102,9 @@ class ImageModalProcessor(BaseModalProcessor):
         Returns:
             Tuple of (enhanced_caption, entity_info)
         """
+        # [jonex] §standalone-image-whole-vlm：默认兜底文本 = 原始 modal_content；
+        # 解析出私有字段 _whole_image_ocr 后改为剥离副本（见下），防异常时泄漏。
+        content_for_fallback = modal_content
         try:
             # Parse image content (reuse existing logic)
             if isinstance(modal_content, str):
@@ -1091,6 +1121,18 @@ class ImageModalProcessor(BaseModalProcessor):
             )
             footnotes = content_data.get(
                 "image_footnote", content_data.get("img_footnote", [])
+            )
+
+            # [jonex] §standalone-image-whole-vlm：整图 VLM 场景 OCR 文本随 item
+            # 私有字段传入。剥离该字段作为兜底文本，防异常时大段 OCR 泄漏进 chunk。
+            if isinstance(content_data, dict) and _WHOLE_IMAGE_OCR_FIELD in content_data:
+                content_for_fallback = {
+                    k: v for k, v in content_data.items()
+                    if k != _WHOLE_IMAGE_OCR_FIELD
+                }
+            ocr_ref = (
+                content_data.get(_WHOLE_IMAGE_OCR_FIELD, "")
+                if isinstance(content_data, dict) else ""
             )
 
             # Validate image path
@@ -1164,6 +1206,11 @@ class ImageModalProcessor(BaseModalProcessor):
                 footnotes=footnotes if footnotes else "None",
             )
 
+            # [jonex] §standalone-image-whole-vlm：自动追加 OCR 参考段（无需占位
+            # 符）。显式向模型说明该段是 OCR 识别出的文字，避免误判为正文/标注。
+            if isinstance(ocr_ref, str) and ocr_ref.strip():
+                vision_prompt = _append_ocr_reference(vision_prompt, ocr_ref)
+
             # Encode image to base64
             image_base64 = self._encode_image_to_base64(image_path)
             if not image_base64:
@@ -1217,7 +1264,9 @@ class ImageModalProcessor(BaseModalProcessor):
                 "entity_type": "image",
                 "summary": f"Image content: {str(modal_content)[:100]}",
             }
-            return str(modal_content), fallback_entity
+            # [jonex] §standalone-image-whole-vlm：兜底文本用剥离 _whole_image_ocr
+            # 的副本，防止异常时把大段 OCR 文本写进兜底 chunk。
+            return str(content_for_fallback), fallback_entity
 
     async def process_multimodal_content(
         self,

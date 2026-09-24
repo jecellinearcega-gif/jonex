@@ -353,3 +353,39 @@ class TestGraphRelationships:
         assert "source_entity" not in upstream["items"][0]
         assert get_json.await_args.kwargs["params"]["doc_id"] == "doc-1"
         await client.close()
+
+
+class TestInsertCustomKg:
+    """[jonex] P4 §5.7：insert_custom_kg 请求契约——chunks 传空、
+    source_id 用 §5.6 权威 chunk_id、full_doc_id 不传。"""
+
+    @pytest.mark.asyncio
+    async def test_posts_empty_chunks_with_entities_and_relationships(self):
+        client = HttpLightRagClient()
+        entities = [
+            {"entity_name": "XX集团", "entity_type": "Organization",
+             "description": "大型制造企业", "source_id": "chunk-aaa", "file_path": ""},
+        ]
+        relationships = [
+            {"src_id": "XX集团", "tgt_id": "产品A", "description": "拥有",
+             "keywords": "OWNS", "weight": 0.9, "source_id": "chunk-aaa",
+             "file_path": ""},
+        ]
+        with mock.patch.object(
+            client, "_post", new=mock.AsyncMock(return_value={"status": "success"}),
+        ) as post:
+            result = await client.insert_custom_kg(
+                entities, relationships, tenant_id="t1", kb_id="kb1",
+            )
+
+        assert result == {"status": "success"}
+        # _post(path, tenant_id, kb_id, body)
+        assert post.await_args.args[0] == "/documents/custom-kg"
+        assert post.await_args.args[1] == "t1"
+        assert post.await_args.args[2] == "kb1"
+        sent = post.await_args.args[3]
+        assert sent["chunks"] == [], "§5.7：chunks 必须传空（chunk 已由 /documents/text 入库）"
+        assert sent["entities"] == entities
+        assert sent["relationships"] == relationships
+        assert "full_doc_id" not in sent, "§5.7：full_doc_id 不传（平台文档与 LightRAG doc key 无一对一映射）"
+        await client.close()

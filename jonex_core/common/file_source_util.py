@@ -161,6 +161,7 @@ _MEDIA_BY_EXT: dict[str, set[str]] = {
     "audio": {".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg", ".wma"},
     "video": {".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".m4v"},
     "image": {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"},
+    "office": {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".ods"},  # [jonex] 新增
 }
 
 

@@ -21,7 +21,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from bisect import bisect_left
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, NamedTuple, Optional, Tuple
 
 from raganything.modalprocessors import BaseModalProcessor
 
@@ -39,6 +39,65 @@ VIDEO_ENTITY_TYPE_ENUM = frozenset({
 
 MAX_ENTITY_TRANSCRIPT_PREVIEW = 1000
 MAX_OCR_CHARS = 120
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# [jonex] 视频后端决策 —— full 与 parse_only **两条链共用**
+#
+# 「这条视频要不要走 MPS / 要不要注入 COS URL」原本在两个地方各写了一份：
+#   · full 链       pipeline/stages.py::MultimodalStage._process_one
+#   · parse_only 链 service/task_manager.py::_textualize_multimodal（OpenKB /
+#     jonex_wiki KB 走这条，见 knowledge_base document_service.py 的
+#     execution_mode = "parse_only" if kb_type in LLM_WIKI_TYPES）
+#
+# 2026-10-08 线上事故就是这两份漂移出来的：parse_only 那份用的是
+# 「`_video_backends` 非空 = MPS 路径」的粗判据 —— 该假设在
+# `config.video_analysis_binding` 从死配置被接活之后失效（mineru 也会入池），
+# 于是**同一个 preset、同一个视频**，本体库（full）正常解析、jonex_wiki
+# （parse_only）却只写了一条「MPS 视频分析需要 COS 存储的 URL」的假占位。
+#
+# 现在两处都调本函数：改路由前提只需要改这一个地方，且
+# Reference/Rag-anything/tests/test_video_analysis/test_video_parser_routing.py
+# 的「两链一致」用例会同时把两条真实链跑一遍来盯着它们不分叉。
+# ════════════════════════════════════════════════════════════════════════════
+
+
+class VideoRouting(NamedTuple):
+    """一条视频的后端归属判定结果。"""
+
+    #: ``_select_backend`` 的结果 —— 实际会用的后端；``None`` = 内置本地管线
+    backend: Optional[str]
+    #: 最终会不会走 MPS（item 带 COS URL，或后端池里有 mps 且本次请求带 COS URL）
+    use_mps: bool
+    #: 会走 MPS 但**拿不到** COS URL → 调用方应提前短路（否则 MPS 后端会拿到
+    #: 容器内本地路径、白等一轮长超时）
+    needs_cos_url: bool
+
+
+def route_video(processor, modal_content: Dict[str, Any], mps_url: str) -> VideoRouting:
+    """判定这条视频走哪个后端、要不要注入 COS URL。
+
+    参数：
+        processor:    ``VideoModalProcessor``（只依赖 ``_video_backends`` /
+                      ``_select_backend`` 两个属性，替身可传入）
+        modal_content: 该 item 的 dict（**注入前的现状**）
+        mps_url:      平台侧给的 COS URL（``task.mps_video_url``；仅 COS 存储且
+                      KB 选了 ``video_mps`` 预设时才非空）
+
+    判据比"后端池非不非空"精确：``_select_backend`` 的优先级是
+    「per-item 标记 > 全局默认绑定 > 内置 local 管线」，所以只有它返回 ``mps``
+    （或本次带着 COS URL、注入后必然会选中 mps）才算走 MPS。**mineru 绑定不在此列**
+    —— 它读本地 ``video_path`` 上传，塞 COS URL 反而会被当本地路径打开
+    （见 ``_select_backend`` 的告警与 ``_analyze_via_mps`` 的 ``mps_input`` 回落）。
+    """
+    backends = getattr(processor, "_video_backends", None) or {}
+    select = getattr(processor, "_select_backend", None)
+    backend = select(modal_content) if callable(select) else None
+    # mps 已入池时，「本次带着 COS URL」本身就意味着注入后会走 mps
+    use_mps = backend == "mps" or bool(mps_url and "mps" in backends)
+    return VideoRouting(
+        backend=backend, use_mps=use_mps, needs_cos_url=use_mps and not mps_url,
+    )
 
 
 class VideoModalProcessor(BaseModalProcessor):
@@ -77,24 +136,32 @@ class VideoModalProcessor(BaseModalProcessor):
     # ── backend selection ─────────────────────────
 
     def _select_backend(self, modal_content: dict) -> str | None:
-        """Select the video analysis backend for *modal_content*.
+        """[jonex] 路由优先级：per-item 标记 > 全局默认配置 > 内置 local 管线。
 
-        Returns the backend binding name (e.g. ``"local"``, ``"mps"``)
-        or ``None`` to fall back to the built-in local pipeline.
+        - item 带 ``mps_video_url``（KB 选了 video_mps 或外部直调指定）且
+          MPS 后端已注册 → ``"mps"``。显式指定优先于全局默认。
+        - 否则返回 ``self._default_backend``（当它已入池且非 ``local`` 时）。
+          ``local`` 与「未入池」都返回 ``None``，走内置本地 VLM 管线
+          （ASR → 关键帧 → VLM → MapReduce）——即改动前的既有行为。
 
-        **Extension point**: Override in subclasses or modify this method
-        to implement per-video routing based on:
-        - ``modal_content`` metadata (e.g. source, file extension)
-        - Tenant-level configuration
-        - Video duration or other heuristics
+        ``_default_backend`` 来自 ``config.video_analysis_binding``
+        （此前是死配置，恒为 `"local"`）。
         """
-        # If the requested default backend exists, use it.
-        if self._default_backend in self._video_backends:
-            return self._default_backend
-        # Fall back to local if available.
-        if "local" in self._video_backends:
-            return "local"
-        # No backends — caller will use the built-in local pipeline.
+        if modal_content.get("mps_video_url") and "mps" in self._video_backends:
+            return "mps"
+        if modal_content.get("mps_video_url"):
+            # [jonex] 该标记被忽略时不必然回落本地管线：MPS 未入池既可能是
+            # MPS_ENABLED=false，也可能是后端构造失败；随后统一按默认后端处理。
+            logger.warning(
+                "视频项指定了 mps_video_url，但 MPS 后端未入池（MPS_ENABLED=false "
+                "或后端初始化失败）——该标记被忽略，将改用当前生效的默认后端 %r；"
+                "若该后端不是 local，则不会回落本地 VLM 管线"
+                "（例如 mineru 后端收到 COS URL 会直接抛 FileNotFoundError）。",
+                self._default_backend,
+            )
+        default = self._default_backend
+        if default and default != "local" and default in self._video_backends:
+            return default
         return None
 
     # ── Phase 3: unified LLM / VLM invocation ─────────────────
@@ -218,6 +285,9 @@ class VideoModalProcessor(BaseModalProcessor):
                     "speaker_labels": [],
                     "group_summary": desc or result.summary,
                     "frames": [],
+                    # [jonex] 三类来源标记（chapter/slide/asr），下游按它写 chunk 的
+                    # ctype 以区分来源。MPS 后端与历史数据不带该键 → 缺省 chapter。
+                    "source_type": scene.get("source_type") or "chapter",
                 })
         else:
             synthetic_segments = [{
@@ -230,6 +300,9 @@ class VideoModalProcessor(BaseModalProcessor):
                 "speaker_labels": [],
                 "group_summary": result.summary,
                 "frames": [],
+                # [jonex] 无 scenes 的兜底单段：只有整篇摘要，归为 chapter，
+                # 保证下游按 source_type 取 ctype 时不会 KeyError。
+                "source_type": "chapter",
             }]
 
         modal_content["_audio_segments"] = synthetic_segments

@@ -281,6 +281,59 @@ class TestHeaderInference:
         assert meta["notes"] == []
         assert data_rows == [["黄金", "80"]]
 
+    # ── P0-c（2026-09-13 线上 OOM 复盘）：超长单元格不得一票否决整行 ──
+
+    # financial_metric.md 的 21 列真表头（线上事故原文）。第 18 列
+    # `duplicate_count_in_period` 长 25，仅比 _HEADER_CELL_MAX_LEN(24) 多 1
+    # ——就是这一个字符让整行表头被否、列名退化成 col_0…col_20。
+    _FINANCIAL_METRIC_HEADER = [
+        "metric_id", "entity_id", "ticker", "metric_name", "taxonomy", "tag",
+        "unit", "value", "period_start", "period_end", "fiscal_year",
+        "fiscal_period", "form", "filed", "frame", "accn", "is_bank_metric",
+        "duplicate_count_in_period", "source_id", "source_url", "retrieved_at",
+    ]
+
+    def test_single_long_cell_does_not_veto_header(self):
+        """1/21 个超长格（snake_case 列名）不否决整行——线上 OOM 的直接触发器。"""
+        row = list(self._FINANCIAL_METRIC_HEADER)
+        assert len(row) == 21
+        assert len(row[17]) == 25 > _utils._HEADER_CELL_MAX_LEN  # 唯一起阈的格
+        assert _utils._is_header_row(row, date_semantic=False) is True
+
+    def test_real_table_header_recovered_end_to_end(self):
+        """整条链路：真表头不再降级成数据行，列名不是 col_N。"""
+        md = (
+            "| " + " | ".join(self._FINANCIAL_METRIC_HEADER) + " |\n"
+            "| " + " | ".join(["---"] * 21) + " |\n"
+            "| m:0000320193:revenue:2019:FY:d159f4da | cik:0000320193 | AAPL |"
+            " revenue | us-gaap | Revenues | USD | 260174 | 2018-09-30 |"
+            " 2019-09-28 | 2019 | FY | 10-K | 2019-11-01 | CY2019 |"
+            " 0000320193-19-000119 | true | 1 | src-1 | http://x | 2024-01-01 |\n"
+        )
+        header, data_rows, meta = normalize_table_grid(md)
+        assert header == self._FINANCIAL_METRIC_HEADER
+        assert meta["header_levels"] == 1
+        assert not any(h.startswith("col_") for h in header)
+        assert data_rows[0][0] == "m:0000320193:revenue:2019:FY:d159f4da"
+
+    def test_majority_long_cells_still_rejected(self):
+        """多数格超长（说明/备注整行）仍否决——比例判据不放行真正的 prose 行。"""
+        row = ["说明" * 15, "备注" * 15, "补充" * 15, "短"]
+        assert all(len(c) <= _utils._table_header_max_len() for c in row)
+        assert _utils._is_header_row(row, date_semantic=False) is False
+
+    def test_prose_hard_threshold_still_rejected(self):
+        """单格即超 prose 硬阈值（TABLE_HEADER_MAX_LEN=40）→ 该行仍是说明行。"""
+        row = ["名称", "数量", "说明" * 25]
+        assert len(row[2]) == 50 > _utils._table_header_max_len()
+        assert _utils._is_header_row(row, date_semantic=False) is False
+
+    def test_long_cell_ratio_env_override(self, monkeypatch):
+        """TABLE_HEADER_LONG_CELL_RATIO=0 回到「任一格超长即否决」的旧口径。"""
+        row = list(self._FINANCIAL_METRIC_HEADER)
+        monkeypatch.setenv("TABLE_HEADER_LONG_CELL_RATIO", "0")
+        assert _utils._is_header_row(row, date_semantic=False) is False
+
     def test_markdown_pipe_input(self):
         md = (
             "| 年份 | 收入 |\n"
@@ -600,6 +653,56 @@ class TestTableFormStress:
         assert header[3] == "审批授权情况-分管领导"
         assert len(data_rows) == 1
         assert data_rows[0][0] == "1.1"
+
+    def test_c9_prose_data_row_after_header_stays_data(self):
+        """C9 守卫 A：表头已定后的长文单元格 = 「备注」数据行，不再吃成表前说明。
+
+        修复前该行进 notes 且 data_start 推到表尾 → data_rows 为空 →
+        整块退回纯文本（sdn.md 实测 503 块中 342 块如此，全量进 LLM）。
+        """
+        note = "本次调整涉及存量客户迁移，具体以营业部通知为准。" * 3
+        grid = [
+            ["编号", "名称", "备注"],
+            ["A001", "产品A", note],
+            ["A002", "产品B", "无"],
+        ]
+        header, data_rows, meta = normalize_table_grid(grid)
+        assert meta["notes"] == []
+        assert header == ["编号", "名称", "备注"]
+        assert len(data_rows) == 2
+        assert data_rows[0][2] == note
+
+    def test_c10_headerless_prose_block_recovers_rows(self):
+        """C10 守卫 B：整段无表头（超长表被盲切后的中段块）→ 长文行就地转数据行。
+
+        修复前所有行被吃进 notes、data_rows 为空；列名仍回退 col_N 占位
+        （真实列名由 parse_text 的表头前缀回填保证，见 parsers 用例）。
+        """
+        note = "存量客户迁移细则见附件。" * 4
+        grid = [
+            ["4238", "MAR AZUL", note],
+            ["4243", "EBANO", "vessel"],
+            ["4249", "TIFON", "vessel"],
+        ]
+        header, data_rows, meta = normalize_table_grid(grid)
+        assert meta["notes"] == []
+        assert header == ["col_0", "col_1", "col_2"]
+        assert len(data_rows) == 3
+        assert data_rows[0][0] == "4238"
+        assert data_rows[0][2] == note
+
+    def test_c11_prose_row_kept_as_note_when_header_follows(self):
+        """C11 守卫 B 反向：长文行之后确实还有表头 → 仍按表前说明入 notes。"""
+        note = "本表适用于总部各部室，重大项目需经决策会议审议。" * 3
+        grid = [
+            [note, "", ""],
+            ["序号", "事项", "金额"],
+            ["1", "采购", "100"],
+        ]
+        header, data_rows, meta = normalize_table_grid(grid)
+        assert meta["notes"] and "本表适用于" in meta["notes"][0]
+        assert header == ["序号", "事项", "金额"]
+        assert len(data_rows) == 1
 
 
 # ── O4-bis：B 型错位（左移）嫌疑行检测 ────────────────────────────────────

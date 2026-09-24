@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import platform
+import re
 import subprocess
 import tempfile
 import threading
@@ -16,6 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import shutil
+import sysconfig
 import zipfile
 from pathlib import Path
 from queue import Empty, Queue
@@ -31,6 +33,145 @@ except ImportError:
     Image = None  # type: ignore[assignment]
 
 _IS_WINDOWS = platform.system() == "Windows"
+
+
+# ── [jonex] 传输层失败的结构化归因（bd jonex-platform-977）────────────────────
+# 分类器（`TaskManager._classify_transcribe_error`）原先只看异常**类型名**，而本模块
+# 把 urllib 的 HTTPError / URLError **一律重抛成 RuntimeError** —— 于是
+# 400/401/402/404/429/5xx/连不上 全部塌缩成同一句「转写服务不可用」。
+# 2026-10-09 上游欠费（402）排查绕远路，就是因为用户和运维看到的是同一句话。
+#
+# 现在由**抛错方**（只有它拿得到状态码）附带一个粗粒度 `reason`：
+#   * `reason` 是**安全串** —— 它会经 content.md → 编译 → 索引 → 搜索结果，
+#     绝不许含 URL / 签名 token / 上游原文；
+#   * 异常消息（含原文）只进日志，不进 content.md。
+# 两个异常类**必须**是 RuntimeError 子类：现有调用方（`_post_multipart`、
+# `_api_json_request` 等）都按 `except RuntimeError` 收口，换基类会让它们静默漏接。
+_REASON_AUTH = "转写服务鉴权失败"
+_REASON_QUOTA = "转写服务额度不足"
+_REASON_ENDPOINT = "转写服务端点不对"
+_REASON_RATE_LIMIT = "转写服务限流"
+_REASON_REJECTED = "转写服务拒绝请求"
+_REASON_UPSTREAM = "转写服务内部错误"
+_REASON_UNREACHABLE = "转写服务连不上"
+_REASON_TIMEOUT = "转写超时"
+_REASON_UNKNOWN = "转写服务不可用"
+
+
+def _reason_for_http_status(code: int) -> str:
+    """HTTP 状态码 → 粗粒度原因（安全，可直接进 content.md）。"""
+    if code in (401, 403):
+        return _REASON_AUTH
+    if code == 402:
+        return _REASON_QUOTA
+    if code == 404:
+        return _REASON_ENDPOINT
+    if code == 429:
+        return _REASON_RATE_LIMIT
+    if code == 400:
+        return _REASON_REJECTED
+    if 500 <= code < 600:
+        return _REASON_UPSTREAM
+    return _REASON_UNKNOWN
+
+
+def _reason_for_connection_error(exc: object) -> str:
+    """连接层异常 → 粗粒度原因；是不是超时决定「超时」还是「连不上」。"""
+    if isinstance(exc, TimeoutError) or "timed out" in str(exc).lower():
+        return _REASON_TIMEOUT
+    return _REASON_UNREACHABLE
+
+
+def _reason_for_urlerror(exc: urllib.error.URLError) -> str:
+    """URLError → 粗粒度原因（看内层 reason）。"""
+    return _reason_for_connection_error(getattr(exc, "reason", None) or exc)
+
+
+#: 从「任务体失败文本」提取状态码用的**有界**模式。故意保守：只认 HTTP 语义明确的
+#: 写法（``HTTP 402`` / ``402 Client Error`` / ``status: 502``），**不**匹配裸三位数字 ——
+#: 否则正文里「第 402 条」这类会被误判成欠费。认不出就兜底「转写服务不可用」。
+_TASK_ERROR_CODE_PATTERNS = (
+    re.compile(r"\bHTTP[/ ]?(\d{3})\b", re.IGNORECASE),
+    re.compile(r"\b(\d{3})\s+(?:client|server)\s+error\b", re.IGNORECASE),
+    re.compile(r"\b(?:status|code)\s*[:=]?\s*(\d{3})\b", re.IGNORECASE),
+)
+
+#: 任务体失败文本里的**语义**措辞 → 状态码。比裸数字可靠，且覆盖 `401 Unauthorized`
+#: 这种不带 `HTTP` 前缀的写法。顺序有意义：先具体后笼统。
+_TASK_ERROR_PHRASES = (
+    ("payment required", 402),
+    ("insufficient", 402),
+    ("unauthorized", 401),
+    ("forbidden", 403),
+    ("too many requests", 429),
+    ("rate limit", 429),
+    ("not found", 404),
+    ("internal server error", 500),
+    ("bad gateway", 502),
+    ("service unavailable", 503),
+)
+
+
+def _reason_from_task_error(error_text: str) -> str:
+    """MinerU 任务体里的失败文本 → 粗粒度原因。
+
+    ``_poll_task`` 拿到的失败原因由**对方**写在任务体里（HTTP 本身是 200），
+    所以状态码只能从文本里取 —— 2026-10-09 线上的上游 402 欠费正是这个形态。
+
+    ⚠ 只回**粗粒度串**，**绝不**回原文（原文含内网 URL，会经 content.md 进索引）。
+    """
+    text = str(error_text or "")
+    lowered = text.lower()
+    if "timed out" in lowered or "timeout" in lowered:
+        return _REASON_TIMEOUT
+    for pattern in _TASK_ERROR_CODE_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return _reason_for_http_status(int(match.group(1)))
+    for phrase, code in _TASK_ERROR_PHRASES:
+        if phrase in lowered:
+            return _reason_for_http_status(code)
+    return _REASON_UNKNOWN
+
+
+class MineruTransportError(RuntimeError):
+    """MinerU 的 HTTP / 网络层失败，带 ``reason`` 粗粒度归因。  # [jonex]"""
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+class MineruTaskFailedError(RuntimeError):
+    """MinerU 收下了任务但执行失败；原因由对方写在任务体里。  # [jonex]
+
+    注意这类失败的 HTTP 是 200，状态码信息**只在** ``error`` 文本里。
+    """
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+def _resolve_mineru_executable() -> str:
+    """Locate the `mineru` console script.
+
+    优先 PATH；找不到时回退到当前 Python 环境的 scripts 目录（venv/Scripts，
+    Windows 上为 mineru.exe）。uv 管理的 venv 其 Scripts/python.exe 是 shim，
+    实际进程映像是 base python，Windows CreateProcess 的子进程搜索不含 venv
+    Scripts 目录，故不能只依赖 PATH。
+    """
+    found = shutil.which("mineru")
+    if found:
+        return found
+    try:
+        scripts = Path(sysconfig.get_path("scripts"))
+        candidate = scripts / ("mineru.exe" if _IS_WINDOWS else "mineru")
+        if candidate.is_file():
+            return str(candidate)
+    except Exception:
+        pass
+    return "mineru"
 
 
 class MineruExecutionError(Exception):
@@ -85,7 +226,7 @@ class MineruParser(Parser):
         **kwargs,
     ) -> None:
         cmd = [
-            "mineru",
+            _resolve_mineru_executable(),
             "-p",
             str(input_path),
             "-o",
@@ -93,6 +234,12 @@ class MineruParser(Parser):
             "-m",
             method,
         ]
+        # [jonex] backend/device 支持 env 兜底（与下方 MINERU_SOURCE 同款）：
+        # 本地 CPU 调试默认 hybrid-auto-engine（GPU 取向）无法跑，运维可用
+        # MINERU_BACKEND=pipeline + MINERU_DEVICE=cpu 指定。env 缺省时保持
+        # 原行为（交给 MinerU CLI 自行选择），不影响 GPU 部署。
+        if backend is None:
+            backend = os.environ.get("MINERU_BACKEND") or None
         if backend:
             cmd.extend(["-b", backend])
         if source is None:
@@ -109,6 +256,8 @@ class MineruParser(Parser):
             cmd.extend(["-f", "false"])
         if not table:
             cmd.extend(["-t", "false"])
+        if device is None:
+            device = os.environ.get("MINERU_DEVICE") or None
         if device:
             cmd.extend(["-d", device])
         if vlm_url:
@@ -343,6 +492,16 @@ class MineruParser(Parser):
             except Exception as e:
                 cls.logger.warning(f"Could not read JSON file {json_file}: {e}")
 
+        # [jonex] 保留原始 MinerU markdown（{stem}.md）：stash 到 content_list 首元素
+        # 保留字段 `_jonex_raw_markdown`（历史 stash）：jonex_wiki 现已改读结构化
+        # content_list.json（不再读此 markdown），该字段由 task_manager 写产物时过滤。
+        # 不改返回签名，避免 parser/processor/cache 连锁改动；字段以 `_jonex_` 命名空间
+        # 与 MinerU 原生字段隔离，重组逻辑只按 type/text/… 取值，不会泄漏进 content.md。
+        if md_content:
+            if content_list:
+                content_list[0]["_jonex_raw_markdown"] = md_content
+            else:
+                content_list.append({"_jonex_raw_markdown": md_content})
         return content_list, md_content
 
     def parse_pdf(
@@ -397,6 +556,11 @@ class MineruParser(Parser):
         lang: Optional[str] = None,
         **kwargs,
     ) -> List[Dict[str, Any]]:
+        # 图片固定走 OCR，method 由调用方按文件类型透传（PDF 才有其它分支）。
+        # pipeline 某些路径会无条件注入 method=，这里与 MineruOnlineParser /
+        # MineruSelfHostParser 对齐，避免落入 **kwargs 后与下方显式
+        # _run_mineru_command(method="ocr", **kwargs) 双值冲突。
+        kwargs.pop("method", None)
         try:
             image_path = Path(image_path)
             if not image_path.exists():
@@ -651,13 +815,22 @@ class MineruOnlineParser(MineruParser):
                 body = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(
+            raise MineruTransportError(
                 f"MinerU API request failed: {method} {path} "
-                f"HTTP {exc.code}: {body}"
+                f"HTTP {exc.code}: {body}",
+                reason=_reason_for_http_status(exc.code),
             ) from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError(
-                f"MinerU API request failed: {method} {path}: {exc}"
+            raise MineruTransportError(
+                f"MinerU API request failed: {method} {path}: {exc}",
+                reason=_reason_for_urlerror(exc),
+            ) from exc
+        except (OSError, http.client.HTTPException) as exc:
+            # ConnectionRefusedError（OSError）/ RemoteDisconnected（读完响应才抛）
+            # 等**不是** URLError，会裸着穿到调用方 —— 一并归因。
+            raise MineruTransportError(
+                f"MinerU API request failed: {method} {path}: {exc}",
+                reason=_reason_for_connection_error(exc),
             ) from exc
 
         try:
@@ -946,6 +1119,12 @@ class MineruOnlineParser(MineruParser):
 
             attach_public_media_urls(item)
 
+        # [jonex] 与 _read_output_files 同口径：保留原始 markdown 供 llm-wiki 产物分支
+        if md_content:
+            if content_list:
+                content_list[0]["_jonex_raw_markdown"] = md_content
+            else:
+                content_list.append({"_jonex_raw_markdown": md_content})
         return content_list, md_content
 
     def parse_pdf(
@@ -1247,13 +1426,21 @@ class MineruSelfHostParser(MineruParser):
                 raw = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(
+            raise MineruTransportError(
                 f"MinerU self-host request failed: {label} "
-                f"HTTP {exc.code}: {detail}"
+                f"HTTP {exc.code}: {detail}",
+                reason=_reason_for_http_status(exc.code),
             ) from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError(
-                f"MinerU self-host request failed: {label}: {exc}"
+            raise MineruTransportError(
+                f"MinerU self-host request failed: {label}: {exc}",
+                reason=_reason_for_urlerror(exc),
+            ) from exc
+        except (OSError, http.client.HTTPException) as exc:
+            # 同上：ConnectionRefusedError / RemoteDisconnected 不是 URLError。
+            raise MineruTransportError(
+                f"MinerU self-host request failed: {label}: {exc}",
+                reason=_reason_for_connection_error(exc),
             ) from exc
         try:
             return json.loads(raw)
@@ -1281,6 +1468,16 @@ class MineruSelfHostParser(MineruParser):
             "formula_enable": bool(kwargs.get("formula", True)),
             "table_enable": bool(kwargs.get("table", True)),
         }
+        # [jonex] Office 全量（.doc/.docx/.ppt/.pptx/.xls/.xlsx）：统一携带
+        # `convert_office_to_pdf=true`。不带它时 legacy 三件套会被自建 MinerU 直接 400 拒
+        # （"legacy Office 需要 convert_office_to_pdf=true"）。
+        # 该字段是**放行**而非强制转换：实测带上后 .xls/.doc 的 converted_pdf_url 仍为空
+        # = 服务端原生解析、没走 PDF 中转（.xls md 281/cl 415、.doc md 266/cl 560）；
+        # 给真 PDF 带它也完全不变 ⇒ 对能原生解析的新格式是无副作用的 no-op。
+        # ⚠️ 不要改用 profile=office-to-pdf（那才是强制转换）：实测它会静默产出空
+        # content_list/md_content，且新格式加它同样变空。
+        if file_path.suffix.lower() in self.OFFICE_FORMATS:
+            fields["convert_office_to_pdf"] = True
         if backend in (
             "pipeline",
             "hybrid-engine",
@@ -1331,9 +1528,10 @@ class MineruSelfHostParser(MineruParser):
             if state == "completed":
                 return
             if state == "failed":
-                raise RuntimeError(
+                raise MineruTaskFailedError(
                     f"MinerU self-host parsing failed: "
-                    f"{status.get('error') or status}"
+                    f"{status.get('error') or status}",
+                    reason=_reason_from_task_error(status.get("error") or ""),
                 )
             time.sleep(self.poll_interval)
         raise TimeoutError(
@@ -1426,6 +1624,13 @@ class MineruSelfHostParser(MineruParser):
 
             attach_public_media_urls(item)
 
+        # [jonex] 保留原始 markdown（self_host 响应里的 md_content）供 llm-wiki 产物分支
+        md_content = result_item.get("md_content") or ""
+        if md_content:
+            if content_list:
+                content_list[0]["_jonex_raw_markdown"] = md_content
+            else:
+                content_list.append({"_jonex_raw_markdown": md_content})
         return content_list
 
     @staticmethod

@@ -1,4 +1,4 @@
-# [jonex] Jonex新增文件：raganything 入库计量上下文透传
+# [jonex] 新增文件：raganything 入库计量上下文透传
 #
 # 作用：让 raganything 直连 llm-gateway 的多模态/summary LLM 与 embedding 调用
 #       带上 X-Jonex-* 维度头（tenant/kb/doc/trace），使 gateway 能按文档/任务
@@ -59,13 +59,17 @@ def build_ingest_headers() -> dict:
     """从 ingest contextvar 构造 X-Jonex-* 头，供 driver HTTP 调用叠加。
 
     Returns:
-        dict: 非空维度对应的 X-Jonex-* 头字典；无上下文返回空 dict。
-        scene 固定为 raganything_ingest。
+        dict: 非空维度（tenant/kb/doc/trace）对应的 X-Jonex-* 头；无上下文返回空 dict。
+
+    ⚠️ 不输出 X-Jonex-Scene：scene 是**模型级**身份（VLM → raganything_vlm，
+    文本 LLM/embedding → raganything_ingest），由 ModelSpec.extra_headers 提供。
+    driver 中本函数的叠加顺序在 spec.extra_headers 之后，若此处也给 scene，
+    会把模型级 scene 覆盖回单一值，导致 VLM 在 gateway 侧无法与文本调用区分。
     """
     ctx = _ingest_ctx.get()
     if not ctx:
         return {}
-    headers: dict[str, str] = {"X-Jonex-Scene": "raganything_ingest"}
+    headers: dict[str, str] = {}
     if ctx.get("tenant_id"):
         headers["X-Jonex-Tenant-Id"] = ctx["tenant_id"]
     if ctx.get("kb_id"):

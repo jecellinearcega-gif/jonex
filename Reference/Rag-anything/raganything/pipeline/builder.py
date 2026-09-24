@@ -10,6 +10,7 @@ from raganything.pipeline.stages import (
     FileValidateStage,
     MultimodalChunkStage,
     MultimodalStage,
+    OfficePreviewUploadStage,
     ParseStage,
     PushChunksStage,
     TextInsertStage,
@@ -70,6 +71,39 @@ def create_default_pipeline(mode: PipelineMode = PipelineMode.STANDALONE):
     )
 
 
+def _http_pipeline_prefix():
+    """[jonex] HTTP 链路里 push_chunks **之前**的那一段。
+
+    单独抽出来是因为任务中心把上传链路拆成了两步：
+      - 第一步 prepare（本函数产出的五段）—— 吃掉所有需要「本地文件还在」的活：
+        解析、多模态描述、图片资产上传、office 预览上传
+      - 第二步 push_chunks —— 只吃 ctx 里的 content_list / multimodal_results /
+        asset_exts，不碰任何文件
+
+    切分点为什么放在 office_preview_upload **之后**而不是 multimodal 之后：
+    AssetUploadStage 是 os.path.isfile(img_path) + read_bytes，它需要解析那一刻
+    还存在的本地图片；放到第二步就意味着要把图片抄到持久卷并改写 img_path
+    （MinerU 的 img_path 指向未挂卷的 /app/output，跨任务必然失效）。放在第一步
+    则一步到位，既不用抄图也不用改写路径。代价只是 asset_exts 要落盘传给第二步。
+
+    两处共用这一个定义，避免 create_http_pipeline() 与
+    create_prepare_only_pipeline() 漂移。
+    """
+    return [
+        ("validate", FileValidateStage()),
+        ("parse", ParseStage()),
+        ("multimodal", MultimodalStage(mode=PipelineMode.STANDALONE)),
+        # [jonex] §image-refs P1-2: 图片资产上传（multimodal 之后、push_chunks
+        # 之前——aext 必须赶在 chunk 写入 file_source 前就位；best-effort，
+        # RAG_ASSET_UPLOAD_ENABLED 关闭时为空转）
+        ("asset_upload", AssetUploadStage()),
+        # [jonex] office 查看原文定位：office 转换 PDF 上传（parse 之后、push_chunks
+        # 之前——preview 赶在 chunk 写入前就位；best-effort，
+        # OFFICE_PREVIEW_UPLOAD_ENABLED 关闭时为空转）
+        ("office_preview_upload", OfficePreviewUploadStage()),
+    ]
+
+
 def create_http_pipeline():
     """Return the HTTP-mode document processing pipeline.
 
@@ -78,15 +112,20 @@ def create_http_pipeline():
 
     Used when RAGAnything is initialized with an http_client (production path).
     """
-    return (
-        PipelineBuilder()
-        .add_stage("validate", FileValidateStage())
-        .add_stage("parse", ParseStage())
-        .add_stage("multimodal", MultimodalStage(mode=PipelineMode.STANDALONE))
-        # [jonex] §image-refs P1-2: 图片资产上传（multimodal 之后、push_chunks
-        # 之前——aext 必须赶在 chunk 写入 file_source 前就位；best-effort，
-        # RAG_ASSET_UPLOAD_ENABLED 关闭时为空转）
-        .add_stage("asset_upload", AssetUploadStage())
-        .add_stage("push_chunks", PushChunksStage())
-        .build()
-    )
+    builder = PipelineBuilder()
+    for name, stage in _http_pipeline_prefix():
+        builder.add_stage(name, stage)
+    return builder.add_stage("push_chunks", PushChunksStage()).build()
+
+
+def create_prepare_only_pipeline():
+    """[jonex] 任务中心三步拆分的**第一步**：validate → parse → multimodal →
+    asset_upload → office_preview_upload（= create_http_pipeline() 去掉 push_chunks）。
+
+    产物（content_list / multimodal_results / asset_exts）由调用方
+    RAGAnything.prepare_only() 落到共享卷，第二步 push_chunks_only() 读回后单独跑。
+    """
+    builder = PipelineBuilder()
+    for name, stage in _http_pipeline_prefix():
+        builder.add_stage(name, stage)
+    return builder.build()

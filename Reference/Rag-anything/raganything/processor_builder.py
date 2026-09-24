@@ -121,8 +121,16 @@ def _create_video(builder):
     from raganything.video_processor import VideoModalProcessor
 
     # ── MPS backend wiring ──────────────────────────────────────
+    # [jonex] MPS_ENABLED 只控制能力注册（后端池），不参与路由；
+    # 视频走 MPS 还是本地 VLM 由 per-KB 解析器设置（preset）决定，
+    # _select_backend 按 item 的 mps_video_url 存在性路由。
     video_analysis_backends = {}
-    default_backend = "local"
+    # [jonex] 后端选择改由 config.video_analysis_binding 决定（此前写死 "local"，
+    # 该配置项全仓无人读）。mps 仍按 MPS_ENABLED 入池，路由优先级见
+    # VideoModalProcessor._select_backend。
+    default_backend = (
+        getattr(builder._config, "video_analysis_binding", "local") or "local"
+    )
 
     if os.getenv("MPS_ENABLED", "").strip().lower() in ("true", "1", "yes"):
         try:
@@ -130,12 +138,33 @@ def _create_video(builder):
 
             mps_backend = MPSVideoBackend(builder._config)
             video_analysis_backends["mps"] = mps_backend
-            default_backend = "mps"
             _logger.info("MPS video analysis backend enabled (MPS_ENABLED=true)")
         except Exception as e:
             _logger.warning(
                 f"MPS backend init failed, falling back to local: {e}"
             )
+
+    # [jonex] 配置指定的视频后端入池（如 "mineru"）；取不到则回落 local。
+    if (
+        default_backend != "local"
+        and default_backend not in video_analysis_backends
+    ):
+        try:
+            from raganything.video_analysis import get_video_analysis_backend
+
+            backend_cls = get_video_analysis_backend(default_backend)
+            video_analysis_backends[default_backend] = backend_cls(builder._config)
+            _logger.info(
+                "Video analysis backend enabled: %s (binding=%s)",
+                backend_cls.__name__,
+                default_backend,
+            )
+        except Exception as e:
+            _logger.warning(
+                f"Video backend '{default_backend}' init failed, "
+                f"falling back to local: {e}"
+            )
+            default_backend = "local"
 
     return VideoModalProcessor(
         lightrag=builder._lightrag,

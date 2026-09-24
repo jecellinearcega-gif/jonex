@@ -173,6 +173,13 @@ class TaskInfo(BaseModel):
     ontology_status: str = ""       # "" | pending | extracting | completed | failed
     ontology_data: Optional[dict] = None
     ontology_error: str = ""
+    # [jonex] P0-2：进程级崩溃恢复计数（必须持久化——重启后内存计数归零，
+    # 起不到任何护栏作用）。start() 恢复扫描把 ontology_status=="extracting"
+    # 的任务判为「卡住」并重置重跑；若该任务反复在抽取阶段被杀（线上实例：
+    # financial_metric.md 46290 chunk，抽取产出把宿主内存吃到 23.7GB 被
+    # oom-killer 杀），就会陷入「跑 4.6 小时 → 被杀 → 从头重跑」死循环。
+    # 超限即落 FAILED，不再自动重跑（见 ONTOLOGY_RECOVERY_MAX_ATTEMPTS）。
+    recovery_attempts: int = 0
 
     # ── HTTP mode track tracking ──
     lightrag_doc_ids: list[str] = Field(default_factory=list)
@@ -187,7 +194,11 @@ class TaskInfo(BaseModel):
     # ── Reparse / recompile execution control ──
     # execution_mode: full（完整解析）| ontology_only（只重抽本体，跳过 parse/push/文件校验）
     #               | reparse_strict（严格全量替换：全部 chunk 成功 + 失败补偿 + 差集删旧）
+    #               | parse_only（只解析出 markdown 给 OpenKB 编译）
+    #               | prepare_only（任务中心三步第一步：解析+多模态+资产/预览上传，不推切片）
+    #               | push_only（任务中心三步第二步：读回解析产物只推切片，不碰原文件）
     execution_mode: str = "full"
+    kb_type: str = ""                  # [jonex] lightrag | openkb | jonex_wiki（llm-wiki 产物分支）
     content_generation: int = 0        # 携带 KB 文档 reparse 代次，回传对账做 fencing
     schema_version: int = 0            # 本任务使用的 compiled schema 版本
     schema_hash: str = ""              # 版本号兜底比对
@@ -257,7 +268,10 @@ class CreateTaskRequest(BaseModel):
     ontology_schema: Optional[dict] = None
 
     # ── Reparse / recompile execution control ──
-    execution_mode: str = "full"       # full | ontology_only | reparse_strict
+    # full | ontology_only | reparse_strict | parse_only | prepare_only | push_only
+    # （prepare_only / push_only 见 TaskInfo.execution_mode 上方注释）
+    execution_mode: str = "full"
+    kb_type: str = ""                  # [jonex] lightrag | openkb | jonex_wiki（llm-wiki 产物分支）
     content_generation: int = 0        # reparse 代次
     schema_version: int = 0            # compiled schema 版本
     schema_hash: str = ""              # 版本号兜底

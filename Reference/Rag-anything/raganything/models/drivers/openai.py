@@ -101,7 +101,7 @@ class OpenAIDriver(BaseModelDriver):
     ) -> ModelResponse:
         """Parse OpenAI-format dict response."""
         choice = (raw.get("choices") or [{}])[0]
-        msg = choice.get("message", {})
+        msg = choice.get("message") or {}  # [jonex] vLLM 错误响应可能 message: null，同 NoneType 防护
         text = msg.get("content", "") or ""
         # [jonex] Some backends (ollama heretic, llama.cpp) emit reasoning
         # under ``reasoning`` (no underscore) instead of the OpenAI-standard
@@ -120,10 +120,11 @@ class OpenAIDriver(BaseModelDriver):
         usage_raw = raw.get("usage", {})
         usage: Usage | None = None
         if usage_raw:
-            reasoning_tokens = (
-                usage_raw.get("completion_tokens_details", {})
-                .get("reasoning_tokens", 0)
-            )
+            # [jonex] vLLM 对非思考请求返回 completion_tokens_details: null，
+            # dict.get(key, {}) 对「存在但为 null」返回 None 而非默认值，
+            # 直接链式 .get() 会崩（NoneType has no attribute 'get'）。
+            completion_details = usage_raw.get("completion_tokens_details") or {}
+            reasoning_tokens = completion_details.get("reasoning_tokens", 0)
             usage = Usage(
                 prompt_tokens=usage_raw.get("prompt_tokens", 0),
                 completion_tokens=usage_raw.get("completion_tokens", 0),

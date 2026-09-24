@@ -33,6 +33,12 @@ def convert_office_to_pdf(doc_path: Union[str, Path], output_dir: Optional[str] 
             temp_path = Path(temp_dir)
             logger.info(f"Converting {doc_path_resolved.name} to PDF using LibreOffice...")
             commands_to_try = ["libreoffice", "soffice"]
+            # [jonex] 允许显式指定可执行文件：本地开发把 LibreOffice 装在 PATH
+            # 之外（如工作区内解包的 .app 副本）时用 LIBREOFFICE_BIN 指过去；
+            # 部署镜像自带 libreoffice 在 PATH 上，不设此变量即走默认查找。
+            _env_lo_bin = os.getenv("LIBREOFFICE_BIN", "").strip()
+            if _env_lo_bin:
+                commands_to_try.insert(0, _env_lo_bin)
             conversion_successful = False
             last_cmd = commands_to_try[-1]
 

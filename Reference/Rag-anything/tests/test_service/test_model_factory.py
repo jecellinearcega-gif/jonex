@@ -188,3 +188,105 @@ class TestModelFactoryBuild:
         factory = ModelFactory(registry=r, profiles_dir=str(tmp_path))
         with pytest.raises(Exception):  # FileNotFoundError from registry or model_factory
             factory.build(profile="nonexistent")
+
+
+# ── [jonex] 计量 scene 区分：VLM 与文本 LLM/embedding 分属不同 scene ──────────
+
+
+class _FakeResponse:
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+
+class _CapturingClient:
+    """Minimal httpx.AsyncClient stand-in that records outgoing request headers."""
+
+    last_headers: dict = {}
+
+    def __init__(self, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, headers=None, json=None):
+        _CapturingClient.last_headers = dict(headers or {})
+        return _FakeResponse()
+
+
+class TestMeteringScene:
+    """[jonex] X-Jonex-Scene 按模型类型区分。
+
+    背景：VLM 调用原名 raganything_ingest，与文本抽取同 scene —— 导致
+    llm-gateway 计量分不出 VLM 消耗，且会被 LLMGW_DISABLE_THINKING_SCENES
+    连带注入 thinking.disabled。
+    """
+
+    def _bind(self, registry, profile_dir, model_id, prefix):
+        factory = ModelFactory(registry=registry, profiles_dir=str(profile_dir.parent))
+        return factory._bind_with_overrides(
+            model_id, {}, prefix=prefix, tenant_id="t1", kb_id="kb1",
+        )
+
+    def test_vlm_binding_uses_vlm_scene(self, registry, profile_dir):
+        registry.load_profile("dev")
+        bound = self._bind(registry, profile_dir, "qwen2.5-vl-7b", "vlm")
+        assert bound.spec.extra_headers["X-Jonex-Scene"] == "raganything_vlm"
+
+    def test_llm_binding_keeps_ingest_scene(self, registry, profile_dir):
+        registry.load_profile("dev")
+        bound = self._bind(registry, profile_dir, "qwen3-72b", "llm")
+        assert bound.spec.extra_headers["X-Jonex-Scene"] == "raganything_ingest"
+
+    def test_embedding_binding_keeps_ingest_scene(self, registry, profile_dir):
+        registry.load_profile("dev")
+        bound = self._bind(registry, profile_dir, "bge-m3", "embedding")
+        assert bound.spec.extra_headers["X-Jonex-Scene"] == "raganything_ingest"
+
+    def test_ingest_headers_overlay_has_no_scene(self):
+        """任务级 overlay 不再输出 scene，避免覆盖模型级 scene。"""
+        from raganything.service.jonex_metering_ctx import (
+            build_ingest_headers,
+            reset_ingest_ctx,
+            set_ingest_ctx,
+        )
+
+        token = set_ingest_ctx(tenant_id="t1", kb_id="kb1", doc_id="d1", trace_id="tr1")
+        try:
+            headers = build_ingest_headers()
+        finally:
+            reset_ingest_ctx(token)
+
+        assert "X-Jonex-Scene" not in headers
+        assert headers["X-Jonex-Tenant-Id"] == "t1"
+        assert headers["X-Jonex-Doc-Id"] == "d1"
+        assert headers["X-Jonex-Trace-Id"] == "tr1"
+
+    async def test_driver_request_keeps_model_scene(self, registry, profile_dir, monkeypatch):
+        """端到端：driver 实际发出的请求头里 scene 是模型级值，不被 overlay 顶掉。"""
+        import httpx
+
+        from raganything.service.jonex_metering_ctx import reset_ingest_ctx, set_ingest_ctx
+
+        monkeypatch.setattr(httpx, "AsyncClient", _CapturingClient)
+        registry.load_profile("dev")
+        bound = self._bind(registry, profile_dir, "qwen2.5-vl-7b", "vlm")
+
+        token = set_ingest_ctx(tenant_id="t1", kb_id="kb1", doc_id="d1", trace_id="tr1")
+        try:
+            await bound.complete([{"role": "user", "content": "hi"}])
+        finally:
+            reset_ingest_ctx(token)
+
+        headers = _CapturingClient.last_headers
+        assert headers["X-Jonex-Scene"] == "raganything_vlm"
+        assert headers["X-Jonex-Doc-Id"] == "d1"  # 任务级维度仍然生效

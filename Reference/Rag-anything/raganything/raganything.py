@@ -49,7 +49,12 @@ from raganything.modalprocessors import (
 )
 
 # Pipeline and builder
-from raganything.pipeline import DocumentPipeline, PipelineContext, PipelineServices
+from raganything.pipeline import (
+    DocumentPipeline,
+    PipelineContext,
+    PipelineResult,
+    PipelineServices,
+)
 from raganything.processor import ProcessorMixin
 from raganything.processor_builder import ModalProcessorBuilder
 from raganything.cache import ParseCacheManager
@@ -854,6 +859,127 @@ class RAGAnything(QueryMixin, BatchMixin, ProcessorMixin):
         self._task_parser_cache[name] = parser
         return parser
 
+    async def _run_http_pipeline(
+        self, ctx: PipelineContext, pipeline: Optional[DocumentPipeline] = None
+    ) -> PipelineResult:
+        """[jonex] HTTP 模式下跑一条 pipeline，并把 final_ctx 回灌到调用方的 ctx。
+
+        从 process_document_complete 的 HTTP 分支原样抽出，供 push_chunks_only
+        复用 —— 两条链路的 per-task config 覆盖、parser 解析、PipelineServices
+        构造口径必须完全一致，否则「解析落盘的产物」与「推切片读到的产物」会
+        因 config 差异（如 parser_output_dir）对不上。
+
+        pipeline: None → 跑 self.pipeline（完整链路）；传入自定义 pipeline
+                  （如只含 PushChunksStage）→ 跑那一条。
+        """
+        # ── per-task effective config + parser（preset 链路）──
+        # 在单例 config 基础上覆盖 preset 提供的字段（保留 working_dir 等默认）；
+        # 选出 per-task parser 并注入其配置（如 mineru_online 的 token）。
+        import dataclasses as _dc
+        from raganything.config import RAGAnythingConfig as _RAGCfg
+        _snap = getattr(ctx, "config_snapshot", None) or {}
+        _fields = set(_RAGCfg.__dataclass_fields__)
+        _overrides = {k: v for k, v in _snap.items() if k in _fields and not k.startswith("_")}
+        eff_config = _dc.replace(self.config, **_overrides) if _overrides else self.config
+
+        _parser_name = (getattr(ctx, "parser_type", "") or getattr(eff_config, "parser", "") or "")
+        task_parser = self._resolve_task_parser(_parser_name)
+        if _snap and hasattr(task_parser, "configure"):
+            try:
+                task_parser.configure(**_snap)   # mineru_online token 等在此注入
+            except Exception:
+                self.logger.warning("parser.configure failed for '%s'", _parser_name, exc_info=True)
+
+        services = PipelineServices(
+            config=eff_config,
+            lightrag=None,
+            doc_parser=task_parser,
+            modal_processors=getattr(self, "modal_processors", {}),
+            parse_cache=ParseCacheManager(self.parse_cache, eff_config) if self.parse_cache else None,
+            doc_status_mgr=None,
+            callback_manager=self.callback_manager,
+            event_bus=self.event_bus,
+            logger=self.logger,
+            http_client=self.http_client,
+        )
+        result = await (pipeline or self.pipeline).execute(ctx, services)
+        # Merge final context back: pipeline runs stages on internal ctx
+        # copies (merge_context → dataclasses.replace produces NEW objects),
+        # so scalar fields set by stages (counters, error, rebind of
+        # pending_track_ids) do NOT reflect onto the caller's ctx unless
+        # copied back here. Must run on BOTH success and failure so #5/#6
+        # counters, error message and pending_track_ids survive a FAILED task
+        # (KB reconciliation depends on them).
+        if result.final_ctx is not None:
+            final: PipelineContext = result.final_ctx
+            ctx.content_list = final.content_list
+            ctx.doc_id = final.doc_id
+            ctx.multimodal_items = final.multimodal_items
+            ctx.multimodal_results = final.multimodal_results
+            ctx.collected_doc_ids = final.collected_doc_ids
+            ctx.pending_track_ids = final.pending_track_ids
+            # [jonex] #5/#6: propagate push-outcome counters + pipeline error
+            ctx.total_chunk_count = final.total_chunk_count
+            ctx.failed_chunk_count = final.failed_chunk_count
+            ctx.timeout_chunk_count = final.timeout_chunk_count
+            ctx.duplicated_chunk_count = final.duplicated_chunk_count
+            ctx.total_pushed_count = final.total_pushed_count
+            ctx.error = final.error
+        ctx.completed_at = time.time()
+        return result
+
+    async def prepare_only(self, ctx: PipelineContext) -> PipelineResult:
+        """[jonex] 三步拆分的**第一步**：解析 + 多模态 + 资产/office 预览上传，
+        **不推切片**。
+
+        跑 create_prepare_only_pipeline()（= create_http_pipeline() 去掉
+        push_chunks）。之所以把 asset_upload / office_preview_upload 留在这一步
+        而不是挪到第二步：这两个 stage 都要读本地文件（图片、office 转出的 PDF），
+        而解析产物只要跨到下一次任务，/app/output 里的临时文件就没了。留在这里跑
+        一步到位，第二步就彻底不碰文件系统。
+
+        跑完由任务中心侧把 final_ctx 的 content_list / multimodal_results /
+        asset_exts 落盘（task_manager._persist_ingest_artifacts），第二步读回。
+        """
+        from raganything.pipeline.builder import create_prepare_only_pipeline
+
+        result = await self._run_http_pipeline(ctx, create_prepare_only_pipeline())
+        # asset_exts 必须单独回灌：_run_http_pipeline 的通用回灌清单（为保持 full
+        # 链路行为不变）没有列这个字段，而它正是第一步要落盘的三件套之一。漏了这
+        # 一句 → ctx.asset_exts 恒为空 dict → 落盘 asset_exts.json = {} → 第二步推
+        # 切片时按图序号取不到扩展名 → chunk 上没有 `aext=` 锚点 → 检索侧
+        # `asset_url` 整体为空（图片引用静默退化，链路全程不报错）。
+        # 与 push_chunks_only 的回灌同一处理，见该方法内注释。
+        final = result.final_ctx
+        if final is not None:
+            ctx.asset_exts = final.asset_exts
+        return result
+
+    async def push_chunks_only(self, ctx: PipelineContext) -> PipelineResult:
+        """[jonex] 只推切片：跳过 parse/multimodal，用 ctx 里已就位的
+        content_list + multimodal_results 跑一条只含 PushChunksStage 的 pipeline。
+
+        任务中心三步拆分的第二步入口 —— 产物由第一步（prepare_only）落盘到共享卷，
+        本方法由 task_manager._run_push_only 用 _load_ingest_artifacts 读回后调用。
+
+        ctx 必须已备好：content_list（文本/表格来源，含 MinerU 版面锚点）、
+        multimodal_results（图片/音视频/表格摘要来源，**原件**，不能从 content_list
+        重建）、asset_exts（图片资产后缀，键为 int 下标，可空）、tenant_id / kb_id /
+        document_id / file_name（file_source 锚点与 HTTP 头都从这里取）。
+        """
+        from raganything.pipeline.builder import PipelineBuilder
+        from raganything.pipeline.stages import PushChunksStage
+
+        pipeline = PipelineBuilder().add_stage("push_chunks", PushChunksStage()).build()
+        result = await self._run_http_pipeline(ctx, pipeline)
+        # table_stats / asset_exts 单独回灌：_run_http_pipeline 的通用回灌列表为
+        # 保持 full 链路行为不变没有列这两个字段，而推切片正是它们唯一的产出方。
+        final = result.final_ctx
+        if final is not None:
+            ctx.table_stats = final.table_stats
+            ctx.asset_exts = final.asset_exts
+        return result
+
     async def process_document_complete(
         self,
         file_path: str,
@@ -898,60 +1024,7 @@ class RAGAnything(QueryMixin, BatchMixin, ProcessorMixin):
                 )
             ctx.started_at = time.time()
 
-            # ── per-task effective config + parser（preset 链路）──
-            # 在单例 config 基础上覆盖 preset 提供的字段（保留 working_dir 等默认）；
-            # 选出 per-task parser 并注入其配置（如 mineru_online 的 token）。
-            import dataclasses as _dc
-            from raganything.config import RAGAnythingConfig as _RAGCfg
-            _snap = getattr(ctx, "config_snapshot", None) or {}
-            _fields = set(_RAGCfg.__dataclass_fields__)
-            _overrides = {k: v for k, v in _snap.items() if k in _fields and not k.startswith("_")}
-            eff_config = _dc.replace(self.config, **_overrides) if _overrides else self.config
-
-            _parser_name = (getattr(ctx, "parser_type", "") or getattr(eff_config, "parser", "") or "")
-            task_parser = self._resolve_task_parser(_parser_name)
-            if _snap and hasattr(task_parser, "configure"):
-                try:
-                    task_parser.configure(**_snap)   # mineru_online token 等在此注入
-                except Exception:
-                    self.logger.warning("parser.configure failed for '%s'", _parser_name, exc_info=True)
-
-            services = PipelineServices(
-                config=eff_config,
-                lightrag=None,
-                doc_parser=task_parser,
-                modal_processors=getattr(self, "modal_processors", {}),
-                parse_cache=ParseCacheManager(self.parse_cache, eff_config) if self.parse_cache else None,
-                doc_status_mgr=None,
-                callback_manager=self.callback_manager,
-                event_bus=self.event_bus,
-                logger=self.logger,
-                http_client=self.http_client,
-            )
-            result = await self.pipeline.execute(ctx, services)
-            # Merge final context back: pipeline runs stages on internal ctx
-            # copies (merge_context → dataclasses.replace produces NEW objects),
-            # so scalar fields set by stages (counters, error, rebind of
-            # pending_track_ids) do NOT reflect onto the caller's ctx unless
-            # copied back here. Must run on BOTH success and failure so #5/#6
-            # counters, error message and pending_track_ids survive a FAILED task
-            # (KB reconciliation depends on them).
-            if result.final_ctx is not None:
-                final: PipelineContext = result.final_ctx
-                ctx.content_list = final.content_list
-                ctx.doc_id = final.doc_id
-                ctx.multimodal_items = final.multimodal_items
-                ctx.multimodal_results = final.multimodal_results
-                ctx.collected_doc_ids = final.collected_doc_ids
-                ctx.pending_track_ids = final.pending_track_ids
-                # [jonex] #5/#6: propagate push-outcome counters + pipeline error
-                ctx.total_chunk_count = final.total_chunk_count
-                ctx.failed_chunk_count = final.failed_chunk_count
-                ctx.timeout_chunk_count = final.timeout_chunk_count
-                ctx.duplicated_chunk_count = final.duplicated_chunk_count
-                ctx.total_pushed_count = final.total_pushed_count
-                ctx.error = final.error
-            ctx.completed_at = time.time()
+            result = await self._run_http_pipeline(ctx)
             if not result.success:
                 self.logger.error(f"HTTP pipeline failed: {result.error}")
                 return None

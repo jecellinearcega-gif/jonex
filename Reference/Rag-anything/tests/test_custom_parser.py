@@ -225,6 +225,63 @@ class TestMineruSelfHostParser:
         # 无扩展名且全非法 -> upload
         assert f("中文") == "upload"
 
+    @pytest.mark.parametrize("suffix", sorted(Parser.OFFICE_FORMATS) + [".DOC", ".XLSX"])
+    def test_submit_task_sets_convert_flag_for_office(
+        self, monkeypatch, tmp_path, suffix
+    ):
+        """Office 全量（.doc/.docx/.ppt/.pptx/.xls/.xlsx）都带 `convert_office_to_pdf=true`。
+
+        自建 MinerU（jonex-gpu :20490 fork）的 active 档位 `jonex-default` 不收 legacy
+        Office；真机实测（`backend=pipeline`，2026-09-29）：不带该字段提交 `.xls` / `.doc`
+        → `HTTP 400 {"detail":"Unsupported file type: xls（legacy Office 需要
+        convert_office_to_pdf=true）"}`；带上 → `completed` 且 `md_content` /
+        `content_list` 有真实内容（`.xls` 281/415、`.doc` 266/560 字符）。
+
+        该字段的语义是**放行、不是强制转换**：带上后 `.xls` / `.doc` 的
+        `converted_pdf_url` 仍为空 = 服务端**原生解析**、没走 PDF 中转；给真 PDF 带它
+        结果也完全不变。所以对能原生解析的 `.docx` / `.xlsx` 是无副作用的 no-op，
+        整个 Office 家族统一携带。
+
+        大写扩展名（`.DOC`/`.XLSX`）一并覆盖：后缀比较前要 `.lower()`，否则静默退化成
+        「不带放行字段」→ 上游 400。
+        """
+        src = tmp_path / f"report{suffix}"
+        src.write_bytes(b"PK\x03\x04")
+        parser = MineruSelfHostParser()
+        seen: dict = {}
+
+        def _fake_post(path, file_path, fields, timeout=300):
+            seen["path"] = path
+            seen["fields"] = dict(fields)
+            return {"task_id": "t1"}
+
+        monkeypatch.setattr(parser, "_post_multipart", _fake_post)
+
+        assert parser._submit_task(src, "auto", None) == "t1"
+        assert seen["path"] == "/tasks"
+        assert seen["fields"]["convert_office_to_pdf"] is True
+        # 放行靠提交字段，不靠档位：`profile=office-to-pdf` 会静默产出空 content_list
+        assert "profile" not in seen["fields"]
+
+    @pytest.mark.parametrize("suffix", [".pdf", ".txt", ".md", ".png", ".mp4"])
+    def test_submit_task_omits_convert_flag_for_non_office(
+        self, monkeypatch, tmp_path, suffix
+    ):
+        """非 Office（PDF/文本/图片/视频）不带该字段 —— 与 Office 放行无关。"""
+        src = tmp_path / f"report{suffix}"
+        src.write_bytes(b"%PDF")
+        parser = MineruSelfHostParser()
+        seen: dict = {}
+
+        def _fake_post(path, file_path, fields, timeout=300):
+            seen["fields"] = dict(fields)
+            return {"task_id": "t1"}
+
+        monkeypatch.setattr(parser, "_post_multipart", _fake_post)
+
+        assert parser._submit_task(src, "auto", None) == "t1"
+        assert "convert_office_to_pdf" not in seen["fields"]
+
     def test_build_content_list_from_json_string(self, monkeypatch, tmp_path):
         """content_list 为 JSON 字符串时正确解析 + 别名归一化 + 无图清空路径。"""
         monkeypatch.delenv("MINERU_SELFHOST_RETURN_IMAGES", raising=False)

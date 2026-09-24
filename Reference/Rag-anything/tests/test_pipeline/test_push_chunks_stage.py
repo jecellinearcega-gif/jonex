@@ -664,10 +664,13 @@ class TestTableGridStats:
         assert stats["tables_fallback"] == 1
         assert stats["rows_total"] == 1
         assert stats["cols_unnamed"] == 0
-        # 表格明细行 + fallback 文本各 1
-        assert len(chunks) == 2
+        # 表格明细行 + fallback 文本 + 正文文本 各 1
+        assert len(chunks) == 3
         assert chunks[0]["type"] == "table_row"
-        assert chunks[1]["type"] == "table"  # fallback 走文本分支
+        # §table-llm-bypass: fallback 标 ctype=text（归一化失败 = 无行级映射，
+        # 标 table 会被本体抽取剔除且零产出 = 内容静默丢失）
+        assert chunks[1]["type"] == "text"
+        assert "ctype=text" in chunks[1]["file_source"]
 
     def test_table_stats_cols_unnamed(self, monkeypatch):
         stage = self._stage(monkeypatch)
@@ -701,6 +704,34 @@ class TestTableGridStats:
         )
         chunks, stats = self._collect(stage, [{"type": "table", "table_body": html}])
         assert stats["header_levels"] == {"0": 1}
+
+    def test_mapped_tables_registered_on_success(self, monkeypatch):
+        """§table-llm-bypass：归一化成功的表登记到 _mapped_tables。
+
+        md 文档的 content_list 只有 text item（parse_text 不产出
+        type=="table"），本体抽取期靠该登记判定「Row-as-Object 已接管」。
+        """
+        stage = self._stage(monkeypatch)
+        item = {
+            "type": "table", "table_body": self.TABLE_HTML,
+            "table_caption": "部门表", "table_idx": 5, "page_idx": 0,
+        }
+        chunks, stats = self._collect(stage, [item])
+        mapped = item["_mapped_tables"]
+        assert len(mapped) == 1
+        assert mapped[0]["type"] == "table"
+        assert mapped[0]["table_body"] == self.TABLE_HTML
+        assert mapped[0]["table_caption"] == "部门表"
+        assert mapped[0]["table_idx"] == 5
+        assert stats["tables_normalized"] == 1
+
+    def test_fallback_table_not_registered(self, monkeypatch):
+        """归一化失败的表不登记（不参与 Row-as-Object），退回 ctype=text 链路。"""
+        stage = self._stage(monkeypatch)
+        item = {"type": "table", "table_body": "普通文本", "page_idx": 1}
+        chunks, stats = self._collect(stage, [item])
+        assert "_mapped_tables" not in item
+        assert stats["tables_fallback"] == 1
 
     def test_table_budget_segments(self, monkeypatch):
         """表格专用预算（非 RAG_CHUNK_MAX_CHARS）决定 segment 切分。"""
@@ -761,7 +792,8 @@ class TestTableGridStats:
         assert types.count("text") == 2  # 前后文本各成 chunk
         assert stats["tables_total"] == 1
         assert stats["tables_normalized"] == 1
-        assert stats["tables_fallback"] == 0
+        # tables_fallback 仅在失败时才创建键 → 无失败时按 0 判定
+        assert stats.get("tables_fallback", 0) == 0
         table_chunk = next(c for c in chunks if c["type"] == "table_row")
         assert "row_start=0" in table_chunk["file_source"]
         assert "ctype=table_row" in table_chunk["file_source"]
@@ -769,6 +801,22 @@ class TestTableGridStats:
         for c in chunks:
             if c["type"] == "text":
                 assert "<table" not in c["text"]
+
+    def test_o2_whole_block_single_table(self, monkeypatch):
+        """整块即一张表 → 仍走表格分支（判据为「含表格段」而非「多段」）。
+
+        md 超长表按行切 + 表头回填后，每个片段都是纯表格块；旧判据
+        ``len(embedded) > 1`` 会把整表当文本送进 LLM 抽取（sdn.md 实测
+        4202 text chunk 全量进 LLM = 90 分钟）。
+        """
+        stage = self._stage(monkeypatch)
+        text = "| 编号 | 名称 |\n| --- | --- |\n| 1 | A |\n| 2 | B |"
+        item = {"type": "text", "text": text, "page_idx": 0}
+        chunks, stats = self._collect(stage, [item])
+        assert [c["type"] for c in chunks] == ["table_row"]
+        assert stats["tables_normalized"] == 1
+        assert stats["rows_total"] == 2
+        assert len(item["_mapped_tables"]) == 1
 
     def test_o2_markdown_pipe_table_in_text_block(self, monkeypatch):
         """O2：连续 ≥3 管道行 → 走表格分支（10 个解析_md_*.md 的形态）。"""
@@ -1234,3 +1282,61 @@ class TestImageChunkFileSourceAext:
                 assert "image_idx=" not in fs
                 assert "aext=" not in fs
                 assert text.split("表格概览：", 1)[1].startswith("表格摘要")
+
+
+class TestSegmentChunkSourceType:
+    """[jonex] 视频段 chunk 的 ctype 由 scene 的 source_type 决定，
+    使 chapter / slide / asr 三类来源在检索侧可区分。"""
+
+    _SEGMENT_CTYPES = ("video_chapter", "video_slide", "audio_segment")
+
+    def _collect(self, segments):
+        chunks: list[dict] = []
+        PushChunksStage()._collect_multimodal_chunks(
+            chunks,
+            [{
+                "content_type": "video",
+                "original": {"_audio_segments": segments},
+            }],
+            "t1", "kb1", "doc-1", "demo.mp4",
+        )
+        return chunks
+
+    @staticmethod
+    def _ctype(chunk):
+        return chunk["file_source"].split("ctype=")[1].split("|")[0]
+
+    def test_three_sources_map_to_distinct_ctypes(self):
+        chunks = self._collect([
+            {"text": "章节内容", "start_time": 0.0, "end_time": 10.0,
+             "source_type": "chapter"},
+            {"text": "幻灯片内容", "start_time": 10.0, "end_time": 20.0,
+             "source_type": "slide"},
+            {"text": "语音内容", "start_time": 20.0, "end_time": 30.0,
+             "source_type": "asr"},
+        ])
+
+        ctypes = sorted(
+            self._ctype(c) for c in chunks
+            if self._ctype(c) in self._SEGMENT_CTYPES
+        )
+        assert ctypes == ["audio_segment", "video_chapter", "video_slide"]
+
+    def test_missing_source_type_defaults_to_video_chapter(self):
+        """历史数据 / MPS 后端不带 source_type → 缺省 video_chapter。"""
+        chunks = self._collect([
+            {"text": "老数据", "start_time": 0.0, "end_time": 5.0},
+        ])
+
+        assert any(self._ctype(c) == "video_chapter" for c in chunks), [
+            c["file_source"] for c in chunks
+        ]
+
+    def test_unknown_source_type_falls_back_to_video_chapter(self):
+        """visual 等非三类取值不得漏成无 ctype。"""
+        chunks = self._collect([
+            {"text": "未知来源", "start_time": 0.0, "end_time": 5.0,
+             "source_type": "visual"},
+        ])
+
+        assert any(self._ctype(c) == "video_chapter" for c in chunks)

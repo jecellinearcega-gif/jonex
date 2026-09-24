@@ -31,6 +31,12 @@ class PipelineContext:
     cancel_event: Optional[asyncio.Event] = None
     force_reparse: bool = False
 
+    # ── [jonex] P0-b：本次是否为 ontology_only 重抽 ──
+    # 重抽走「读回 LightRAG chunk + 全量替换写图（delete_by_document）」，故
+    # 「无表格上下文存档」时必须拒绝而非降级（见 task_manager 的 P0-b 闸门）；
+    # full 首次入库为 False（首次入库不存在「替换掉首轮好结果」的问题）。
+    ontology_only: bool = False
+
     # ── per-task parser / config (preset 链路) ──
     parser_type: str = ""
     config_snapshot: dict = field(default_factory=dict)

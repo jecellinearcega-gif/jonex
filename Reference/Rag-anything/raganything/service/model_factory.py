@@ -79,15 +79,20 @@ class ModelFactory:
     @staticmethod
     def _build_metering_headers(
         tenant_id: str = "", kb_id: str = "", doc_id: str = "", trace_id: str = "",
+        scene: str = "raganything_ingest",
     ) -> dict[str, str]:
         """[jonex] Build X-Jonex-* metering headers for llm-gateway accounting.
 
         Priority: ingest contextvar (per-task doc_id/trace_id) > explicit parameters
         (build-time tenant/kb static fallback).
+
+        scene 按模型类型区分（VLM → ``raganything_vlm``，文本 LLM/embedding →
+        ``raganything_ingest``）：让 gateway 计量能把视觉调用与文本抽取分开，
+        并避免 VLM 被 LLMGW_DISABLE_THINKING_SCENES 连带注入 thinking.disabled。
         """
         from raganything.service.jonex_metering_ctx import get_ingest_ctx
 
-        headers: dict[str, str] = {"X-Jonex-Scene": "raganything_ingest"}
+        headers: dict[str, str] = {"X-Jonex-Scene": scene}
         c = get_ingest_ctx() or {}
         tid = c.get("tenant_id") or tenant_id
         kid = c.get("kb_id") or kb_id
@@ -471,7 +476,9 @@ class ModelFactory:
         new_api_key = overrides.get(api_key_key) or os.getenv(f"{prefix.upper()}_BINDING_API_KEY")
 
         # [jonex] Build metering headers for this model
-        extra_headers = self._build_metering_headers(tenant_id, kb_id)
+        # scene 按模型类型区分：VLM 单列 raganything_vlm，其余归 raganything_ingest
+        scene = "raganything_vlm" if prefix == "vlm" else "raganything_ingest"
+        extra_headers = self._build_metering_headers(tenant_id, kb_id, scene=scene)
 
         # Try registry first
         try:

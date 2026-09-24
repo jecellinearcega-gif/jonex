@@ -56,6 +56,21 @@ class ConfigResolver:
         if env_parser:
             merged["parser"] = env_parser
 
+        # [jonex] LLM 模型名：preset YAML 里**不再写死**（模型名唯一来源是环境变量）。
+        # 与 RAG_PARSER 的硬覆盖不同，这里的 env 是**默认值** —— 调用方显式指定模型时
+        # 应当被尊重，所以只在没解析出模型时才兜底。
+        # 历史上 preset 里写着字面量，上游改名后它会静默把旧名字捡回来。
+        if not merged.get("llm_model"):
+            env_llm = os.getenv("LLM_MODEL", "").strip() or os.getenv("DEFAULT_LLM_MODEL", "").strip()
+            if not env_llm:
+                # 响亮失败：这里若放行，ModelFactory 会退到 _find_llm() 从注册表里
+                # 「随便挑第一个」，那是静默换模型，比报错难查得多。
+                raise ConfigResolveError(
+                    "LLM 模型名未配置：preset 已不含字面量兜底，请设置环境变量 "
+                    "LLM_MODEL 或 DEFAULT_LLM_MODEL"
+                )
+            merged["llm_model"] = env_llm
+
         self._validate(merged)
         return merged
 

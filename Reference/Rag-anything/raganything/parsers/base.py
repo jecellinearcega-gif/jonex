@@ -17,9 +17,48 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 
+def _is_sep_cell(cell: str) -> bool:
+    """markdown 表分隔行单元格（``---`` / ``:--`` / ``--:``）。"""
+    body = cell.strip()
+    if body.startswith(":"):
+        body = body[1:]
+    if body.endswith(":"):
+        body = body[:-1]
+    return bool(body) and all(ch == "-" for ch in body)
+
+
+def _pipe_table_header_prefix(text: str) -> str:
+    """[jonex] §table-grid-v2: 取段落开头的 markdown 表头（表头行 + 分隔行）。
+
+    仅用于超长段落硬切后的片段回填；不满足「首行 pipe 行 + 次行分隔行」时返回空串。
+    """
+    lines = text.split("\n", 2)
+    if len(lines) < 2:
+        return ""
+    head, sep = lines[0].strip(), lines[1].strip()
+    if not (head.startswith("|") and head.endswith("|")) or "|" not in sep:
+        return ""
+    if not all(_is_sep_cell(c) for c in sep.strip("|").split("|")):
+        return ""
+    return head + "\n" + sep + "\n"
+
+
 class Parser:
     """Base class for document parsing utilities."""
 
+    # [jonex] Office 全量（含 legacy OLE2）：提交给自建 MinerU（jonex-gpu :20490 fork）时
+    # 一律带 multipart 字段 `convert_office_to_pdf=true`（见 `MineruSelfHostParser._submit_task`）。
+    # 起因：该服务的 active 档位 `jonex-default` 的 file_types **不含** `legacy_office`，
+    # legacy 三件套原样上传必被 400 拒：
+    #   {"detail":"Unsupported file type: xls（legacy Office 需要 convert_office_to_pdf=true）"}
+    # 该字段的实测语义是**放行（permission）、不是强制转换**：带上之后 `.xls` / `.doc` 的产物
+    # `converted_pdf_url` 仍为空 = 服务端**原生解析**、没走 PDF 中转，且内容正确
+    # （`.xls` md 281 / cl 415、`.doc` md 266 / cl 560）；给真 PDF 带该字段结果完全不变。
+    # 故对整个 Office 家族统一携带 —— 对能原生解析的新格式是无副作用的 no-op。
+    # ⚠️ 别改成下发档位 `profile=office-to-pdf`（那条路才是**强制转换**）：实测它 202 受理、
+    # 任务 completed、`converted_pdf_url` 有值、转出的 PDF 内容完好（pdftotext 可读），但
+    # `md_content` 与 `content_list` **都是空的** —— 静默产出空结果，比 400 危险；
+    # 新格式加它同样变空（`.xlsx` md 281 → 0）。
     OFFICE_FORMATS = {".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
     IMAGE_FORMATS = {".png", ".jpeg", ".jpg", ".bmp", ".tiff", ".tif", ".gif", ".webp"}
     TEXT_FORMATS = {".txt", ".md", ".markdown", ".json", ".jsonl"}
@@ -292,14 +331,30 @@ class Parser:
                         "char_end": current_start + current_len if current_start is not None else None,
                     })
                     current_parts, current_len, current_start = [], 0, None
-                for start in range(0, len(p["text"]), max_chars):
+                # [jonex] §table-grid-v2: 超长 markdown 表段落被按字符硬切后，
+                # 第 2 片起只剩数据行 → 归一化只能回退 col_N 占位列名（sdn.md
+                # 实测 502/503 片如此）。此处两件事：①按行边界切，避免把表格行
+                # 拦腰截断（截断后的残行不以 `|` 开头，会打断 pipe 行连续段，
+                # 让表头行与数据行分属两个 segment）；②把「表头行 + 分隔行」
+                # 前缀回填到后续片段，使每片都能还原真实列名。
+                table_prefix = _pipe_table_header_prefix(p["text"])
+                start = 0
+                while start < len(p["text"]):
                     end = min(start + max_chars, len(p["text"]))
+                    if table_prefix and end < len(p["text"]):
+                        nl = p["text"].rfind("\n", start, end)
+                        if nl > start:
+                            end = nl + 1
+                    text_piece = p["text"][start:end]
+                    if table_prefix and start > 0:
+                        text_piece = table_prefix + text_piece
                     chunks.append({
                         "type": "text",
-                        "text": p["text"][start:end],
+                        "text": text_piece,
                         "char_start": p["char_start"] + start,
                         "char_end": p["char_start"] + end,
                     })
+                    start = end
                 continue
 
             next_len = current_len + len(p["text"]) + (2 if current_parts else 0)

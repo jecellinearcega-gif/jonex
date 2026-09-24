@@ -325,19 +325,23 @@ class TestConfigResolver:
         assert snapshot["enable_audio_processing"] is True
         assert snapshot["video_max_frames"] == 30
 
-    def test_resolve_preset(self, resolver):
+    def test_resolve_preset(self, resolver, monkeypatch):
+        # preset 里不再写死模型名（模型名唯一来源是环境变量），所以这里必须先配好
+        # LLM_MODEL —— 模拟一个配置完整的部署。
+        monkeypatch.setenv("LLM_MODEL", "vendor/from-env")
         req = CreateTaskRequest(
             mode=TaskMode.PRESET,
             file_path="/data/test.mp4",
             preset="video_full_pipeline",
         )
         snapshot = resolver.resolve(req)
-        assert snapshot["llm_model"] == "deepseek-v4-flash-202605"
+        assert snapshot["llm_model"] == "vendor/from-env"
         assert snapshot["vlm_model_name"] == "/home/jonex/Qwen2.5-VL-7B"
         assert snapshot["enable_video_processing"] is True
         assert snapshot["video_max_frames"] == 30
 
-    def test_resolve_preset_with_override(self, resolver):
+    def test_resolve_preset_with_override(self, resolver, monkeypatch):
+        monkeypatch.setenv("LLM_MODEL", "vendor/from-env")
         req = CreateTaskRequest(
             mode=TaskMode.PRESET,
             file_path="/data/test.mp4",
@@ -346,6 +350,34 @@ class TestConfigResolver:
         )
         snapshot = resolver.resolve(req)
         assert snapshot["video_max_frames"] == 15  # override wins
+
+    def test_resolve_preset_requires_llm_model_env(self, resolver, monkeypatch):
+        """环境变量缺失时必须响亮失败。
+
+        preset 已不含字面量兜底；若这里放行，ModelFactory 会退到 ``_find_llm()``
+        从注册表里「随便挑第一个」—— 那是静默换模型，比报错难查得多。
+        """
+        monkeypatch.delenv("LLM_MODEL", raising=False)
+        monkeypatch.delenv("DEFAULT_LLM_MODEL", raising=False)
+        req = CreateTaskRequest(
+            mode=TaskMode.PRESET,
+            file_path="/data/test.mp4",
+            preset="video_full_pipeline",
+        )
+        from raganything.service.config_resolver import ConfigResolveError
+        with pytest.raises(ConfigResolveError, match="LLM 模型名未配置"):
+            resolver.resolve(req)
+
+    def test_explicit_request_llm_is_not_overridden_by_env(self, resolver, monkeypatch):
+        """env 是**默认值**不是硬覆盖 —— 调用方显式指定模型时必须被尊重。"""
+        monkeypatch.setenv("LLM_MODEL", "vendor/from-env")
+        req = CreateTaskRequest(
+            mode=TaskMode.PRESET,
+            file_path="/data/test.mp4",
+            preset="video_full_pipeline",
+            llm="vendor/explicit",
+        )
+        assert resolver.resolve(req)["llm_model"] == "vendor/explicit"
 
     def test_resolve_preset_not_found(self, resolver):
         req = CreateTaskRequest(

@@ -327,7 +327,14 @@ class HttpLightRagClient:
         last_exc: Exception | None = None
         for attempt in range(1, self._max_retries + 1):
             try:
-                resp = await self._client.get(url, headers=headers, params=params or {})
+                # 这里**不能**写 `params or {}`：httpx 0.28 在拿到一个（哪怕是空的）
+                # `params` 字典时会用它**重建** query，于是 path 里自带的 query 被整个
+                # 抹掉 —— 例如 `get_document_chunks` 拼的 `/documents/chunks?doc_id=X`
+                # 会变成光秃秃的 `/documents/chunks`，LightRAG 那边 `doc_id` 是
+                # `Query(...)` 必填，直接回 422，本体抽取在「读回 chunk」这一步就死了。
+                # 传 `None` 时不 merge，URL 原样发出。
+                _req_params = {"params": params} if params else {}
+                resp = await self._client.get(url, headers=headers, **_req_params)
                 self._breaker.record_success()
                 return resp
             except httpx.TimeoutException:
@@ -788,6 +795,24 @@ class HttpLightRagClient:
             f"/documents/chunks/{chunk_id}", tenant_id, kb_id,
         )
 
+    async def insert_custom_kg(
+        self, entities: list[dict], relationships: list[dict], *,
+        tenant_id: str, kb_id: str,
+    ) -> dict:
+        """POST /documents/custom-kg — 本体抽取结果回注 LightRAG 图（§5.7）。
+
+        chunks 传空（chunk 已由 /documents/text 入库，无需也不应重传）；
+        source_id 使用 §5.6 读回的权威 chunk_id（多 chunk 用 ``<SEP>`` 拼接，
+        与 LightRAG 自抽路径同构）；full_doc_id 不传（平台文档与 LightRAG
+        doc key 无一对一映射）。重试/熔断语义由 _post 统一承担。
+        """
+        body: dict[str, Any] = {
+            "chunks": [],
+            "entities": entities,
+            "relationships": relationships,
+        }
+        return await self._post("/documents/custom-kg", tenant_id, kb_id, body)
+
     # ── Query ──────────────────────────────────────────────────────────
 
     async def query(
@@ -912,7 +937,7 @@ class HttpLightRagClient:
         )
         # ── [jonex] v2 关系响应归一化 ─────────────────────────────
         # LightRAG 图端点返回 src_id/tgt_id，而平台 v1 关系契约和
-        # OntologyExtractor 使用 source_entity/target_entity。v2 在 HTTP
+        # 本体存储侧使用 source_entity/target_entity。v2 在 HTTP
         # 客户端边界统一补齐规范字段，同时保留原字段，避免破坏现有调用方。
         items = result.get("items")
         if isinstance(items, list):

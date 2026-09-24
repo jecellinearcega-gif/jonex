@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from raganything.parsers.base import Parser
+from raganything.parsers.base import Parser, _pipe_table_header_prefix
 
 
 class _ConcreteParser(Parser):
@@ -126,3 +126,74 @@ class TestParserCheckInstallation:
     def test_concrete_subclass_works(self):
         parser = _ConcreteParser()
         assert parser.check_installation() is True
+
+
+class TestPipeTableHeaderPrefix:
+    """[jonex] §table-grid-v2: 超长 markdown 表段的表头前缀回填。"""
+
+    def test_header_and_separator_detected(self):
+        prefix = _pipe_table_header_prefix(
+            "| 编号 | 名称 |\n| --- | --- |\n| 1 | A |"
+        )
+        assert prefix == "| 编号 | 名称 |\n| --- | --- |\n"
+
+    def test_alignment_separator_detected(self):
+        prefix = _pipe_table_header_prefix(
+            "| a | b |\n| :--- | ---: |\n| 1 | 2 |"
+        )
+        assert prefix.startswith("| a | b |")
+
+    def test_plain_paragraph_has_no_prefix(self):
+        assert _pipe_table_header_prefix("普通段落\n第二行") == ""
+        assert _pipe_table_header_prefix("| a | b |\n| 1 | 2 |") == ""
+
+
+class TestParseTextLongTableSplitting:
+    """[jonex] §table-grid-v2: 超长表段落按行切 + 每片回填表头。
+
+    sdn.md 实测：12000 字符盲切把表切成 503 片，第 2 片起表头丢失、且首行常
+    是被拦腰截断的残行（不以 `|` 开头），使 pipe 行连续段断裂、表头行与数据行
+    分属两个 segment → 归一化只能给出 col_N 占位列名（真列名 19/6108）。
+    """
+
+    @staticmethod
+    def _md(tmp_path, body: str):
+        f = tmp_path / "t.md"
+        f.write_text(body, encoding="utf-8")
+        return str(f)
+
+    def test_long_table_paragraph_backfills_header_per_piece(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("RAG_TEXT_CHUNK_CHARS", "200")
+        rows = "\n".join(
+            f"| {i:04d} | 产品{i} | 备注内容{i} |" for i in range(1, 60)
+        )
+        path = self._md(
+            tmp_path,
+            "| 编号 | 名称 | 备注 |\n| --- | --- | --- |\n" + rows + "\n",
+        )
+        chunks = _ConcreteParser().parse_text(path)
+        assert len(chunks) > 1
+        for c in chunks:
+            assert c["text"].startswith("| 编号 | 名称 | 备注 |\n| --- | --- | --- |\n")
+            # 行边界切分：表段落每行都以 `|` 开头，不存在残行
+            assert all(
+                line.startswith("|")
+                for line in c["text"].split("\n") if line
+            )
+
+    def test_long_plain_paragraph_keeps_hard_cut(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RAG_TEXT_CHUNK_CHARS", "200")
+        path = self._md(tmp_path, "x" * 500)
+        chunks = _ConcreteParser().parse_text(path)
+        assert [len(c["text"]) for c in chunks] == [200, 200, 100]
+
+    def test_pipe_paragraph_without_separator_keeps_hard_cut(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("RAG_TEXT_CHUNK_CHARS", "200")
+        path = self._md(tmp_path, "| a | b |\n")  # 无分隔行 → 不识别为表头
+        chunks = _ConcreteParser().parse_text(path)
+        assert len(chunks) == 1
+        assert chunks[0]["text"] == "| a | b |"

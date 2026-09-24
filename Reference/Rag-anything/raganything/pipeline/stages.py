@@ -1,6 +1,7 @@
 """Pipeline stage implementations."""
 
 import asyncio
+import bisect
 import hashlib
 import inspect
 import json
@@ -18,7 +19,12 @@ from lightrag.utils import compute_mdhash_id, sanitize_text_for_encoding
 from raganything.chunk_utils import apply_chunk_template, sample_frames
 # [jonex] §image-refs P0-6: 锚点提取函数定义在 modalprocessors.py（VLM 调用
 # 前提前提取需同模块复用；本模块 push 阶段重算同一纯函数保证一致性）
-from raganything.modalprocessors import _extract_image_anchor
+# §standalone-image-whole-vlm: OCR 文本私有字段名也在 modalprocessors.py 定义
+# （消费方装配 OCR 参考段），本模块（生产方）import 保证单一来源不漂移。
+from raganything.modalprocessors import (
+    _extract_image_anchor,
+    _WHOLE_IMAGE_OCR_FIELD,
+)
 from raganything.event_bus import PipelineEvent
 from raganything.parsers.base import Parser
 from raganything.parsers.mineru import MineruParser
@@ -52,6 +58,9 @@ from raganything.utils import (
     separate_content,
     split_row_by_cells,
 )
+# [jonex] 视频后端决策与 parse_only 链（service/task_manager）共用同一实现，
+# 防两条链再次漂移（2026-10-08 事故根因）。
+from raganything.video_processor import route_video
 
 
 logger = logging.getLogger(__name__)
@@ -382,6 +391,102 @@ class TextInsertStage(Stage):
         return StageResult(multimodal_items=multimodal_items)
 
 
+# ── [jonex] §standalone-image-whole-vlm 整图 VLM 合成 helper ───────────
+# 背景：独立图片文件经 OCR 解析后 content_list 只有 text（没有 type==image
+# item），vision_prompt override 没有消费者（对比 audio/video parser 会自建
+# self-reference item 的对称缺口）。当 KB 为 image 类别配置了 vision_prompt
+# 时，把整图合成一个携带 OCR 文本的伪 image item，触发整图 VLM 理解；未配置
+# override 或 VLM 未绑定时一律不合成，保持纯 OCR 原样。OCR 文本走私有字段
+# _whole_image_ocr，只在 VLM 提示词装配（modalprocessors 追加 OCR 参考段）时
+# 使用，不落 chunk、不进 file_source。
+
+_WHOLE_IMAGE_VLM_EXTS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
+# bmp/tiff 明确排除：base64 直传时 mime 不确定，部分 OpenAI 兼容 VLM 会拒收。
+_WHOLE_IMAGE_OCR_MAX_CHARS_DEFAULT = 4000
+
+
+def _extract_ocr_text(content_list) -> str:
+    """合并 OCR 文本项（type=="text"），保序、去空行、以换行连接。"""
+    parts = []
+    for it in content_list or []:
+        if not isinstance(it, dict):
+            continue
+        if it.get("type") != "text":
+            continue
+        text = it.get("text")
+        if isinstance(text, str) and text.strip():
+            parts.append(text.strip())
+    return "\n".join(parts)
+
+
+def _truncate_ocr(text: str, max_chars: int) -> str:
+    """超长 OCR 截断：保留前 max_chars 字符并标注，避免超长 VLM 提示词。"""
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n…(OCR 内容过长，已截断)"
+
+
+def _whole_image_vlm_enabled(cfg) -> bool:
+    """总开关：env RAG_IMAGE_FULL_VLM_ENABLED 显式 false 关闭；preset 的
+    enable_image_processing 未开启也关闭（与其余模态处理开关一致）。"""
+    if os.getenv("RAG_IMAGE_FULL_VLM_ENABLED", "true").lower() in (
+        "0", "false", "no", "off",
+    ):
+        return False
+    if cfg is not None and not getattr(cfg, "enable_image_processing", True):
+        return False
+    return True
+
+
+def _synthesize_whole_image_item(ctx, services) -> Optional[Dict[str, Any]]:
+    """当独立图片「只有 OCR、无任何多模态 item」且配置了 vision_prompt override、
+    VLM 已绑定时，合成一个整图 image item（携带截断后的 OCR 文本）。
+
+    有意不设 img_caption / img_footnote / bbox：anchor 提取安全短路为空，
+    context 为空串不干扰 override 主提示词。返回 None 表示不应合成。
+    """
+    # 1) 总开关（env + preset enable_image_processing）
+    if not _whole_image_vlm_enabled(getattr(services, "config", None)):
+        return None
+    # 2) 仅 KB 为 image 类别配置了 vision_prompt override 才触发整图理解
+    overrides = getattr(ctx, "prompt_overrides", None)
+    try:
+        if overrides is None or not overrides.has_override("vision_prompt"):
+            return None
+    except Exception:
+        return None
+    # 3) ctx.file_path 须指向真实存在的、扩展名受支持的图片文件
+    file_path = getattr(ctx, "file_path", None) or ""
+    if not file_path:
+        return None
+    path = Path(file_path)
+    if path.suffix.lower() not in _WHOLE_IMAGE_VLM_EXTS or not path.is_file():
+        return None
+    # 4) VLM 须可用（modal_caption_func 已绑定）
+    processors = getattr(services, "modal_processors", None) or {}
+    proc = processors.get("image")
+    if proc is None or getattr(proc, "modal_caption_func", None) is None:
+        return None
+    # 5) 收集 OCR 文本并截断
+    raw_max = os.getenv("RAG_IMAGE_FULL_VLM_OCR_MAX_CHARS", "")
+    try:
+        max_chars = (
+            int(raw_max) if raw_max else _WHOLE_IMAGE_OCR_MAX_CHARS_DEFAULT
+        )
+    except (TypeError, ValueError):
+        max_chars = _WHOLE_IMAGE_OCR_MAX_CHARS_DEFAULT
+    ocr = _truncate_ocr(
+        _extract_ocr_text(getattr(ctx, "content_list", None) or []), max_chars,
+    )
+    return {
+        "type": "image",
+        "img_path": str(path),
+        "file_name": getattr(ctx, "file_name", None) or path.name,
+        "page_idx": 0,
+        _WHOLE_IMAGE_OCR_FIELD: ocr,
+    }
+
+
 # ── Stage 4: Process Multimodal Content ───────────────────────────────
 
 class MultimodalStage(Stage):
@@ -399,6 +504,20 @@ class MultimodalStage(Stage):
             _, multimodal_items = separate_content(ctx.content_list)
             multimodal_items = [m for m in multimodal_items if "_text_meta" not in m]
             ctx = merge_context(ctx, StageResult(multimodal_items=multimodal_items))
+
+        # [jonex] §standalone-image-whole-vlm：独立图片 OCR 后整图 VLM 理解。
+        # 仅 STANDALONE 模式（HTTP/embedded 生产路径 = STANDALONE；
+        # LIGHTRAG_INTEGRATED 走 insert_text_content_with_multimodal_content，
+        # 本期不注入）。合成成功后 multimodal_items 非空 → 不早退，进入下方
+        # STANDALONE VLM 处理；未配置 override / VLM 未绑定 → 纯 OCR 原样。
+        if (
+            self._mode == PipelineMode.STANDALONE
+            and not ctx.multimodal_items
+            and ctx.content_list
+        ):
+            _whole = _synthesize_whole_image_item(ctx, services)
+            if _whole is not None:
+                ctx = merge_context(ctx, StageResult(multimodal_items=[_whole]))
 
         if not ctx.multimodal_items:
             if services.event_bus:
@@ -478,11 +597,6 @@ class MultimodalStage(Stage):
 
         async def _process_one(item: Dict, idx: int,
                                content_type: str) -> Optional[Dict]:
-            # [jonex] 方案 C：将 COS URL 注入 video modal_content，供 MPS backend 使用
-            if content_type == "video":
-                mps_url = getattr(ctx, "mps_video_url", "") or ""
-                if mps_url:
-                    item = {**item, "mps_video_url": mps_url}
             processor = get_processor_for_type(processors, content_type)
             if not processor:
                 if services.logger:
@@ -490,6 +604,16 @@ class MultimodalStage(Stage):
                         f"No processor for type: {content_type}"
                     )
                 return None
+            # [jonex] 方案 C：将 COS URL 注入 video modal_content，供 MPS backend 使用。
+            # ⚠ 决策走 `route_video`（与 parse_only 链 task_manager._textualize_multimodal
+            # **同一个函数**）—— 不要再在本处另写判据：两条链各写一份的下场就是
+            # 2026-10-08 那次「本体库正常、jonex_wiki 写假 MPS 占位」。
+            # 仅当本次确实会走 MPS 才注入；mineru/local 不需要（mineru 拿本地
+            # video_path 上传，塞 COS URL 会被当本地路径打开 → FileNotFoundError）。
+            if content_type == "video":
+                mps_url = getattr(ctx, "mps_video_url", "") or ""
+                if route_video(processor, item, mps_url).use_mps:
+                    item = {**item, "mps_video_url": mps_url}
             # [jonex] F0-1：传递 item 自身作为 item_info（含 page_idx 供 context 提取）。
             # 多模态 item 来自 separate_content，MinerU 顶层 item 已带 page_idx。
             desc, entity_info = await processor.generate_description_only(
@@ -713,16 +837,18 @@ def _call_handler(handler: Callable, parser_instance: Any, path: Path,
     on the actual parser instance so subclass overrides take effect.
     Bound methods (e.g. MineruParser().parse_image) are called directly.
     """
+    # Resolve to a callable on the actual parser instance first.
+    # Already-bound handlers (e.g. MineruParser().parse_image fallback) are
+    # called directly; unbound methods resolve on parser_instance so subclass
+    # overrides take effect.
     if hasattr(handler, "__self__"):
-        # Already bound — call directly with path as first arg
-        return handler(str(path), output_dir=output_dir, method=parse_method)
-
-    # Unbound method — resolve on the parser instance
-    method_name = getattr(handler, "__name__", None)
-    if method_name and hasattr(parser_instance, method_name):
-        bound = getattr(parser_instance, method_name)
-    else:
         bound = handler
+    else:
+        method_name = getattr(handler, "__name__", None)
+        if method_name and hasattr(parser_instance, method_name):
+            bound = getattr(parser_instance, method_name)
+        else:
+            bound = handler
 
     kwargs: Dict[str, Any] = {"output_dir": output_dir}
     try:
@@ -731,6 +857,11 @@ def _call_handler(handler: Callable, parser_instance: Any, path: Path,
     except (ValueError, TypeError):
         params = []
 
+    # Only pass parse_method when the handler actually declares a `method`
+    # parameter. parse_image / parse_audio / parse_video do NOT accept method
+    # (parse_image hard-codes "ocr" internally) — blindly forwarding it as a
+    # keyword would land in **kwargs and collide with the explicit call below
+    # (e.g. _run_mineru_command(method="ocr", **kwargs)).
     if "method" in params:
         kwargs["method"] = parse_method
 
@@ -1177,6 +1308,121 @@ def _truncate_source_field(value: str, max_chars: int) -> str:
     return value[:max_chars] + "…"
 
 
+# [jonex] office 查看原文定位（文本匹配）：重排型 office（.doc/.docx/.xls/.xlsx）
+# MinerU 返回的 page_idx 恒 0（reflowable 无固定分页），跳转 #page=N 永远命中
+# 第 1 页。这里用 LibreOffice 已产出的 preview.pdf 文本层逐 chunk 匹配真实页码。
+# .ppt/.pptx 是分页的（MinerU page_idx 正确），不在此列。
+_OFFICE_REFLOW_EXTS = (".doc", ".docx", ".xls", ".xlsx")
+
+
+def _norm_source_text(s: str) -> str:
+    """归一化文本用于 chunk↔PDF 匹配：去空白、去标点、转小写。
+
+    MinerU 的 chunk 文本与 PyMuPDF 抽取的 PDF 文本层在空格/换行/标点/
+    全半角上不一致，归一化后按「特征子串」匹配才能对齐。
+    """
+    s = s.lower()
+    # 剥离 markdown 链接 URL（[文字](url) → 文字）：正文里的知乎引用链接
+    # 归一化后 URL 会膨胀成 httpszhidazhihucom... 污染特征片段，导致匹配
+    # 落空；只保留链接文字，与 PDF 文本层（纯文字）对齐。
+    s = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", s)
+    s = re.sub(r"\s+", "", s)
+    # 保留 Unicode 字母/数字/下划线（Python 3 的 \w 已含 CJK 表意文字），
+    # 去其余标点。中文标点、全角空格等在此被剥离。
+    s = re.sub(r"[^\w]+", "", s, flags=re.UNICODE)
+    return s
+
+
+def _strip_heading_heads(text: str) -> str:
+    """剥离文本开头的【...】标题头（含嵌套【**...**】），返回正文起始。
+
+    MinerU 文本 chunk 的 text 前缀是跨 chunk 复用的章节标题（block-packing
+    包头，如「【关键词】…（一）…」），相邻 chunk 的特征片段前半段因此趋同、
+    后半段正文不足 60 字，导致全文 find 只能命中首个 chunk、后续 chunk 全部
+    落空。剥掉开头标题头后，纯正文片段才能在 preview.pdf 文本层精确定位页码。
+    """
+    i, n = 0, len(text)
+    while i < n and text[i] in " \t\n":
+        i += 1
+    while i < n and text[i] == "【":
+        depth = 0
+        j = i
+        while j < n:
+            if text[j] == "【":
+                depth += 1
+            elif text[j] == "】":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        i = j + 1
+        while i < n and text[i] in " \t\n":
+            i += 1
+    return text[i:]
+
+
+def _pdf_page_norm_texts(pdf_path: str) -> list[str]:
+    """PyMuPDF 抽取 preview.pdf 逐页归一化文本；不可用/失败返回 []。"""
+    try:
+        try:
+            import fitz
+        except ImportError:
+            import pymupdf as fitz  # PyMuPDF ≥1.24 新 import 名
+    except Exception:  # noqa: BLE001 — 依赖缺失/加载失败不阻塞入库
+        return []
+    try:
+        with fitz.open(pdf_path) as doc:
+            return [_norm_source_text(page.get_text()) for page in doc]
+    except Exception:  # noqa: BLE001 — PDF 损坏/读取失败不阻塞入库
+        return []
+
+
+def _remap_chunk_pages_by_text(
+    chunks: list[dict], text_indices: list[int], page_texts: list[str],
+) -> int:
+    """按 chunk 文本在 PDF 全文中的字符偏移定位页码，重写 ``page=`` 字段。
+
+    特征片段取 chunk 归一化文本前 60 字符，全文 ``str.find`` 带单调游标
+    （chunk 顺序与页码单调）；游标后找不到时回退全局 find，仍失败则保持
+    原 page（不恶化）。返回成功重写的 chunk 数。
+    """
+    full = "".join(page_texts)
+    if not full:
+        return 0
+    # 页边界偏移表：offsets[i] = 第 i 页归一化文本在 full 中的起始字符位置
+    offsets: list[int] = []
+    acc = 0
+    for t in page_texts:
+        offsets.append(acc)
+        acc += len(t)
+
+    remapped = 0
+    search_start = 0
+    for idx in text_indices:
+        chunk = chunks[idx]
+        raw = chunk.get("text") or ""
+        # 剥离 _inject_ns_token 追加的命名空间 marker（\n<!--yx:xxxxxxxx-->）
+        raw = re.sub(r"\n<!--yx:[a-f0-9]{8}-->\s*$", "", raw)
+        # 剥离开头章节标题头（跨 chunk 复用、会污染特征片段），用纯正文定位
+        raw = _strip_heading_heads(raw)
+        feature = _norm_source_text(raw)[:60]
+        if len(feature) < 15:
+            continue  # 太短易误配（页眉页脚等），跳过
+        pos = full.find(feature, search_start)
+        if pos < 0:
+            pos = full.find(feature)  # 兜底：游标后无 → 全局 find 一次
+        if pos < 0:
+            continue
+        page_no = max(0, bisect.bisect_right(offsets, pos) - 1)
+        # 找到页码即重写（幂等：page=0→page=0 也写回，保证第一页 chunk 计数）
+        chunk["file_source"] = re.sub(
+            r"\|page=\d+", f"|page={page_no}", chunk.get("file_source") or "",
+        )
+        remapped += 1
+        search_start = pos + len(feature)
+    return remapped
+
+
 _CAPTION_PREV_BLOCK_MAX_DIST = 3     # 向前搜索的最大 block 距离（L4.1 防误抓）
 _CAPTION_PREV_BLOCK_MAX_LEN = 60     # prev block 作为标题的长度上限（字）
 _CAPTION_SENTENCE_END = "。！？；."   # 句末符——正文结尾而非标题
@@ -1270,6 +1516,21 @@ def _first_present(primary: dict, fallback: dict, *keys: str):
         if key in fallback and fallback[key] is not None:
             return fallback[key]
     return None
+
+
+# [jonex] scene 的三类来源 → video/audio 段 chunk 的 ctype。
+#
+# 为什么复用 ctype 而不是新开一个键：ctype 是**既有的、检索侧已经在消费**的类型
+# 通道（search_service 的双路配额/低质过滤/主体分组、ontology_llm 的作答标签），
+# 走它零新增管线。新取值在配额逻辑里落 `others` 分支，与原来的 audio_segment
+# 同路，无兼容风险。
+#
+# 缺省 video_chapter：MPS 后端与改造前的历史数据都不带 source_type。
+_SCENE_SOURCE_CTYPE = {
+    "chapter": "video_chapter",
+    "slide": "video_slide",
+    "asr": "audio_segment",
+}
 
 
 def _build_file_source(
@@ -1410,8 +1671,12 @@ def _build_file_source(
         if idx >= 0:
             end = source.find("|", idx)
             end = end if end >= 0 else len(source)
-            tc_len = end - idx
-            keep = max(8, tc_len - over - 1)
+            # [jonex] §25 修复：榨空间按**值**长度算，不能按段全长——段里含
+            # `table_cols=` 键前缀（11 字符），按全长算会把前缀重复扣一次，
+            # keep 比原来还大，只换掉 1 个字符 + 加省略号 → 长度纹丝不动
+            # （实测 251 字符始终 > 240）。
+            val_len = end - idx - len("table_cols=")
+            keep = max(8, val_len - over - 1)
             source = source[:idx + len("table_cols=") + keep] + "…" + source[end:]
         # [jonex] §C1-bis §19.5①: 仍超限则丢弃 cell_* 段——行级锚点
         # 仍在，只丢行内格区间；cell 段晚于 table_cols 加入，优先牺牲。
@@ -1528,6 +1793,7 @@ class AssetUploadStage(Stage):
         # 镜像未打包 jonex_core）整体跳过，best-effort 不阻塞主链路
         try:
             from jonex_core.common.object_storage import (
+                asset_content_type,
                 build_asset_key,
                 get_object_storage,
                 normalize_asset_ext,
@@ -1571,8 +1837,12 @@ class AssetUploadStage(Stage):
                 key = build_asset_key(
                     ctx.tenant_id, ctx.kb_id, doc_anchor, image_idx, ext,
                 )
+                # [jonex] §image-refs B1：用规范 MIME（jpg→image/jpeg）而非
+                # f"image/{ext}" 拼接——非标准 MIME 会让浏览器对预签名 URL 触发
+                # 下载而非内联预览。
                 await storage.put_bytes(
-                    key, Path(img_path).read_bytes(), content_type=f"image/{ext}",
+                    key, Path(img_path).read_bytes(),
+                    content_type=asset_content_type(ext),
                 )
                 asset_exts[image_idx] = ext
             except Exception as exc:  # noqa: BLE001
@@ -1585,6 +1855,142 @@ class AssetUploadStage(Stage):
         if not asset_exts:
             return StageResult()
         return StageResult(asset_exts=asset_exts)
+
+
+# ── [jonex] office 查看原文定位：preview.pdf 上传 ──────────────────────
+# 原先只有 OfficePreviewUploadStage 一个入口，而该 stage 只挂在 HTTP/full
+# pipeline（pipeline/builder.py）上；parse_only（OpenKB 管线，见
+# service/task_manager._run_parse_only）不执行任何 stage —— 同一份 office 文档
+# 走哪条链路决定有没有 preview.pdf，走 parse_only 的 KB 永远拿不到预览。
+# 故把逻辑抽成模块级纯函数，两条链路共用同一实现，避免再次分叉。
+
+OFFICE_PREVIEW_EXTS = frozenset({".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"})
+
+
+async def ensure_office_preview_pdf(
+    file_path: str, output_dir: str, logger: Any = None,
+) -> Optional[str]:
+    """取得 office 文档的转换 PDF（preview 与 MinerU 定位共用同一文件）。
+
+    - 本地 mineru：解析侧已把 PDF 落在 ``{output_dir}/{stem}.pdf``，直接复用
+      （同一文件，page_idx 绝对对齐）；
+    - online/selfhost：解析走远程、本地无转换 PDF，这里主动用 LibreOffice 转一个
+      （页码与 MinerU 服务端转换一致；slim/full 镜像第 1 层均带 libreoffice，
+      本地开发可用 LIBREOFFICE_BIN 指向非 PATH 位置的副本）。
+    """
+    pdf_path = Path(output_dir) / f"{Path(file_path).stem}.pdf"
+    if os.path.isfile(pdf_path):
+        return str(pdf_path)
+    # online/selfhost 场景：主动转换（best-effort，失败由调用方跳过上传）
+    try:
+        from raganything.parsers.conversion import convert_office_to_pdf
+
+        # subprocess 调 LibreOffice，转异步线程避免阻塞事件循环
+        return str(await asyncio.to_thread(
+            convert_office_to_pdf, str(file_path), output_dir,
+        ))
+    except Exception as exc:  # noqa: BLE001
+        if logger:
+            logger.warning("[jonex] office-preview: 本地转换 PDF 失败: %s", exc)
+        return None
+
+
+async def upload_office_preview(
+    *,
+    file_path: str,
+    file_name: str,
+    tenant_id: str,
+    kb_id: str,
+    doc_anchor: str,
+    output_dir: str,
+    logger: Any = None,
+) -> bool:
+    """把 office 文档的转换 PDF 上传到对象存储 preview 键；返回是否上传成功。
+
+    设计要点（office-查看原文定位修复方案 方案 A）：
+    - 仅 office 文档生效（扩展名判定，与 Parser.OFFICE_FORMATS 对齐），非 office 直接跳过；
+    - gate：OFFICE_PREVIEW_UPLOAD_ENABLED（默认 on），best-effort——任何失败只
+      WARNING，不阻塞主链路（doc 仍 READY，与图片资产 AssetUploadStage 同口径）；
+    - doc_anchor 与 AssetUploadStage / PushChunksStage 同源（document_id 兜底
+      doc_id），否则上传 key 的 doc 段与检索侧推导的 key 分叉（同源约束）。
+    """
+    if os.getenv("OFFICE_PREVIEW_UPLOAD_ENABLED", "true").lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        return False
+
+    name = (file_name or "").lower()
+    if not name.endswith(tuple(OFFICE_PREVIEW_EXTS)):
+        return False
+
+    pdf_path = await ensure_office_preview_pdf(file_path, output_dir, logger)
+    if not pdf_path:
+        if logger:
+            logger.warning("[jonex] office-preview: 未取得转换 PDF，跳过上传: %s", name)
+        return False
+
+    # 平台侧依赖（jonex_core 对象存储）——非平台环境（standalone 研究用 /
+    # 镜像未打包 jonex_core）整体跳过，best-effort 不阻塞主链路
+    try:
+        from jonex_core.common.object_storage import (
+            build_preview_key,
+            get_object_storage,
+        )
+
+        storage = get_object_storage()
+    except Exception as exc:  # noqa: BLE001
+        if logger:
+            logger.warning(
+                "[jonex] office-preview: jonex_core 对象存储不可用，跳过: %s", exc,
+            )
+        return False
+
+    if not doc_anchor:
+        if logger:
+            logger.warning(
+                "[jonex] office-preview: document_id/doc_id 均为空，跳过上传（无文档锚点）",
+            )
+        return False
+
+    key = build_preview_key(tenant_id, kb_id, doc_anchor)
+    try:
+        await storage.put_bytes(
+            key, Path(pdf_path).read_bytes(), content_type="application/pdf",
+        )
+        if logger:
+            logger.info(
+                "[jonex] office-preview: preview.pdf 上传成功 doc=%s", doc_anchor,
+            )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        if logger:
+            logger.warning(
+                "[jonex] office-preview: 上传失败 doc=%s: %s", doc_anchor, exc,
+            )
+        return False
+
+
+class OfficePreviewUploadStage(Stage):
+    """HTTP/full pipeline 的 preview 上传 stage（薄壳，逻辑见 upload_office_preview）。
+
+    parse_only（OpenKB）链路不执行 stage pipeline，由
+    ``service/task_manager._run_parse_only`` 直接调 ``upload_office_preview``。
+    """
+
+    async def execute(
+        self, ctx: PipelineContext, services: PipelineServices
+    ) -> StageResult:
+        config = getattr(services, "config", None)
+        await upload_office_preview(
+            file_path=ctx.file_path,
+            file_name=ctx.file_name,
+            tenant_id=ctx.tenant_id,
+            kb_id=ctx.kb_id,
+            doc_anchor=ctx.document_id or ctx.doc_id or "",
+            output_dir=getattr(config, "parser_output_dir", "./output") or "./output",
+            logger=getattr(services, "logger", None),
+        )
+        return StageResult()
 
 
 class PushChunksStage(Stage):
@@ -1685,6 +2091,54 @@ class PushChunksStage(Stage):
             self._text_pack_drop_noise,
         )
 
+    def _remap_office_pages(
+        self, chunks: list[dict], ctx: PipelineContext, services: PipelineServices,
+    ) -> None:
+        """[jonex] office 查看原文定位（文本匹配）：重排型 office 文档
+        MinerU page_idx 恒 0，逐 chunk 文本匹配 preview.pdf 文本层定位真实
+        页码，重写 file_source 的 page= 字段。
+
+        best-effort：开关关闭 / 非重排型 office / preview.pdf 缺失 / 匹配
+        失败均静默跳过，不阻塞主链路（doc 仍 READY）。
+        """
+        if os.getenv("OFFICE_PAGE_MATCH_ENABLED", "true").lower() not in (
+            "1", "true", "yes", "on",
+        ):
+            return
+        name = (ctx.file_name or "").lower()
+        if not name.endswith(_OFFICE_REFLOW_EXTS):
+            return
+        # 仅纯文本 chunk 参与匹配：table_row 渲染格式 / 多模态描述与 PDF
+        # 文本层非同源（匹配失败率高），且其 location 非 page 优先，跳过。
+        text_indices = [
+            i for i, c in enumerate(chunks) if c.get("type") == "text"
+        ]
+        if not text_indices:
+            return
+        output_dir = getattr(services.config, "parser_output_dir", "./output")
+        pdf_path = Path(output_dir) / f"{Path(ctx.file_path).stem}.pdf"
+        if not os.path.isfile(pdf_path):
+            if services.logger:
+                services.logger.warning(
+                    "[jonex] office-page-match: preview.pdf 不存在，跳过: %s",
+                    pdf_path,
+                )
+            return
+        page_texts = _pdf_page_norm_texts(str(pdf_path))
+        if not page_texts:
+            if services.logger:
+                services.logger.warning(
+                    "[jonex] office-page-match: PDF 文本层抽取失败，跳过: %s",
+                    name,
+                )
+            return
+        remapped = _remap_chunk_pages_by_text(chunks, text_indices, page_texts)
+        if services.logger:
+            services.logger.info(
+                "[jonex] office-page-match: doc=%s 匹配重写 %d/%d 个文本 chunk 页码",
+                ctx.document_id or ctx.doc_id, remapped, len(text_indices),
+            )
+
     async def execute(
         self, ctx: PipelineContext, services: PipelineServices
     ) -> StageResult:
@@ -1723,6 +2177,11 @@ class PushChunksStage(Stage):
             if services.logger:
                 services.logger.warning("PushChunksStage: no chunks to push")
             return StageResult()
+
+        # ── 1.4 [jonex] office 查看原文定位：重排型 office 文本 chunk 页码
+        # 匹配重写（page_idx 恒 0 → 文本匹配 preview.pdf 定位真实页）。必须
+        # 早于 push（file_source 在 push 时一并入库）。best-effort，失败静默。
+        self._remap_office_pages(chunks, ctx, services)
 
         # ── 1.5 Content-based dedup (avoid TOCTOU orphan track_ids) ─
         # Two chunks with identical text produce the same content_doc_id in
@@ -2187,12 +2646,16 @@ class PushChunksStage(Stage):
                     # LightRAG 按 token 从标签中间硬切。拆段后表格片段走
                     # normalize_table_grid 表格分支；前后文本单独成 chunk
                     # （同时是 L4.1 表标题的 prev_block 候选）。
+                    # [jonex] §table-llm-bypass：判据由 ``len(embedded) > 1``
+                    # 改为「含表格段」——整块即一张表（md 超长表按行切 +
+                    # 表头回填后的常态，sdn.md 实测 510 块全部如此）时只有
+                    # 一个 table 段，旧判据会把整表当文本送进 LLM 抽取。
                     embedded = (
                         extract_embedded_tables(text)
                         if _table_grid_v2_enabled()
                         else [{"kind": "text", "text": text}]
                     )
-                    if len(embedded) > 1:
+                    if any(seg["kind"] == "table" for seg in embedded):
                         embedded_table_idx = item.get("table_idx", 0)
                         for seg in embedded:
                             if seg["kind"] == "table":
@@ -2256,7 +2719,9 @@ class PushChunksStage(Stage):
                     if _table_grid_v2_enabled()
                     else [{"kind": "text", "text": text}]
                 )
-                if len(embedded) > 1:
+                # [jonex] §table-llm-bypass：判据为「含表格段」而非「多段」
+                # ——整块即一张表时只有一个 table 段（见上面 O2 注释）。
+                if any(seg["kind"] == "table" for seg in embedded):
                     # O2 内嵌表格：表段是硬边界——先冲刷 pending 再走表格
                     # 分支；拆出的文本段只有 page 锚点（§5.2 降级态），
                     # 按块进 pending 参与打包。
@@ -2488,6 +2953,23 @@ class PushChunksStage(Stage):
             # [jonex] §table-grid-v2 O1: 表格专用预算（RAG_TABLE_CHUNK_MAX_CHARS）。
             # 表格行是语义原子，平台切分后不再被 LightRAG 二次硬切；
             # 文本链路仍用 _chunk_body_budget（RAG_CHUNK_MAX_CHARS-64）。
+            # [jonex] §table-llm-bypass: 登记「已确定性接管」的表格，供本体抽取期
+            # Row-as-Object 消费。md 文档的 content_list 只有 text item，此前
+            # task_manager 的 table_handled 恒 False → 表格 chunk 全量进 LLM
+            # 本体抽取（sdn.md 实测 4123 chunk ≈ 90 分钟）。登记后表格由行级对象
+            # 确定性映射接管，表格 chunk 退出 LLM 路径。
+            item.setdefault("_mapped_tables", []).append({
+                "type": "table",
+                "table_body": (
+                    raw_body if isinstance(raw_body, str) else str(raw_body)
+                ),
+                "table_caption": caption,
+                # 仅作溯源用；剔除判定走 ctype（见 fallback 分支注释）
+                "table_idx": (
+                    table_idx_override if table_idx_override is not None
+                    else item.get("table_idx")
+                ),
+            })
             row_segments = pack_rows(
                 data_rows, self._table_chunk_body_budget, header,
                 caption=caption,
@@ -2639,10 +3121,17 @@ class PushChunksStage(Stage):
         )
         # Fallback: normalization produced nothing → treat raw
         # content (HTML or otherwise) as plain text.
+        #
+        # [jonex] §table-llm-bypass: ctype 由 "table" 改为 "text"——ctype 现在
+        # 是「是否已确定性行级映射」的判据（本体抽取按 _is_table_chunk 剔除
+        # 表格 chunk）。归一化失败的表格没有行级映射，若仍标 ctype=table，
+        # 一旦同文档有别的表映射成功（table_handled=True），这些块就会被
+        # 剔除且零产出 = 内容静默丢失。标 text 则退回 LLM 抽取，只损失速度
+        # 不丢内容。table_idx 保留作溯源。
         text = raw_body if isinstance(raw_body, str) else str(raw_body)
         self._emit_text_chunks(
             chunks, item, text, tenant_id, kb_id, document_id, file_name,
-            ctype="table", table_idx=item.get("table_idx"),
+            ctype="text", table_idx=item.get("table_idx"),
         )
 
     def _emit_text_chunks(
@@ -2912,17 +3401,21 @@ class PushChunksStage(Stage):
                     s_end = 0.0
                 s_start = float(s_start) if s_start is not None else 0.0
                 s_end = float(s_end) if s_end is not None else 0.0
+                # [jonex] 按 scene 的 source_type 区分来源（chapter/slide/asr）
+                seg_ctype = _SCENE_SOURCE_CTYPE.get(
+                    str(seg.get("source_type") or "chapter"), "video_chapter",
+                )
                 fs = _build_file_source(
                     tenant_id, kb_id, document_id, file_name,
                     chunk_index=len(chunks),
                     start_time=s_start,
                     end_time=s_end,
-                    ctype="audio_segment",
+                    ctype=seg_ctype,
                 )
                 chunks.append({
                     "text": _inject_ns_token(seg_text, tenant_id, kb_id, document_id),
                     "file_source": fs,
-                    "type": "audio_segment",
+                    "type": seg_ctype,
                 })
 
     # ── Retry logic ──────────────────────────────────────────────────

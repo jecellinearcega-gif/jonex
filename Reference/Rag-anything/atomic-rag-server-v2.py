@@ -18,6 +18,7 @@ atomic-rag-server v2 — 新 TaskManager + /invoke 统一入口
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -204,6 +205,8 @@ async def handle_insert(params: dict, tenant_id: str, task_manager, **kwargs):
         execution_mode=params.get("execution_mode", "full") or "full",
         schema_version=int(params.get("schema_version", 0) or 0),
         schema_hash=params.get("schema_hash", "") or "",
+        # [jonex] llm-wiki 产物分支（openkb→content.md / jonex_wiki→content_list.json）
+        kb_type=params.get("kb_type", "") or "",
     )
 
     # [jonex] R1：幂等键复用 —— 同一 (doc, generation) 返回同一 task_id
@@ -467,6 +470,8 @@ async def handle_retry(params: dict, tenant_id: str, task_manager, **kwargs):
         strict_push=bool(params.get("strict_push", False)),
         schema_version=int(params.get("schema_version", 0) or 0),
         schema_hash=params.get("schema_hash", "") or "",
+        # [jonex] llm-wiki 产物分支（openkb→content.md / jonex_wiki→content_list.json）
+        kb_type=params.get("kb_type", "") or "",
     )
 
     # [jonex] R1：幂等键复用
@@ -886,6 +891,8 @@ async def handle_retry_ontology_extract(params: dict, tenant_id: str, task_manag
         schema_hash=schema_hash,
         force_retry=force_retry,
         content_generation=content_generation,
+        # [jonex] 与 insert/retry 同口径透传（ontology_only 不写产物，但保持构造一致）
+        kb_type=params.get("kb_type", "") or "",
     )
     result = await task_manager.create(req, tenant_id, idempotency_key=idempotency_key)
     task_id = result.task_id if hasattr(result, "task_id") else ""
@@ -957,6 +964,47 @@ for _action_name in [
     "get_document_parse_result",
 ]:
     ActionRegistry.register(_action_name)(_make_storage_handler(_action_name))
+
+
+@ActionRegistry.register("native_ontology_extract")
+async def handle_native_ontology_extract(params: dict, tenant_id: str, task_manager, **kwargs):
+    """[jonex] P2 独立本体抽取 action 薄壳（§5.2 外部调用契约）。
+
+    输入 {chunks, tbox, scope, options}，输出 NativeExtractionResult 序列化
+    （entities/relations = 两档全集，ontology_* = TBox 档）。
+    P4 重建镜像前无调用方，仅注册占位。
+    """
+    from jonex_core.capability.atomic.rag.native_ontology_extractor import (
+        NativeOntologyExtractor,
+    )
+
+    data = params.get("data") or {}
+    if not isinstance(data, dict):
+        raise HTTPException(400, "data 必须是 dict")
+    scope = data.get("scope") or {}
+    if tenant_id and not scope.get("tenant_id"):
+        scope = {**scope, "tenant_id": tenant_id}
+
+    extractor = NativeOntologyExtractor()
+    result = await extractor.extract(
+        chunks=data.get("chunks") or [],
+        tbox=data.get("tbox") or {},
+        scope=scope,
+        options=data.get("options") or {},
+    )
+    return {
+        "success": result.ok,
+        "code": 0 if result.ok else 500,
+        "message": "success" if result.ok else (result.errors[:1] or ["extraction failed"])[0],
+        "data": {
+            "ok": result.ok,
+            "errors": result.errors,
+            "entities": [dataclasses.asdict(e) for e in result.entities],
+            "relations": [dataclasses.asdict(r) for r in result.relations],
+            "ontology_entities": [dataclasses.asdict(e) for e in result.ontology_entities],
+            "ontology_relations": [dataclasses.asdict(r) for r in result.ontology_relations],
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -259,10 +259,12 @@ class RAGAnythingConfig:
     video_analysis_binding: str = field(
         default=get_env_value("VIDEO_ANALYSIS_BINDING", "local", str)
     )
-    """Default video analysis backend binding. Built-in options: ``"local"``, ``"mps"``.
+    """Default video analysis backend binding. Built-in options: ``"local"``, ``"mps"``, ``"mineru"``.
 
-    - ``local`` — local pipeline (ASR + keyframes + VLM description)
-    - ``mps``   — Tencent Cloud MPS VideoComprehension (cloud-based)
+    - ``local``  — local pipeline (ASR + keyframes + VLM description)
+    - ``mps``    — Tencent Cloud MPS VideoComprehension (cloud-based)
+    - ``mineru`` — [jonex] 委托 MinerU mineru-api（VLM 粗读 + ASR + OCR 兜底），
+      端点取 ``MINERU_VIDEO_BASE_URL``（回退 ``MINERU_SELFHOST_BASE_URL``）
 
     When multiple backends are available, this setting controls which one
     is used as the default. Per-video override can be implemented via

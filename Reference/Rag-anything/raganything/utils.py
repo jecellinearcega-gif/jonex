@@ -462,6 +462,7 @@ class _HTMLTableGridExtractor(html.parser.HTMLParser):
 
 # ── L2 表头推断参数（TABLE_HEADER_MAX_LEN 可在 env 覆盖）──
 _HEADER_CELL_MAX_LEN = 24            # 候选表头单元格短阈值
+_HEADER_LONG_CELL_RATIO = 0.5        # 超长格占比超过该值才否决整行（env 可覆盖）
 _HEADER_SEQ_MIN_LEN = 3              # 数字序列判定最小长度
 _HEADER_DUP_RATIO = 0.5              # 行内非空值重复率上限（超过 → 数据行）
 # 多级表头拼接时跳过的占位符（「—」等表示沿用上一级列名）
@@ -512,6 +513,15 @@ def _normalize_cell_value(value: str, date_semantic: bool) -> str:
 
 def _table_header_max_len() -> int:
     return int(os.getenv("TABLE_HEADER_MAX_LEN", "40"))
+
+
+def _header_long_cell_ratio() -> float:
+    try:
+        return float(
+            os.getenv("TABLE_HEADER_LONG_CELL_RATIO", str(_HEADER_LONG_CELL_RATIO))
+        )
+    except ValueError:
+        return _HEADER_LONG_CELL_RATIO
 
 
 def _is_pure_number(value: str) -> bool:
@@ -570,7 +580,18 @@ def _is_header_row(
     values = [v.strip() for v in row if v and v.strip()]
     if not values:
         return False
-    if any(len(v) > _HEADER_CELL_MAX_LEN for v in values):
+    # [jonex] P0-c（2026-09-13 线上 OOM 复盘）：超长单元格原先**一票否决整行**
+    # 表头判定。实测 financial_metric.md 的 21 列真表头里只有
+    # `duplicate_count_in_period`（25 字符）> 24，整行被判非表头 → 真表头降级
+    # 成 data_rows[0]、列名退化成 `col_0…col_20` → LLM 拿不到可用列名 → 主键
+    # 识别为空 → 1438 张表零对象 → 兜底全量 LLM → 23.7GB OOM。
+    # 改为比例判据：单个离群长格（如 snake_case 列名）不再否决，多数格超长
+    # （典型「说明/备注」整行）才否决。
+    if any(len(v) > _table_header_max_len() for v in values):
+        # 长度已超出 prose 硬阈值（40）→ 该行就是说明文字，不是表头。
+        return False
+    long_cells = [v for v in values if len(v) > _HEADER_CELL_MAX_LEN]
+    if long_cells and len(long_cells) >= len(values) * _header_long_cell_ratio():
         return False
     nums = [
         float(v.replace(",", "").replace("，", "").replace(" ", ""))
@@ -635,6 +656,37 @@ def _compose_header(header_rows: List[List[str]], n_cols: int) -> List[str]:
     return header
 
 
+# [jonex] §table-llm-bypass 守卫 B 的前扫窗口：超长表被盲切后，中段块没有
+# 表头，长文数据行会连续出现——窗口有界把逐行前扫从 O(n²) 压回 O(n·W)。
+_HEADER_LOOKAHEAD = 50
+
+
+def _header_exists_ahead(
+    grid: List[List[str]],
+    start: int,
+    date_semantic: bool,
+    has_merge: List[bool],
+    limit: int = _HEADER_LOOKAHEAD,
+) -> bool:
+    """窗口内是否还存在表头行（守卫 B 用）。
+
+    跳过空行与含长文单元格的行（它们本身也是被猜测的对象），
+    命中第一条普通行即按表头判据给出结论。
+    """
+    end = min(len(grid), start + max(1, limit))
+    for r in range(start, end):
+        row = grid[r]
+        if not any(c and c.strip() for c in row):
+            continue
+        if any(_is_prose_cell(c) for c in row):
+            continue
+        return _is_header_row(
+            row, date_semantic, header_exists=False,
+            row_has_merge=has_merge[r] if r < len(has_merge) else False,
+        )
+    return False
+
+
 def _infer_table_header(
     grid: List[List[str]],
     has_merge: Optional[List[bool]] = None,
@@ -669,6 +721,21 @@ def _infer_table_header(
             # 数据区中间的空行由 data_rows 过滤兜底。
             continue
         if any(_is_prose_cell(cell) for cell in row):
+            # [jonex] §table-llm-bypass 守卫 A：表头已定后遇到长文单元格的行
+            # = 数据行（“备注/说明”列），不是表前说明。此前无条件 continue
+            # 会把整表吃进 notes、data_start 推到表尾 → data_rows 为空 →
+            # normalize_table_grid 判定失败 → 整块退回 12000 字符纯文本
+            # （sdn.md 实测 503 块中 342 块如此）。
+            if header_rows:
+                break
+            # 守卫 B：表头之前的长文行，只有在「后面确实还有表头」时才算是
+            # 表前说明；否则本区段就没有表头（多为超长表被盲切后的中段块），
+            # 应就地转数据行，至少把行恢复出来。扫描窗口有界（O(n·W)），
+            # 避免整格逐行前扫退化成 O(n²)。
+            if not _header_exists_ahead(
+                grid, r + 1, date_semantic, has_merge, _HEADER_LOOKAHEAD,
+            ):
+                break
             prose = " ".join(c.strip() for c in row if c and c.strip())
             if prose:
                 notes.append(prose)
