@@ -48,6 +48,7 @@ _TEMPLATE_RELATION_TYPE_TO_CARDINALITY = {
     "一对一": "one_to_one",
     "一对多": "one_to_many",
     "多对多": "many_to_many",
+    "多对一": "many_to_one",  # [jonex] P1：补缺，此前「多对一」静默降级 custom
 }
 
 
@@ -71,6 +72,8 @@ class YamlEntity:
     description: Optional[str] = None
     aliases: list[str] = dataclasses.field(default_factory=list)
     attributes: list[YamlAttribute] = dataclasses.field(default_factory=list)
+    # [jonex] P1：TBox 构建技能声明（refine/constrain 两组），缺省 None
+    extraction_skills: Optional[dict[str, Any]] = None
 
 
 @dataclasses.dataclass
@@ -82,6 +85,9 @@ class YamlRelation:
     description: Optional[str] = None
     aliases: list[str] = dataclasses.field(default_factory=list)
     cardinality: str = "custom"
+    inverse_of: Optional[str] = None  # [jonex] P1：逆关系名（纯声明，不建反向边）
+    source_types: list[str] = dataclasses.field(default_factory=list)  # 为空回落 source 单值
+    target_types: list[str] = dataclasses.field(default_factory=list)  # 为空回落 target 单值
 
 
 @dataclasses.dataclass
@@ -219,12 +225,17 @@ def _parse_entities(raw: list[dict], validation: YamlValidation) -> list[YamlEnt
             continue
 
         attrs = _parse_attributes(item.get("attributes"), name, validation)
+        raw_skills = item.get("extraction_skills")
+        if raw_skills is not None and not isinstance(raw_skills, dict):
+            validation.errors.append(f"{name}.extraction_skills 必须是对象")
+            raw_skills = None
         entities.append(YamlEntity(
             name=name,
             display_name=_str_or(item.get("display_name"), None) or name,
             description=_str_or(item.get("description"), None),
             aliases=_normalize_string_list(item.get("aliases")),
             attributes=attrs,
+            extraction_skills=raw_skills,
         ))
     return entities
 
@@ -303,6 +314,9 @@ def _parse_relations(
             description=_str_or(item.get("description"), None),
             aliases=_normalize_string_list(item.get("aliases")),
             cardinality=cardinality,
+            inverse_of=_str_or(item.get("inverse_of"), None),
+            source_types=_normalize_string_list(item.get("source_types")),
+            target_types=_normalize_string_list(item.get("target_types")),
         ))
     return relations
 
@@ -385,6 +399,8 @@ def dump_yaml(doc: OntologyYamlDocument) -> str:
             d["attributes"] = [_attr_to_dict(a) for a in e.attributes]
         if e.aliases:
             d["aliases"] = [a for a in e.aliases]
+        if e.extraction_skills:
+            d["extraction_skills"] = e.extraction_skills
         return d
 
     def _rel_to_dict(r: YamlRelation) -> dict:
@@ -397,6 +413,12 @@ def dump_yaml(doc: OntologyYamlDocument) -> str:
             d["aliases"] = [a for a in r.aliases]
         if r.cardinality != "custom":
             d["cardinality"] = r.cardinality
+        if r.inverse_of:
+            d["inverse_of"] = r.inverse_of
+        if r.source_types:
+            d["source_types"] = [s for s in r.source_types]
+        if r.target_types:
+            d["target_types"] = [t for t in r.target_types]
         return d
 
     def _constraint_to_dict(c: YamlConstraint) -> dict:
@@ -409,6 +431,8 @@ def dump_yaml(doc: OntologyYamlDocument) -> str:
             d["relation"] = c.relation
         if c.severity:
             d["severity"] = c.severity
+        if c.expression:
+            d["expression"] = c.expression  # [jonex] P1：导出不再丢约束表达式
         if c.suggestion:
             d["suggestion"] = c.suggestion
         return d

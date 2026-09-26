@@ -80,14 +80,31 @@ def build_embed_text(canonical_name: str, aliases: list[str], description: str) 
 
 
 def embed_hash(text: str) -> str:
-    model = os.getenv("EMBEDDING_MODEL", "qwen3-embedding:8b")
+    # 模型名唯一来源是环境变量，不留字面量兜底（上游改名后字面量会被静默捡回来）。
+    # 未配置时 model 为空串，哈希仍稳定；与 embed() 的空值降级保持同一判定口径。
+    model = os.getenv("EMBEDDING_MODEL", "").strip()
     dim = os.getenv("EMBEDDING_DIM", "1024")
     return hashlib.sha256(f"{model}:{dim}:{text}".encode("utf-8")).hexdigest()
 
 
+def ingest_embed_timeout() -> float:
+    """入库侧（写图循环）embedding 单次超时（秒）。
+
+    与查询/管理侧共用的 ``ONTOLOGY_EMBED_TIMEOUT``（默认 5s）分开：那个值同时
+    是查询向量分支 ``asyncio.wait_for`` 的硬上界，调大会让上游异常时查询多等
+    同样的时长才降级；入库侧并发 24 时请求会排队（且上游冷启动要 ~30s），
+    需要更宽的上界。
+    """
+    try:
+        return float(os.getenv("ONTOLOGY_INGEST_EMBED_TIMEOUT", "10"))
+    except ValueError:
+        return 10.0
+
+
 async def embed(text: str, *, tenant_id: Optional[str] = None,
                 kb_id: Optional[str] = None, doc_id: Optional[str] = None,
-                trace_id: Optional[str] = None) -> Optional[list[float]]:
+                trace_id: Optional[str] = None,
+                timeout: Optional[float] = None) -> Optional[list[float]]:
     """生成单条 embedding；失败返回 None（调用方据此跳过向量写入，不阻断主链路）。
 
     计量维度：入库场景应透传 kb_id/doc_id/trace_id，使 metering.llm_usage_log 的
@@ -96,8 +113,17 @@ async def embed(text: str, *, tenant_id: Optional[str] = None,
     """
     if not (text or "").strip():
         return None
+    # 模型名唯一来源是环境变量，不留字面量兜底（上游改名后会被静默捡回来）。
+    model = os.getenv("EMBEDDING_MODEL", "").strip()
+    if not model:
+        # 降级而非抛错：本函数契约是「失败返回 None，调用方跳过向量写入，不阻断主链路」。
+        # 但不能静默 —— 向量写不进去会直接拉低召回，没有告警就会被当成「模型效果不好」。
+        logger.warning(
+            "EMBEDDING_MODEL 未配置，embedding 降级跳过（本段不写向量）；"
+            "请设置环境变量 EMBEDDING_MODEL"
+        )
+        return None
     client = _get_client()
-    model = os.getenv("EMBEDDING_MODEL", "qwen3-embedding:8b")
     extra_headers = {
         "X-Jonex-Tenant-Id": tenant_id or "unknown",
         "X-Jonex-Scene": "ontology_embed",
@@ -110,6 +136,8 @@ async def embed(text: str, *, tenant_id: Optional[str] = None,
         extra_headers["X-Jonex-Trace-Id"] = trace_id
     dim = _target_dim()
     create_kwargs: dict = {"model": model, "input": text, "extra_headers": extra_headers}
+    if timeout is not None:
+        create_kwargs["timeout"] = timeout   # 单请求覆盖（SDK 支持 per-request timeout）
     if _send_dim_enabled():
         # 与 LightRAG 一致：让上游按 MRL 截断到目标维度（省带宽、语义更优）。
         create_kwargs["dimensions"] = dim

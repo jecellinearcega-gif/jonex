@@ -12,6 +12,7 @@ import os
 from typing import Any, Optional
 
 from jonex_core.common.cache import CacheUtil
+from jonex_core.common.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +36,6 @@ class CompiledSchemaClient:
             "KNOWLEDGE_BASE_API_URL",
             "http://knowledge-base:8003",
         )
-        from jonex_core.common.config import get_config
-
         self._api_key = os.getenv("KNOWLEDGE_BASE_API_KEY") or get_config().GATEWAY_API_KEY
         self._fallback_schema: Optional[dict] = None
 

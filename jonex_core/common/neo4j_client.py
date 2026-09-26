@@ -60,6 +60,21 @@ async def ensure_ontology_schema() -> None:
             "REQUIRE (e.tenant_id, e.kb_id, e.entity_type, e.canonical_name) IS UNIQUE"
         )
 
+        # [jonex] 引用命中索引：上面的唯一约束复合索引列序是
+        # (tenant_id, kb_id, entity_type, canonical_name)，复合索引要求连续前缀——
+        # 查询若只给 tenant_id + kb_id + canonical_name（不带 entity_type），前缀在
+        # 第 3 列断裂，planner 只能用到 (tenant_id, kb_id)，退化为「扫该 KB 全部节点」。
+        # 引用命中（find_reference_hits）的候选值上限 3000，乘上 KB 节点数就是上亿次
+        # 属性比较：线上实测单条 Cypher 满核跑 11 分钟未完成，把串行的对账循环一起
+        # 卡死。这里补一条与谓词同序的索引，让 canonical_name 等值命中走 seek。
+        # 注：`v IN e.aliases` 那半段 Neo4j 常规索引不支持列表成员查找，仍需逐节点
+        # 过滤，故 find_reference_hits 改为两段式 + 调用方超时兜底。
+        await session.run(
+            "CREATE INDEX ont_entity_name IF NOT EXISTS "
+            "FOR (e:OntologyEntity) ON (e.tenant_id, e.kb_id, e.canonical_name)"
+        )
+        logger.info("Neo4j 本体实体名索引就绪 ont_entity_name")
+
         # 读取现有全文索引的 analyzer
         index_exists = False
         existing_analyzer: Optional[str] = None
@@ -136,3 +151,15 @@ async def ensure_ontology_schema() -> None:
                 logger.info("Neo4j 本体向量索引就绪 ont_entity_embedding dim=%d cosine", dim)
             else:
                 logger.info("Neo4j 本体向量索引维度已匹配（dim=%d），跳过重建", dim)
+
+        # ── M3-e：ONT_REL 关系属性索引（skill-action 批 1）──
+        # 按 relation_type 过滤此前是 KB 内全边扫描。关系属性索引在较老 Neo4j
+        # 版本不支持，失败仅告警不阻塞其他 schema 初始化。
+        try:
+            await session.run(
+                "CREATE INDEX ont_rel_type IF NOT EXISTS "
+                "FOR ()-[r:ONT_REL]-() ON (r.relation_type)"
+            )
+            logger.info("Neo4j 关系属性索引就绪 ont_rel_type")
+        except Exception as exc:
+            logger.warning("关系属性索引 ont_rel_type 创建失败（版本可能不支持）: %s", exc)

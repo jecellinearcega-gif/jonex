@@ -1,24 +1,28 @@
 #!/usr/bin/python3
 # -*- coding:utf-8 -*-
 """
-本体抽取器 — Stage4 核心组件。
+本体抽取公共件 — NativeOntologyExtractor 的支撑模块。
 
-跑在 atomic-rag 进程内，接收 LightRAG 已抽取的候选实体 + 原文 chunk，
-通过 LLM 对其进行本体类型归类、属性补全、关系分类。
+P4 起本体抽取唯一入口是 native_ontology_extractor.NativeOntologyExtractor
+（chunk 原文独立抽取 + 双层类型归类）；旧 OntologyExtractor（读 LightRAG
+候选实体/关系 → 归类/定型链路）已在 P5 清理删除。
 
-输出结构化的 ExtractionResult，经 Redis task 中转后由 knowledge-base
-reconcile 循环写入 PostgreSQL。
+本模块保留（§6.1「保留/复用」列）：
+- 数据模型 ExtractedEntity / ExtractedRelation / ExtractionResult
+- LLM 调用 _openai_chat（llm-gateway 计量头）与并发度 _extract_concurrency
+- 解析/校验公共件 _load_json / _post_validate / _endpoint_ok
+- compiled schema 三级解析 _resolve_schema / _get_compiled_client
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from jonex_core.capability.atomic.ontology import OntologyRegistry
+from jonex_core.common.model_config import resolve_llm_model
 
 logger = __import__("logging").getLogger(__name__)
 
@@ -34,7 +38,7 @@ class ExtractedEntity:
     entity_type: str
     aliases: List[str] = field(default_factory=list)
     attributes: Dict[str, Any] = field(default_factory=dict)
-    description: str = ""           # [jonex] 来自 LightRAG NER 的实体描述，answer_from_facts 的核心上下文
+    description: str = ""           # [jonex] 实体描述，answer_from_facts 的核心上下文
     confidence: float = 1.0
     source_chunks: List[Dict[str, Any]] = field(default_factory=list)
     extraction_method: str = "llm_guided"  # [jonex] llm_guided / pre_classified / endpoint_backfill（P2C 兜底）
@@ -51,6 +55,8 @@ class ExtractedRelation:
     relation_type: str
     confidence: float = 1.0
     source_chunks: List[Dict[str, Any]] = field(default_factory=list)   # [jonex] 方案⑧ 关系出处
+    keywords: str = ""                      # [jonex] P2：TBox 外关系的自由关键词（relation_type 空串时供 LightRAG 关系检索）
+    attributes: Dict[str, Any] = field(default_factory=dict)  # [jonex] P2：关系属性（step_no 等，D6 预留）
 
 
 @dataclass
@@ -62,27 +68,6 @@ class ExtractionResult:
     ok: bool = True                 # [jonex] 产出 ≥1 实体即 True；全批失败/零产出才 False
 
 
-def _is_table_chunk_entity(entity: dict) -> bool:
-    """[jonex] O6：判定 LightRAG 实体是否来自表格 chunk。
-
-    实体的 file_path 是 chunk 的 file_source；ctype=table_row/table 即
-    表格 chunk（Row-as-Object 已确定性接管表格实体，通用抽取结果丢弃）。
-    """
-    fp = entity.get("file_path") or ""
-    if not fp or "ctype=" not in fp:
-        return False
-    try:
-        from jonex_core.common.file_source_util import parse_file_source
-
-        parsed = parse_file_source(fp)
-        return parsed.get("chunk_type") in ("table_row", "table")
-    except (NameError, AttributeError, ImportError):
-        raise  # 代码 bug，不掩盖
-    except Exception as exc:  # noqa: BLE001 — 解析失败按非表格处理
-        logger.debug("O6 _is_table_chunk_entity 解析降级: %s", exc)
-        return False
-
-
 # ============================================================
 # LLM 调用（OpenAI 兼容接口）
 # ============================================================
@@ -91,11 +76,11 @@ def _is_table_chunk_entity(entity: dict) -> bool:
 def _extract_concurrency() -> int:
     """本体抽取的 LLM 批次并发度（实体归类/关系定型共用）。
 
-    这些批次经 llm-gateway → 上游 LLM（deepseek-v4-flash），与入库期 LightRAG
-    抽取共用同一上游并发额度（实测 tokenhub 约 48 并发才触发 429，见
-    scripts/bench_llm_extract.py）。ontology_extract 在 LightRAG 上传阶段之后执行，
-    通常不与同文档的 LightRAG 抽取同时打满上游；默认 8 保守取值，落在无限流区且
-    给查询期/多文档并行留余量。经 ONTOLOGY_EXTRACT_CONCURRENCY 调整（<1 归一）。
+    这些批次经 llm-gateway → 上游 LLM，与入库期 LightRAG 抽取共用同一上游
+    并发额度（实测 tokenhub 约 48 并发才触发 429，见 scripts/bench_llm_extract.py）。
+    ontology_extract 在 LightRAG 上传阶段之后执行，通常不与同文档的 LightRAG
+    抽取同时打满上游；默认 8 保守取值，落在无限流区且给查询期/多文档并行留余量。
+    经 ONTOLOGY_EXTRACT_CONCURRENCY 调整（<1 归一）。
     """
     try:
         n = int(os.getenv("ONTOLOGY_EXTRACT_CONCURRENCY", "8"))
@@ -110,11 +95,14 @@ async def _openai_chat(
     max_tokens: Optional[int] = None,
     scope: Optional[Dict[str, Any]] = None,
     json_mode: bool = False,
-) -> str:
-    """调用 OpenAI 兼容接口（deepseek-v4-flash 等）。
+    return_meta: bool = False,
+):
+    """调用 OpenAI 兼容接口（经 llm-gateway 计量，上游 deepseek-v4-flash 等）。
 
     Args:
         json_mode: 开启 response_format=json_object（开关 ONTOLOGY_EXTRACT_JSON_MODE）
+        return_meta: [jonex] P2 True 时返回 (content, meta) 元组，meta 含
+            finish_reason 供截断检测（§5.4）；默认 False 保持旧调用方行为不变。
     """
     import httpx
 
@@ -126,10 +114,7 @@ async def _openai_chat(
         "ONTOLOGY_LLM_BINDING_API_KEY",
         "",  # 改为网关内部 token，不持云端 key
     )
-    model = os.getenv(
-        "ONTOLOGY_LLM_MODEL",
-        os.getenv("LLM_MODEL", "deepseek-v4-flash-202605"),
-    )
+    model = resolve_llm_model("ONTOLOGY_LLM_MODEL")
     timeout = float(os.getenv("ONTOLOGY_LLM_TIMEOUT", "60"))
 
     headers = {"Content-Type": "application/json"}
@@ -170,770 +155,405 @@ async def _openai_chat(
         )
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
-
-
-# ============================================================
-# Prompt 模板
-# ============================================================
-
-
-SYSTEM_PROMPT_TEMPLATE = """你是一个本体抽取助手。根据以下领域本体定义，将输入的候选实体归类到定义的类型、补全属性、为关系指定类型。
-
-## 本体定义（JSON）
-{ontology_json}
-
-## 要求
-1. 只输出 schema 中定义的实体类型和关系类型
-2. 每个实体必须包含 confidence (0.0-1.0) 字段，反映归类正确性的置信度
-3. 如果候选实体无法匹配任何类型，使用 "unknown" 类型并降低 confidence
-4. attributes 根据 schema 中的属性定义从原文中提取
-5. 关系从实体对的上下文推断，relation_type 必须在 schema 中定义
-6. 输出必须是合法的 JSON，不能包含 markdown 代码块标记
-7. 每个关系必须包含 source_type 和 target_type，值是实体在本体定义中的类型名
-8. 若本体定义含 "synonyms" 段（同义词组，每组含 canonical 标准词与 terms 等价词），实体命中某组任一词时，name 统一填该组 canonical"""
-
-
-USER_PROMPT_TEMPLATE = """## 候选实体列表
-{entities_json}
-
-## 原文上下文
-{chunks_json}
-
-## 输出格式（JSON）
-{{
-  "entities": [
-    {{"name": "实体名", "type": "实体类型", "aliases": ["别名1"], "attributes": {{"key": "value"}}, "confidence": 0.95}}
-  ],
-  "relations": [
-    {{"source": "源实体", "source_type": "实体类型", "target": "目标实体", "target_type": "实体类型", "relation_type": "关系类型", "confidence": 0.9}}
-  ]
-}}"""
-
-# ── Phase 2/3：实体专用 prompts（分批、独立调用） ────────────
-
-# [jonex] 要求 5 为 KB 级同义词归一指令：本体定义 synonyms 段命中则 name 统一填 canonical
-ENTITY_SYSTEM_PROMPT = """你是本体实体归类助手。根据以下领域本体定义，把候选实体归类到已定义类型并补全属性。
-## 本体定义（JSON）
-{ontology_json}
-## 要求
-1. 只输出 schema 中定义的实体类型；无法匹配用 "unknown" 并降低 confidence
-2. 每个实体必须含 confidence(0.0-1.0)
-3. attributes 仅对 schema 中定义了属性的类型提取；找不到留空，禁止编造
-4. 只输出合法 JSON，不要 markdown 代码块
-5. 若本体定义含 "synonyms" 段（同义词组，每组含 canonical 标准词与 terms 等价词），候选实体命中某组任一词时，name 统一填该组 canonical"""
-
-ENTITY_USER_PROMPT = """## 候选实体（本批 {n} 个）
-{entities_json}
-## 输出格式（JSON）
-{{"entities":[{{"name":"实体名","original":"输入候选名","type":"实体类型","aliases":["别名"],"attributes":{{}},"confidence":0.95}}]}}"""
-
-# ── Phase 3：关系定型 prompts（对 LightRAG 已有边做类型映射）──
-
-RELATION_SYSTEM_PROMPT = """你是本体关系定型助手。给定已抽取的实体关系边，把每条边映射到 schema 中定义的关系类型。
-## 本体关系定义（JSON）
-{relations_json}
-## 要求
-1. relation_type 必须是 schema 中定义的关系名；无法匹配则【不输出】该条
-2. 不要臆造 schema 之外的关系，不要新增边
-3. 不得改写、不得新增端点名（source/target），端点名仅用于参考语义
-4. 只输出合法 JSON，不要 markdown"""
-
-RELATION_USER_PROMPT = """## 候选关系边（本批 {n} 条，来自 LightRAG）
-{edges_json}
-## 输出格式（JSON）
-{{"relations":[{{"source":"源实体","target":"目标实体","relation_type":"关系类型","confidence":0.9}}]}}"""
-
-
-# ============================================================
-# OntologyExtractor
-# ============================================================
-
-
-class OntologyExtractor:
-    """本体抽取器 — 用 LLM 对候选实体做本体类型归类。
-
-    支持 compiled schema 优先读取策略（优先级从高到低）：
-    1. 调用方传入的 compiled_schema 参数
-    2. scope 含 tenant_id + knowledge_base_id 时使用 CompiledSchemaClient
-    3. 否则 fallback 到 OntologyRegistry（domain="default"）
-    """
-
-    def __init__(self, registry: Optional[OntologyRegistry] = None):
-        self._registry = registry
-        self._compiled_client: Optional[Any] = None
-
-    def _get_compiled_client(self):
-        if self._compiled_client is None:
-            from jonex_core.capability.atomic.ontology.compiled_schema_client import (
-                CompiledSchemaClient,
-            )
-            self._compiled_client = CompiledSchemaClient()
-        return self._compiled_client
-
-    async def _resolve_schema(
-        self,
-        compiled_schema: Optional[dict],
-        scope: Dict[str, Any],
-    ) -> tuple[Optional[Any], Optional[str]]:
-        """解析 schema 来源，返回 (schema_obj, ontology_json)。
-
-        优先级：入参 compiled_schema > CompiledSchemaClient > OntologyRegistry
-        """
-        # 1) 调用方传入的 compiled_schema
-        if compiled_schema is not None:
-            prompt = compiled_schema.get("prompt_schema")
-            if prompt:
-                ontology_json = json.dumps(prompt, ensure_ascii=False)
-                logger.info(
-                    "Using push compiled schema for %s/%s (version=%s)",
-                    scope.get("tenant_id", "?"), scope.get("knowledge_base_id", "?"),
-                    compiled_schema.get("schema_version", "?"),
-                )
-                return compiled_schema, ontology_json
-
-        # 2) CompiledSchemaClient 拉取
-        tenant_id = scope.get("tenant_id")
-        knowledge_base_id = scope.get("knowledge_base_id")
-        if tenant_id and knowledge_base_id:
-            try:
-                client = self._get_compiled_client()
-                raw = await client.get_schema(tenant_id, knowledge_base_id)
-                if raw and raw.get("prompt_schema"):
-                    ontology_json = json.dumps(raw["prompt_schema"], ensure_ascii=False, indent=2)
-                    logger.info(
-                        "Using client-fetched compiled schema for %s/%s (source=%s)",
-                        tenant_id, knowledge_base_id, raw.get("source_type", "?"),
-                    )
-                    return raw, ontology_json
-            except Exception as e:
-                logger.warning("Compiled schema load failed: %s", e)
-
-        # 3) OntologyRegistry fallback
-        if self._registry is not None:
-            domain = scope.get("domain", "default")
-            ontology_json = self._registry.to_prompt_json(domain)
-            logger.info("Fallback to OntologyRegistry domain=%s", domain)
-            return None, ontology_json
-
-        return None, None
-
-    async def extract(
-        self,
-        content_list: List[Dict[str, Any]],
-        lightrag_entities: List[Dict[str, Any]],
-        scope: Dict[str, Any],
-        compiled_schema: Optional[dict] = None,
-        lightrag_relations: Optional[List[dict]] = None,
-        edge_based: Optional[bool] = None,
-    ) -> ExtractionResult:
-        """执行本体抽取。
-
-        Args:
-            content_list: 原文 chunks。
-            lightrag_entities: LightRAG 已抽取的候选实体列表。
-            scope: 任务上下文 {"tenant_id", "knowledge_base_id", "document_id"}。
-            compiled_schema: per-KB compiled schema dict（可选，push 模式）。
-            lightrag_relations: LightRAG 已抽关系边列表（Phase 3，去 chunk 定型）。
-            edge_based: 显式强制边定型开关（None=读环境开关；True/False=覆盖环境）。
-                [jonex] P0-A.6/P2：ontology-only / reparse 传 True 强制走"对已抽边做类型
-                映射"分支，不受 ONTOLOGY_EXTRACT_DROP_CHUNKS 环境态影响；关系列表为空允许成功。
-
-        Returns:
-            ExtractionResult: 结构化抽取结果。
-        """
-        schema, ontology_json = await self._resolve_schema(compiled_schema, scope)
-        if not ontology_json:
-            return ExtractionResult(ok=False, errors=["无可用 ontology schema，跳过本体抽取"])
-
-        # [jonex] O6（§11.2）：表格 chunk 来源的 LightRAG 实体丢弃——表格实体
-        # 由 Row-as-Object 确定性生成（attributes 结构化、按行独立实例），
-        # 通用文本抽取对表格的低质结果不占 200 截断名额、不造成同名污染。
-        _drop_table_entities = os.getenv(
-            "TABLE_OBJECT_FILTER_LIGHTRAG_TABLE_ENTITIES", "true",
-        ).lower() in ("1", "true", "yes", "on")
-        if _drop_table_entities and lightrag_entities:
-            lightrag_entities = [
-                e for e in lightrag_entities
-                if not _is_table_chunk_entity(e)
-            ]
-
-        # Phase 4：过滤 + 排序 + 裁剪
-        max_entities = int(os.getenv("ONTOLOGY_EXTRACT_MAX_ENTITIES", "200"))
-        filtered = self._filter_and_sort(lightrag_entities)[:max_entities]
-        if not filtered:
-            return ExtractionResult(ok=False, errors=["无候选实体，跳过本体抽取"])
-
-        # Phase 4：代码预分类（命中 aliases 的实体不进 LLM）
-        type_index, case_insensitive = self._build_type_index(schema)
-        pre_classified: List[ExtractedEntity] = []
-        ambiguous: List[dict] = []
-        for e in filtered:
-            code = self._match_type(e, type_index, case_insensitive)
-            if code:
-                name = e.get("name", e.get("entity_name", ""))
-                pre_classified.append(ExtractedEntity(
-                    canonical_name=name,
-                    entity_type=code,
-                    aliases=[name],
-                    confidence=0.9,
-                ))
-            else:
-                ambiguous.append({
-                    "name": e.get("name", e.get("entity_name", "")),
-                    "original_type": e.get("type", ""),
-                    "description": (e.get("description", "") or "")[:300],
-                })
-
-        # 仅歧义实体进分批 LLM
-        llm_entities, ent_errors, any_batch_ok = await self._classify_entities(
-            ambiguous, ontology_json, scope,
-        )
-        entities = pre_classified + llm_entities
-
-        # 2) 关系定型（Phase 3）：实体最终类型 map（含预分类 + LLM 分类并集）
-        entity_type_map = {e.canonical_name: e.entity_type for e in entities}
-
-        # [jonex] edge_based 显式参数优先于环境开关：
-        #   None  → 读 ONTOLOGY_EXTRACT_DROP_CHUNKS 且要求 lightrag_relations 非 None（保持旧语义）
-        #   True  → 强制边定型（ontology-only / reparse），关系为空也允许成功
-        #   False → 强制走 legacy chunk 抽取
-        if edge_based is None:
-            use_edge = (
-                os.getenv("ONTOLOGY_EXTRACT_DROP_CHUNKS", "true").lower() in ("1", "true", "yes", "on")
-                and lightrag_relations is not None
-            )
-        else:
-            use_edge = edge_based
-        if use_edge:
-            # Phase 3：对 LightRAG 已有边做类型映射，去 chunk
-            relations_json = json.dumps(
-                schema.get("prompt_schema", {}).get("relation_types", [])
-                if schema else [],
-                ensure_ascii=False,
-            ) if ontology_json else "[]"
-            # 如果 schema 来自 OntologyRegistry fallback，relation_types 在 ontology_json 内
-            if not relations_json or relations_json == "[]":
-                try:
-                    parsed = json.loads(ontology_json)
-                    relations_json = json.dumps(parsed.get("relation_types", []), ensure_ascii=False)
-                except Exception:
-                    relations_json = "[]"
-            relations, rel_errors = await self._type_relations(
-                lightrag_relations or [], entity_type_map, relations_json, scope,
-            )
-        else:
-            # 回退：Phase 2 的 chunk 单次抽取
-            relations, rel_errors = await self._extract_relations_legacy(
-                filtered, content_list, ontology_json, scope,
-            )
-
-        # Phase 5：溯源回填（按 name + aliases 匹配候选实体的 source_id/file_path）
-        # [jonex] 方案⑧ D：索引覆盖 canonical_name 与 aliases，降低归一化/翻译改名 miss
-        # [jonex] 路线 B：预建图片 chunk 正文映射（content_list 中 image_idx 非空的 chunk
-        # 其 content 即 VLM 描述），供回填段写入 source_chunks[].content，查询侧零 IO 读取。
-        _img_content_by_fp: dict[str, str] = {}
-        for c in (content_list or []):
-            fp = c.get("file_path") or c.get("file_source") or ""
-            txt = (c.get("content") or "").strip()
-            if fp and txt and ("image_idx=" in fp or c.get("type") == "image"):
-                _img_content_by_fp[fp] = txt
-        prov: dict[str, dict] = {}
-        for e in filtered:
-            p = {
-                "source_id": e.get("source_id", ""), "file_path": e.get("file_path", "")
+        content = data["choices"][0]["message"]["content"]
+        if return_meta:
+            # [jonex] P2：finish_reason 供截断检测（length = 输出被 max_tokens 截断）
+            return content, {
+                "finish_reason": data["choices"][0].get("finish_reason"),
             }
-            if p["source_id"] or p["file_path"]:
-                # [jonex] 路线 B：图片 chunk 的 VLM 描述写入 source_chunks[].content，
-                # 供查询侧 _ontology_refs 直接读，零额外查询。
-                fp_val = p.get("file_path") or ""
-                img_content = _img_content_by_fp.get(fp_val, "")
-                if img_content:
-                    p["content"] = img_content
-                prov[e.get("name", e.get("entity_name", ""))] = p
-                for alias in (e.get("aliases") or []):
-                    if alias and alias not in prov:
-                        prov[alias] = p
-        for ent in entities:
-            p = prov.get(ent.canonical_name)
-            if not p:
-                for alias in (ent.aliases or []):
-                    p = prov.get(alias)
-                    if p:
-                        break
-            if p and (p["source_id"] or p["file_path"]):
-                ent.source_chunks = [p]
+        return content
 
-        # [jonex] 描述回填：LightRAG NER 的 description 是 answer_from_facts 的核心上下文，
-        # 预分类分支与 LLM 分类分支都不带描述，统一在此按 name 从候选实体回填。
-        desc_maxlen = int(os.getenv("ONTOLOGY_ENTITY_DESC_MAXLEN", "1000"))
-        desc_map = {
-            e.get("name", e.get("entity_name", "")): (e.get("description", "") or "")
-            for e in filtered
-        }
-        for ent in entities:
-            if not ent.description:
-                ent.description = desc_map.get(ent.canonical_name, "")[:desc_maxlen]
 
-        # P2C：关系端点实体兜底补齐 —— 对"已保留关系"的端点名，凡不在正式实体集合中则补建
-        # entity_type="unknown" 的正式实体（非 stub），保证关系两端在写库时不因找不到节点而捏造 stub。
-        if os.getenv("ONTOLOGY_ENTITY_BACKFILL_ENDPOINTS", "true").lower() in ("1", "true", "yes", "on"):
-            known_names = {e.canonical_name for e in entities}
-            endpoint_names = {r.source_name for r in relations} | {r.target_name for r in relations}
-            for nm in endpoint_names - known_names:
-                entities.append(ExtractedEntity(
-                    canonical_name=nm,
-                    entity_type="unknown",
-                    aliases=[nm],
-                    confidence=0.3,
-                    extraction_method="endpoint_backfill",
-                ))
+# ============================================================
+# compiled schema 三级解析（P5 从旧类提升为模块级）
+# ============================================================
 
-        # Phase 5：后校验（丢弃 TBox 之外的类型/关系）
-        entities, relations = self._post_validate(entities, relations, schema)
 
-        # [jonex] 边兜底（决策点①，默认关）：schema relation_types 覆盖稀疏时，
-        # 对 LightRAG 已有边、未被 typed 关系覆盖的实体对，落通用 RELATED_TO 边保证图非空。
-        if os.getenv("ONTOLOGY_KEEP_UNTYPED_EDGES", "false").lower() in ("1", "true", "yes", "on"):
-            relations.extend(
-                self._fallback_untyped_edges(lightrag_relations or [], relations, entity_type_map)
+_compiled_client: Optional[Any] = None
+
+
+def _get_compiled_client():
+    """CompiledSchemaClient 惰性单例（_resolve_schema 第二级用）。"""
+    global _compiled_client
+    if _compiled_client is None:
+        from jonex_core.capability.atomic.ontology.compiled_schema_client import (
+            CompiledSchemaClient,
+        )
+        _compiled_client = CompiledSchemaClient()
+    return _compiled_client
+
+
+async def _resolve_schema(
+    compiled_schema: Optional[dict],
+    scope: Dict[str, Any],
+    registry: Optional[OntologyRegistry] = None,
+) -> tuple[Optional[Any], Optional[str]]:
+    """解析 schema 来源，返回 (schema_obj, ontology_json)。
+
+    优先级：入参 compiled_schema > CompiledSchemaClient > OntologyRegistry
+    """
+    # 1) 调用方传入的 compiled_schema
+    if compiled_schema is not None:
+        prompt = compiled_schema.get("prompt_schema")
+        if prompt:
+            ontology_json = json.dumps(prompt, ensure_ascii=False)
+            logger.info(
+                "Using push compiled schema for %s/%s (version=%s)",
+                scope.get("tenant_id", "?"), scope.get("knowledge_base_id", "?"),
+                compiled_schema.get("schema_version", "?"),
             )
+            return compiled_schema, ontology_json
 
-        ok = bool(entities) or any_batch_ok
-        return ExtractionResult(
-            entities=entities,
-            relations=relations,
-            errors=ent_errors + rel_errors,
-            ok=ok,
-        )
-
-    # ── Phase 5：后校验 ──────────────────────────
-
-    @staticmethod
-    def _post_validate(
-        entities: List[ExtractedEntity],
-        relations: List[ExtractedRelation],
-        schema: Optional[dict],
-    ) -> tuple[List[ExtractedEntity], List[ExtractedRelation]]:
-        """丢弃 TBox 之外的实体类型 / 关系类型 / 端点类型不符的关系。"""
-        if not schema:
-            return entities, relations
-
-        valid_etypes = {et.get("name", "") for et in schema.get("entity_types", [])}
-        rel_constraint = {
-            rt.get("name", ""): (rt.get("source", ""), rt.get("target", ""))
-            for rt in schema.get("relation_types", [])
-        }
-
-        kept_e = [e for e in entities if e.entity_type in valid_etypes or e.entity_type == "unknown"]
-        kept_r = []
-        for r in relations:
-            st = rel_constraint.get(r.relation_type)
-            if st is None:
-                continue
-            # [jonex] 端点类型为空或 unknown 时视为通配，避免未归类实体把整条边丢光（孤立节点根因）。
-            src_ok = OntologyExtractor._endpoint_ok(r.source_type, st[0])
-            tgt_ok = OntologyExtractor._endpoint_ok(r.target_type, st[1])
-            if src_ok and tgt_ok:
-                kept_r.append(r)
-        return kept_e, kept_r
-
-    @staticmethod
-    def _endpoint_ok(actual: str, expected: str) -> bool:
-        """关系端点类型校验：空 / unknown 视为通配。"""
-        return (not actual) or (actual == "unknown") or (actual == expected)
-
-    @staticmethod
-    def _rel_source_chunks(lr: dict) -> list:
-        """从一条 lightrag 关系边提取 source_chunks。
-
-        graph_reader._map_relation 已带出 file_path/source_id，
-        此处组装为与实体 source_chunks 同构的 [{source_id, file_path}]。
-        """
-        sid = lr.get("source_id", "") or ""
-        fp = lr.get("file_path", "") or ""
-        if sid or fp:
-            return [{"source_id": sid, "file_path": fp}]
-        return []
-
-    @staticmethod
-    def _fallback_untyped_edges(
-        lightrag_relations: List[dict],
-        typed_relations: List[ExtractedRelation],
-        entity_type_map: Dict[str, str],
-    ) -> List[ExtractedRelation]:
-        """决策点①：对未被 typed 关系覆盖的 LightRAG 边补通用 RELATED_TO 边。"""
-        typed_pairs = {(r.source_name, r.target_name) for r in typed_relations}
-        typed_pairs |= {(r.target_name, r.source_name) for r in typed_relations}
-        extra: List[ExtractedRelation] = []
-        for lr in lightrag_relations:
-            s = lr.get("source_entity", "")
-            t = lr.get("target_entity", "")
-            if not s or not t or (s, t) in typed_pairs:
-                continue
-            typed_pairs.add((s, t))
-            typed_pairs.add((t, s))
-            try:
-                conf = float(lr.get("weight", 0.5))
-            except (ValueError, TypeError):
-                conf = 0.5
-            extra.append(ExtractedRelation(
-                source_name=s, target_name=t,
-                source_type=entity_type_map.get(s, ""),
-                target_type=entity_type_map.get(t, ""),
-                relation_type="RELATED_TO", confidence=conf,
-                source_chunks=OntologyExtractor._rel_source_chunks(lr),
-            ))
-        return extra
-
-    # ── 解析 ────────────────────────────────────
-
-    @staticmethod
-    def _load_json(raw: str) -> Optional[dict]:
-        """通用 JSON 解析：去 markdown 包裹 + 花括号兜底。"""
-        import re
-
-        cleaned = raw.strip()
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
+    # 2) CompiledSchemaClient 拉取
+    tenant_id = scope.get("tenant_id")
+    knowledge_base_id = scope.get("knowledge_base_id")
+    if tenant_id and knowledge_base_id:
         try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            s, e = cleaned.find("{"), cleaned.rfind("}")
-            if s != -1 and e > s:
-                try:
-                    return json.loads(cleaned[s:e + 1])
-                except json.JSONDecodeError:
-                    return None
-        return None
-
-    @staticmethod
-    def _parse_llm_response(raw: str) -> ExtractionResult:
-        """解析 LLM 返回的 JSON（旧风格单次调用，兼容保留）。"""
-        data = OntologyExtractor._load_json(raw)
-        if data is None:
-            return ExtractionResult(errors=["LLM 输出不是合法 JSON"])
-
-        entities = []
-        relations = []
-        errors = []
-
-        for ent in data.get("entities", []):
-            try:
-                entities.append(
-                    ExtractedEntity(
-                        canonical_name=ent.get("name", ""),
-                        entity_type=ent.get("type", "unknown"),
-                        aliases=ent.get("aliases", []),
-                        attributes=ent.get("attributes", {}),
-                        confidence=float(ent.get("confidence", 1.0)),
-                    )
+            client = _get_compiled_client()
+            raw = await client.get_schema(tenant_id, knowledge_base_id)
+            if raw and raw.get("prompt_schema"):
+                ontology_json = json.dumps(raw["prompt_schema"], ensure_ascii=False, indent=2)
+                logger.info(
+                    "Using client-fetched compiled schema for %s/%s (source=%s)",
+                    tenant_id, knowledge_base_id, raw.get("source_type", "?"),
                 )
-            except (ValueError, TypeError) as e:
-                errors.append(f"实体解析失败: {ent.get('name', '?')} → {e}")
-
-        for rel in data.get("relations", []):
-            try:
-                relations.append(
-                    ExtractedRelation(
-                        source_name=rel.get("source", ""),
-                        source_type=rel.get("source_type", ""),
-                        target_name=rel.get("target", ""),
-                        target_type=rel.get("target_type", ""),
-                        relation_type=rel.get("relation_type", ""),
-                        confidence=float(rel.get("confidence", 1.0)),
-                    )
-                )
-            except (ValueError, TypeError) as e:
-                errors.append(f"关系解析失败: {rel.get('source', '?')}→{rel.get('target', '?')} → {e}")
-
-        return ExtractionResult(
-            entities=entities,
-            relations=relations,
-            errors=errors,
-        )
-
-    # ── Phase 4：预分类 + 过滤 ────────────────────
-
-    @staticmethod
-    def _build_type_index(schema: Optional[dict]) -> tuple[dict, bool]:
-        """从 compiled schema 的 entity_types aliases 构 {归一化别名 -> entity_code} 索引。"""
-        if not schema:
-            return {}, True
-        case_insensitive = (schema.get("disambiguation") or {}).get("case_insensitive", True)
-        index: dict[str, str] = {}
-        for et in schema.get("entity_types", []):
-            code = et.get("name", "")
-            if not code:
-                continue
-            keys = [code, et.get("display_name", "")] + (et.get("aliases") or [])
-            for k in keys:
-                k = (k or "").strip()
-                if not k:
-                    continue
-                index[k.lower() if case_insensitive else k] = code
-        return index, case_insensitive
-
-    @staticmethod
-    def _match_type(raw_entity: dict, index: dict, case_insensitive: bool) -> Optional[str]:
-        """仅用 LightRAG 的 type 标签匹配领域 entity_code；命中返回 code，否则 None。"""
-        t = (raw_entity.get("type", "") or "").strip()
-        if not t:
-            return None
-        return index.get(t.lower() if case_insensitive else t)
-
-    @staticmethod
-    def _filter_and_sort(lightrag_entities: List[dict]) -> List[dict]:
-        """丢弃孤立（度=0 且 描述为空）并按 relations_count 降序。"""
-        drop_orphan = os.getenv("ONTOLOGY_EXTRACT_DROP_ORPHAN", "true").lower() in ("1", "true", "yes", "on")
-        items = lightrag_entities
-        if drop_orphan:
-            items = [
-                e for e in items
-                if not (e.get("relations_count", 0) == 0 and not (e.get("description", "") or "").strip())
-            ]
-        return sorted(items, key=lambda e: e.get("relations_count", 0), reverse=True)
-
-    # ── Phase 2：实体分批归类 ────────────────────
-
-    async def _classify_entities(
-        self,
-        entities_snapshot: List[dict],
-        ontology_json: str,
-        scope: Optional[Dict[str, Any]],
-    ) -> tuple[List[ExtractedEntity], List[str], bool]:
-        """实体分批归类，返回 (entities, errors, any_batch_ok)。"""
-        batch_size = int(os.getenv("ONTOLOGY_EXTRACT_BATCH_SIZE", "35"))
-        max_tokens = int(os.getenv("ONTOLOGY_EXTRACT_MAX_TOKENS", "4096"))
-        json_mode = os.getenv("ONTOLOGY_EXTRACT_JSON_MODE", "true").lower() in ("1", "true", "yes", "on")
-        system_prompt = ENTITY_SYSTEM_PROMPT.format(ontology_json=ontology_json)
-
-        batches = [
-            entities_snapshot[i:i + batch_size]
-            for i in range(0, len(entities_snapshot), batch_size)
-        ]
-        sem = asyncio.Semaphore(_extract_concurrency())
-
-        async def _run_batch(batch_idx: int, batch: List[dict]) -> tuple[List[ExtractedEntity], List[str], bool]:
-            """处理单批实体归类，返回 (entities, errors, any_ok)。批间无依赖，可并行。"""
-            b_entities: List[ExtractedEntity] = []
-            b_errors: List[str] = []
-            user_prompt = ENTITY_USER_PROMPT.format(n=len(batch), entities_json=json.dumps(batch, ensure_ascii=False))
-            async with sem:  # 仅限制并发 LLM 调用；JSON 解析开销小，放锁外也可，这里从简
-                try:
-                    raw = await _openai_chat(
-                        messages=[{"role": "system", "content": system_prompt},
-                                  {"role": "user", "content": user_prompt}],
-                        temperature=0, max_tokens=max_tokens, scope=scope, json_mode=json_mode,
-                    )
-                except Exception as e:
-                    b_errors.append(f"实体批#{batch_idx} 调用失败: {e}")
-                    return b_entities, b_errors, False
-
-            data = self._load_json(raw)
-            if data is None:
-                b_errors.append(f"实体批#{batch_idx} 输出非合法 JSON")
-                return b_entities, b_errors, False
-
-            for ent in data.get("entities", []):
-                try:
-                    name = ent.get("name", "")
-                    original = ent.get("original", "")
-                    aliases = list({*ent.get("aliases", []), name, original} - {""})
-                    b_entities.append(ExtractedEntity(
-                        canonical_name=name, entity_type=ent.get("type", "unknown"),
-                        aliases=aliases, attributes=ent.get("attributes", {}),
-                        confidence=float(ent.get("confidence", 1.0)),
-                    ))
-                except (ValueError, TypeError) as e:
-                    b_errors.append(f"实体解析失败 {ent.get('name','?')}: {e}")
-            return b_entities, b_errors, True
-
-        # 并发跑各批，按批序聚合（保持结果与错误信息的确定性顺序）
-        results = await asyncio.gather(*[_run_batch(i, b) for i, b in enumerate(batches)])
-        entities: List[ExtractedEntity] = []
-        errors: List[str] = []
-        any_ok = False
-        for b_entities, b_errors, b_ok in results:
-            entities.extend(b_entities)
-            errors.extend(b_errors)
-            any_ok = any_ok or b_ok
-
-        return entities, errors, any_ok
-
-    # ── Phase 2 临时：关系抽取（保留 chunk，Phase 3 替换为边定型）──
-
-    async def _extract_relations_legacy(
-        self,
-        entities_snapshot: List[dict],
-        content_list: List[Dict[str, Any]],
-        ontology_json: str,
-        scope: Optional[Dict[str, Any]],
-    ) -> tuple[List[ExtractedRelation], List[str]]:
-        """占位：Phase 3 用 _type_relations 整体替换此方法并去掉 chunk。"""
-        # TODO(Phase3): replaced by _type_relations
-        max_chunks = int(os.getenv("ONTOLOGY_EXTRACT_MAX_CHUNKS", "50"))
-        max_tokens = int(os.getenv("ONTOLOGY_EXTRACT_MAX_TOKENS", "4096"))
-        json_mode = os.getenv("ONTOLOGY_EXTRACT_JSON_MODE", "true").lower() in ("1", "true", "yes", "on")
-
-        chunks_snapshot = [
-            {"content": (c.get("content", "") or "")[:500]}
-            for c in (content_list or [])[:max_chunks]
-        ]
-
-        system_prompt = SYSTEM_PROMPT_TEMPLATE.format(ontology_json=ontology_json)
-        user_prompt = USER_PROMPT_TEMPLATE.format(
-            entities_json=json.dumps(entities_snapshot, ensure_ascii=False),
-            chunks_json=json.dumps(chunks_snapshot, ensure_ascii=False),
-        )
-
-        try:
-            raw = await _openai_chat(
-                messages=[{"role": "system", "content": system_prompt},
-                          {"role": "user", "content": user_prompt}],
-                temperature=0, max_tokens=max_tokens, scope=scope, json_mode=json_mode,
-            )
+                return raw, ontology_json
         except Exception as e:
-            return [], [f"关系抽取调用失败: {e}"]
+            logger.warning("Compiled schema load failed: %s", e)
 
-        data = self._load_json(raw)
-        if data is None:
-            return [], ["关系抽取输出非合法 JSON"]
+    # 3) OntologyRegistry fallback
+    if registry is not None:
+        domain = scope.get("domain", "default")
+        ontology_json = registry.to_prompt_json(domain)
+        logger.info("Fallback to OntologyRegistry domain=%s", domain)
+        return None, ontology_json
 
-        relations, errors = [], []
-        for rel in data.get("relations", []):
+    return None, None
+
+
+# ============================================================
+# 解析 / 校验公共件
+# ============================================================
+
+
+def _load_json(raw: str) -> Optional[dict]:
+    """通用 JSON 解析：去 markdown 包裹 + 花括号兜底 + [jonex] P4 截断部分恢复。
+
+    截断输出（finish_reason=length 且拆批后仍截断）按对象级大括号平衡
+    扫描逐项恢复：保住已完整输出的实体/关系，替代旧行为「整批清零」。
+    """
+    import re
+
+    cleaned = raw.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+    s, e = cleaned.find("{"), cleaned.rfind("}")
+    if s != -1 and e > s:
+        try:
+            return json.loads(cleaned[s:e + 1])
+        except json.JSONDecodeError:
+            return _recover_truncated_objects(cleaned[s:e + 1])
+    return None
+
+
+def _recover_truncated_objects(core: str) -> Optional[dict]:
+    """[jonex] P4 截断 JSON 逐对象恢复：提取 entities/relations 数组中
+    大括号平衡的完整对象；一个对象都恢复不出则返回 None（整批清零）。"""
+    out: dict = {"entities": [], "relations": []}
+    for key in ("entities", "relations"):
+        idx = core.find(f'"{key}"')
+        if idx == -1:
+            continue
+        arr = core.find("[", idx)
+        if arr == -1:
+            continue
+        pos = arr + 1
+        while pos < len(core):
+            while pos < len(core) and core[pos] in " \t\r\n,":
+                pos += 1
+            if pos >= len(core) or core[pos] == "]":
+                break
+            if core[pos] != "{":
+                pos += 1
+                continue
+            # 大括号平衡扫描（含字符串转义）
+            depth, i, in_str, esc = 0, pos, False, False
+            while i < len(core):
+                ch = core[i]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                else:
+                    if ch == '"':
+                        in_str = True
+                    elif ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                i += 1
+            if depth != 0 or i >= len(core):
+                break  # 截断处对象未闭合
             try:
-                relations.append(ExtractedRelation(
-                    source_name=rel.get("source", ""),
-                    source_type=rel.get("source_type", ""),
-                    target_name=rel.get("target", ""),
-                    target_type=rel.get("target_type", ""),
-                    relation_type=rel.get("relation_type", ""),
-                    confidence=float(rel.get("confidence", 1.0)),
-                ))
-            except (ValueError, TypeError) as e:
-                errors.append(f"关系解析失败: {rel.get('source', '?')}→{rel.get('target', '?')} → {e}")
+                out[key].append(json.loads(core[pos:i + 1]))
+            except json.JSONDecodeError:
+                pass
+            pos = i + 1
+    return out if (out["entities"] or out["relations"]) else None
 
-        return relations, errors
 
-    # ── Phase 3：关系定型（去 chunk，对 LightRAG 已有边做映射）──
+def _endpoint_ok(actual: str, expected) -> bool:
+    """关系端点类型校验：空 / unknown 视为通配；expected 为集合时按包含判断。"""
+    if isinstance(expected, (set, frozenset)):
+        return (not actual) or (actual == "unknown") or (actual in expected)
+    return (not actual) or (actual == "unknown") or (actual == expected)
 
-    async def _type_relations(
-        self,
-        lightrag_relations: List[dict],
-        entity_type_map: Dict[str, str],
-        relations_json: str,
-        scope: Optional[Dict[str, Any]],
-    ) -> tuple[List[ExtractedRelation], List[str]]:
-        """对 LightRAG 已有边做类型映射（分批、无 chunk、端点类型用 entity_type_map 回填）。"""
-        rel_batch = int(os.getenv("ONTOLOGY_EXTRACT_REL_BATCH_SIZE", "50"))
-        max_tokens = int(os.getenv("ONTOLOGY_EXTRACT_MAX_TOKENS", "4096"))
-        json_mode = os.getenv("ONTOLOGY_EXTRACT_JSON_MODE", "true").lower() in ("1", "true", "yes", "on")
-        use_original_endpoint = os.getenv("ONTOLOGY_REL_USE_ORIGINAL_ENDPOINT", "true").lower() in ("1", "true", "yes", "on")
 
-        edges = [
-            {"source": r.get("source_entity", ""), "target": r.get("target_entity", ""),
-             "description": (r.get("description", "") or "")[:200]}
-            for r in lightrag_relations
-            if r.get("source_entity") and r.get("target_entity")
-        ]
-        if not edges:
-            return [], []
+# [jonex] 批 6 C-1：无约束关系降级置信度折扣（保留信号但低于正式关系）
+_UNTYPED_EDGE_CONF_DISCOUNT = 0.7
 
-        # [jonex] 方案⑧：预建 source_chunks 索引（不改 LLM payload）
-        # sc_by_idx 与 edges 同过滤口径，保证 idx 严格对齐
-        _filtered_lr = [lr for lr in lightrag_relations
-                        if lr.get("source_entity") and lr.get("target_entity")]
-        sc_by_idx = {j: OntologyExtractor._rel_source_chunks(lr)
-                     for j, lr in enumerate(_filtered_lr)}
-        sc_by_pair = {(lr.get("source_entity", ""), lr.get("target_entity", "")):
-                      OntologyExtractor._rel_source_chunks(lr)
-                      for lr in _filtered_lr}
 
-        system_prompt = RELATION_SYSTEM_PROMPT.format(relations_json=relations_json)
-        batches = [edges[i:i + rel_batch] for i in range(0, len(edges), rel_batch)]
-        sem = asyncio.Semaphore(_extract_concurrency())
+def _keep_untyped_edges_enabled() -> bool:
+    """[jonex] 批 6 C-1 兜底通道开关。
 
-        async def _run_batch(batch_idx: int, batch: List[dict]) -> tuple[List[ExtractedRelation], List[str]]:
-            """处理单批关系定型，返回 (relations, errors)。批间无依赖，可并行。"""
-            b_relations: List[ExtractedRelation] = []
-            b_errors: List[str] = []
-            if use_original_endpoint:
-                # P2A: 边带 idx，LLM 只回 idx→relation_type，端点名取原始边
-                indexed_batch = [
-                    {"idx": j, "source": e["source"], "target": e["target"],
-                     "description": e["description"]}
-                    for j, e in enumerate(batch)
-                ]
-                edge_by_idx = {j: e for j, e in enumerate(batch)}
-                user_prompt = (
-                    "## 候选关系边（本批 {n} 条，来自 LightRAG）\n"
-                    "{edges_json}\n"
-                    "## 输出格式（JSON）\n"
-                    '{{"relations":[{{"idx":0,"relation_type":"关系类型","confidence":0.9}}]}}'
-                ).format(n=len(indexed_batch), edges_json=json.dumps(indexed_batch, ensure_ascii=False))
-                async with sem:
-                    try:
-                        raw = await _openai_chat(
-                            messages=[{"role": "system", "content": system_prompt},
-                                      {"role": "user", "content": user_prompt}],
-                            temperature=0, max_tokens=max_tokens, scope=scope, json_mode=json_mode,
-                        )
-                    except Exception as e:
-                        b_errors.append(f"关系批#{batch_idx} 调用失败: {e}")
-                        return b_relations, b_errors
-                data = self._load_json(raw)
-                if data is None:
-                    b_errors.append(f"关系批#{batch_idx} 输出非合法 JSON")
-                    return b_relations, b_errors
-                for rel in data.get("relations", []):
-                    idx = rel.get("idx")
-                    if idx is None or idx not in edge_by_idx:
-                        continue
-                    e = edge_by_idx[idx]
-                    src, tgt = e["source"], e["target"]
-                    b_relations.append(ExtractedRelation(
-                        source_name=src, target_name=tgt,
-                        source_type=entity_type_map.get(src, ""),
-                        target_type=entity_type_map.get(tgt, ""),
-                        relation_type=rel.get("relation_type", ""),
-                        confidence=float(rel.get("confidence", 1.0)),
-                        source_chunks=sc_by_idx.get(
-                            batch_idx * rel_batch + idx, []),   # [jonex] 方案⑧
+    与 57 老代码同名变量、同语义（生产 true、代码默认 false）——为
+    no_constraint 且两端类型都在 TBox 内的关系降级映射到通用关系
+    RELATES_TO 落图（实体多关系少的根因 L3 兜底；C-2 补 TBox 关系
+    定义后剩余 no_constraint 经此通道保留，不再直接丢弃）。
+
+    兜底类型名 = TBox 里已声明的 RELATES_TO（各 TBox 把它声明为「全类型端点」的
+    通用关联）—— 此前用 RELATED_TO，与 TBox 的 RELATES_TO 仅一字之差却未被任何
+    TBox 声明，落出来的边在编译 schema 里查无此类型（2026-09-11 对齐全仓四份 TBox 时修正）。
+    """
+    return os.getenv("ONTOLOGY_KEEP_UNTYPED_EDGES", "false").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _keep_fallback_entities_enabled() -> bool:
+    """[jonex] 实体侧兜底通道开关（与关系侧 ONTOLOGY_KEEP_UNTYPED_EDGES 对称）。
+
+    §5.8 两层类型设计：TBox 档进本体库、兜底粗类型档只回写 LightRAG 不进本体库。
+    对语料与 TBox 完全不对口的文档（实测 kb_demo_internet/歌词 mp3），LLM 按
+    「无条件出口」落兜底粗类型池（作品/人物/概念/场景…），结果是本体库 0 实体。
+
+    本开关放行兜底档实体入本体库，默认关（安全优先：兜底粗类型是泛化名词，
+    入库会带噪声与偏移的类型标签，属产品语义决策）。
+
+    ⚠️ 兜底类型集合由调用方注入（native_ontology_extractor.load_fallback_types），
+    不在本模块导入——native 侧已 import 本模块，反向 import 会成环。
+    开关开但未注入集合 → 等同关（见 _post_validate），不静默放行全部类型。
+    """
+    return os.getenv("ONTOLOGY_KEEP_FALLBACK_ENTITIES", "false").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _type_alias_map(schema: Optional[dict]) -> Dict[str, str]:
+    """entity_types 的 aliases → {alias: canonical} 类型归一映射。
+
+    为什么需要：aliases 是中文语料的语义入口，prompt 里如实渲染给 LLM
+    （native 侧 _render_type_def），但 valid_etypes 只认 name 字段。LLM 一旦
+    把别名当 type 输出（实测：业务模板 Feature.aliases 含 "概念"/"Concept"），
+    整批实体被判为 TBox 外类型丢弃。
+
+    策略（显式，三选一必须说清）：
+    - canonical names **先占位** → canonical 永远优先于 alias；
+    - 同一别名命中多个类型 → **不映射**并记 warning（不做任意映射：
+      实测 technology.yaml「任务」→ Event/Mission/Skill 三重冲突）；
+    - 大小写敏感，与实体名归一 _alias_map 同口径（避免扩大行为变化面）。
+
+    定义在本模块（而非 native）以便 _post_validate 与 _parse_results 共用；
+    native 侧已 import 本模块，反向则成环。
+    """
+    m: Dict[str, str] = {}
+    if not schema:
+        return m
+    entity_types = schema.get("entity_types") or []
+
+    # ① canonical 先占位
+    for et in entity_types:
+        name = str(et.get("name") or "").strip()
+        if name:
+            m[name] = name
+
+    # ② 先扫全量再判定：避免「先到先得」引入遍历顺序依赖
+    owners: Dict[str, set] = {}
+    for et in entity_types:
+        name = str(et.get("name") or "").strip()
+        if not name:
+            continue
+        for a in et.get("aliases") or []:
+            key = str(a).strip()
+            if not key or key == name:
+                continue
+            owners.setdefault(key, set()).add(name)
+
+    # ③ 只填「未占用 且 无冲突」的别名
+    for alias, alias_owners in owners.items():
+        if len(alias_owners) > 1:
+            logger.warning(
+                "ontology type alias 冲突，跳过映射: alias=%s owners=%s",
+                alias, sorted(alias_owners),
+            )
+            continue
+        if alias in m:  # canonical 已占位，别名不覆盖
+            continue
+        m[alias] = next(iter(alias_owners))
+    return m
+
+
+def _post_validate(
+    entities: List[ExtractedEntity],
+    relations: List[ExtractedRelation],
+    schema: Optional[dict],
+    fallback_types: Optional[set] = None,
+) -> tuple[List[ExtractedEntity], List[ExtractedRelation]]:
+    """丢弃 TBox 之外的实体类型 / 关系类型 / 端点类型不符的关系。
+
+    [jonex] P2（M1）：端点校验从「单值相等」升级为「集合包含」
+    （source_types/target_types 为空时回落 source/target 单值）；
+    丢弃 schema 外关系前先查 inverse 映射——LLM 输出逆名时换成
+    canonical 名并交换 source/target，再走端点校验（物理只落 canonical 方向）。
+    """
+    if not schema:
+        return entities, relations
+
+    valid_etypes = {et.get("name", "") for et in schema.get("entity_types", [])}
+    # [jonex] 实体侧兜底通道（ONTOLOGY_KEEP_FALLBACK_ENTITIES，默认关）：
+    # 开关开且调用方注入了兜底类型集合 → 并入白名单，兜底档实体得以入库；
+    # 同时让「两端类型都在 valid_etypes 内」的 no_constraint 降级条件对兜底档成立。
+    # 开关开但未注入集合 → 等同关（安全降级，不静默放行全部类型）。
+    _fb_types = (
+        set(fallback_types or ()) if _keep_fallback_entities_enabled() else set()
+    )
+    if _fb_types:
+        valid_etypes = valid_etypes | _fb_types
+    rel_constraint: Dict[str, dict] = {}
+    inverse_map: Dict[str, str] = {}
+    for rt in schema.get("relation_types", []):
+        name = rt.get("name", "")
+        if not name:
+            continue
+        rel_constraint[name] = {
+            "source": rt.get("source", ""),
+            "target": rt.get("target", ""),
+            "source_types": rt.get("source_types") or [],
+            "target_types": rt.get("target_types") or [],
+        }
+        inverse_of = rt.get("inverse_of")
+        if inverse_of:
+            inverse_map[inverse_of] = name
+
+    # [jonex] 第二道防线：类型别名归一（解析期 _parse_results 已做，此处幂等无害）。
+    # _post_validate 是公开校验入口，直接以别名类型构造的实体也应被接纳并改写成
+    # canonical；用 replace 而非原地赋值，保持本函数的纯函数契约。
+    _type_alias = _type_alias_map(schema)
+
+    kept_e = []
+    dropped_e_by_type: Dict[str, int] = {}
+    for e in entities:
+        etype = _type_alias.get(e.entity_type, e.entity_type)
+        if etype != e.entity_type:
+            e = replace(e, entity_type=etype)
+        if e.entity_type in valid_etypes or e.entity_type == "unknown":
+            kept_e.append(e)
+        else:
+            dropped_e_by_type[e.entity_type] = dropped_e_by_type.get(e.entity_type, 0) + 1
+    kept_r = []
+    dropped_r_by_reason: Dict[str, int] = {}
+    for r in relations:
+        constraint = rel_constraint.get(r.relation_type)
+        if constraint is None:
+            # [jonex] P2：丢弃前先查 inverse 映射（逆名是虚拟名，物理只落 canonical）
+            canonical_name = inverse_map.get(r.relation_type)
+            if canonical_name:
+                r = ExtractedRelation(
+                    source_name=r.target_name,
+                    source_type=r.target_type,
+                    target_name=r.source_name,
+                    target_type=r.source_type,
+                    relation_type=canonical_name,
+                    confidence=r.confidence,
+                    source_chunks=r.source_chunks,
+                    keywords=r.keywords,          # [jonex] P7：翻转不丢关键词
+                    attributes=r.attributes,      # [jonex] P7：翻转不丢关系属性（step_no 等）
+                )
+                constraint = rel_constraint.get(canonical_name)
+            if constraint is None:
+                # [jonex] 批 6 C-1 兜底通道：两端类型都在 TBox 内的无约束
+                # 关系不直接丢——降级映射到通用关系 RELATES_TO 落图（与 57
+                # 老代码 KEEP_UNTYPED_EDGES 放宽形态一致），原始关系名存
+                # attributes.raw_relation_type 保留语义，confidence 打折标记
+                # 降级。开关默认关；一端不在 TBox 或开关关闭时维持丢弃口径。
+                # 类型名取 RELATES_TO：四份 TBox 均按「全类型端点」声明了它，
+                # 落图类型因此始终可在编译 schema 里解析（详见开关函数 docstring）。
+                if (
+                    _keep_untyped_edges_enabled()
+                    and r.source_type in valid_etypes
+                    and r.target_type in valid_etypes
+                ):
+                    kept_r.append(ExtractedRelation(
+                        source_name=r.source_name,
+                        source_type=r.source_type,
+                        target_name=r.target_name,
+                        target_type=r.target_type,
+                        relation_type="RELATES_TO",
+                        confidence=r.confidence * _UNTYPED_EDGE_CONF_DISCOUNT,
+                        source_chunks=r.source_chunks,
+                        keywords=r.keywords,
+                        attributes={
+                            **(r.attributes or {}),
+                            "raw_relation_type": r.relation_type,
+                        },
                     ))
-            else:
-                user_prompt = RELATION_USER_PROMPT.format(n=len(batch), edges_json=json.dumps(batch, ensure_ascii=False))
-                async with sem:
-                    try:
-                        raw = await _openai_chat(
-                            messages=[{"role": "system", "content": system_prompt},
-                                      {"role": "user", "content": user_prompt}],
-                            temperature=0, max_tokens=max_tokens, scope=scope, json_mode=json_mode,
-                        )
-                    except Exception as e:
-                        b_errors.append(f"关系批#{batch_idx} 调用失败: {e}")
-                        return b_relations, b_errors
-                data = self._load_json(raw)
-                if data is None:
-                    b_errors.append(f"关系批#{batch_idx} 输出非合法 JSON")
-                    return b_relations, b_errors
-                for rel in data.get("relations", []):
-                    src, tgt = rel.get("source", ""), rel.get("target", "")
-                    b_relations.append(ExtractedRelation(
-                        source_name=src, target_name=tgt,
-                        source_type=entity_type_map.get(src, ""),
-                        target_type=entity_type_map.get(tgt, ""),
-                        relation_type=rel.get("relation_type", ""),
-                        confidence=float(rel.get("confidence", 1.0)),
-                        source_chunks=sc_by_pair.get((src, tgt), []),   # [jonex] 方案⑧
-                    ))
-            return b_relations, b_errors
+                    dropped_r_by_reason["downgraded_relates_to"] = (
+                        dropped_r_by_reason.get("downgraded_relates_to", 0) + 1
+                    )
+                else:
+                    dropped_r_by_reason["no_constraint"] = (
+                        dropped_r_by_reason.get("no_constraint", 0) + 1
+                    )
+                continue
+        allowed_src = set(constraint["source_types"]) or {constraint["source"]}
+        allowed_tgt = set(constraint["target_types"]) or {constraint["target"]}
+        # 兜底档不属于任何 TBox 类型，端点约束对其必然 mismatch → 随开关同步放宽，
+        # 否则兜底实体入了库但边全丢，图上只剩一堆孤立节点。
+        if _fb_types:
+            allowed_src = allowed_src | _fb_types
+            allowed_tgt = allowed_tgt | _fb_types
+        # 端点类型同走别名归一（第二道防线，与实体侧一致）——否则实体被归一
+        # 留下来了，边却因端点仍是别名而 mismatch 丢光，图上只剩孤立节点。
+        _stype = _type_alias.get(r.source_type, r.source_type)
+        _ttype = _type_alias.get(r.target_type, r.target_type)
+        if _stype != r.source_type or _ttype != r.target_type:
+            r = replace(r, source_type=_stype, target_type=_ttype)
+        # [jonex] 端点类型为空或 unknown 时视为通配，避免未归类实体把整条边丢光（孤立节点根因）。
+        src_ok = _endpoint_ok(r.source_type, allowed_src)
+        tgt_ok = _endpoint_ok(r.target_type, allowed_tgt)
+        if src_ok and tgt_ok:
+            kept_r.append(r)
+        else:
+            dropped_r_by_reason["endpoint_mismatch"] = (
+                dropped_r_by_reason.get("endpoint_mismatch", 0) + 1
+            )
 
-        # 并发跑各批，按批序聚合（保持结果与错误信息的确定性顺序）
-        results = await asyncio.gather(*[_run_batch(i, b) for i, b in enumerate(batches)])
-        relations: List[ExtractedRelation] = []
-        errors: List[str] = []
-        for b_relations, b_errors in results:
-            relations.extend(b_relations)
-            errors.extend(b_errors)
-        return relations, errors
+    # [jonex] P5-var 观测：reject 计数与原因分桶——TBox 档相对两档全集的
+    # 丢损可见（类型超出 TBox / 关系无约束 / 端点不符），静默丢弃无法
+    # 区分「LLM 没抽出来」与「抽出来被校验丢了」。
+    if dropped_e_by_type or dropped_r_by_reason:
+        logger.info(
+            "ontology _post_validate reject: entities=%s relations=%s",
+            dict(dropped_e_by_type),
+            dict(dropped_r_by_reason),
+        )
+    return kept_e, kept_r

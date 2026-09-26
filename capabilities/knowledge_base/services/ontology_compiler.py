@@ -832,6 +832,10 @@ class OntologyCompiler:
                 "target": target_name,
                 "source_relation_id": rel.id,
                 "cardinality": _normalize_cardinality(rel.relation_type),
+                # [jonex] P1：模板场景侧无 inverse_of/多态端点概念，显式缺省（与 yaml 路径结构一致）
+                "inverse_of": None,
+                "source_types": [],
+                "target_types": [],
             })
 
         return {
@@ -854,7 +858,6 @@ class OntologyCompiler:
 
             registry = OntologyRegistry()
             schema = registry.load(ONTOLOGY_SCHEMA_FALLBACK_PATH)
-            prompt = json.loads(registry.to_prompt_json(schema.domain))
 
             entity_types = [
                 {
@@ -865,11 +868,15 @@ class OntologyCompiler:
                     "status": "active",
                     "aliases": entity_type.aliases,
                     "source_object_id": None,
+                    "extraction_skills": entity_type.extraction_skills,
                     "attributes": [
                         {
                             "name": attr.name,
                             "display_name": attr.name,
-                            "description": "",
+                            # [jonex] P0-fix：透传 YAML 语义说明（此前硬编码 ""，
+                            # Redis 编译档属性说明全空 → 抽取 prompt 属性表
+                            # 只剩属性名，LLM 不填 attributes）。
+                            "description": attr.description or "",
                             "type": attr.type,
                             "required": attr.required,
                             "is_primary_key": False,
@@ -884,13 +891,19 @@ class OntologyCompiler:
                 {
                     "name": relation_type.name,
                     "display_name": relation_type.name,
-                    "description": "",
+                    # [jonex] P0-fix：透传 YAML 语义说明（此前硬编码 ""，
+                    # _writeback_custom_kg 的 rel_desc 读完整 compiled 档 →
+                    # LightRAG 图里 TBox 内关系描述恒空）
+                    "description": relation_type.description or "",
                     "status": "active",
                     "aliases": [],
                     "source": relation_type.source,
                     "target": relation_type.target,
                     "source_relation_id": None,
-                    "cardinality": "custom",
+                    "cardinality": relation_type.cardinality or "custom",
+                    "inverse_of": relation_type.inverse_of,
+                    "source_types": list(relation_type.source_types or []),
+                    "target_types": list(relation_type.target_types or []),
                 }
                 for relation_type in schema.relation_types
             ]
@@ -905,7 +918,15 @@ class OntologyCompiler:
                 "relation_types": relation_types,
                 "constraints": [],
                 "disambiguation": {"case_insensitive": True, "alias_merge": True},
-                "prompt_schema": prompt or self._build_prompt_schema(entity_types, relation_types),
+                # [jonex] P10 批 2.9：无条件走 _build_prompt_schema——旧实现
+                # `prompt or ...` 被 to_prompt_json 非空输出短路，而
+                # to_prompt_json 不含 extraction_skills（P9 遗留 bug），
+                # yaml_default KB 的 compiled 档 prompt_schema 恒缺技能声明
+                # → NativeOntologyExtractor 的技能链 decl_map 恒空、静默跳过
+                # （Redis 实测确认）。_build_prompt_schema 字段集是
+                # to_prompt_json 的超集（+extraction_skills），prompt 渲染
+                # 只取 name 列表，行为零变化。
+                "prompt_schema": self._build_prompt_schema(entity_types, relation_types),
                 "compiled_at": datetime.now(timezone.utc).isoformat(),
             }
         except Exception as e:
@@ -958,6 +979,8 @@ class OntologyCompiler:
                 "aliases": _dedupe_strings(item.get("aliases") or []),
                 "source_object_id": item.get("source_object_id"),
                 "attributes": attributes,
+                # [jonex] P1：TBox 构建技能声明透传（否则保存路径静默丢弃）
+                "extraction_skills": item.get("extraction_skills"),
             })
 
         return normalized
@@ -966,6 +989,19 @@ class OntologyCompiler:
         normalized: list[dict] = []
         names_seen: set[str] = set()
         entity_names = {item["name"] for item in entity_types}
+
+        # [jonex] P1（M1）：预处理收集全部 relation name，供 inverse_of 冲突/互指校验
+        all_names: set[str] = set()
+        for index, item in enumerate(relation_types, start=1):
+            all_names.add(self._require_name(item.get("name"), f"relation_types[{index}].name"))
+
+        # name → inverse_of 映射（互指检测用）
+        inverse_by_name: dict[str, str] = {}
+        for item in relation_types:
+            raw_inverse = (item.get("inverse_of") or "").strip()
+            item_name = (item.get("name") or "").strip()
+            if item_name and raw_inverse:
+                inverse_by_name[item_name] = raw_inverse
 
         for index, item in enumerate(relation_types, start=1):
             name = self._require_name(item.get("name"), f"relation_types[{index}].name")
@@ -984,6 +1020,32 @@ class OntologyCompiler:
             if cardinality not in VALID_CARDINALITY:
                 raise InvalidParameterError(message=translate("err.ontology.invalid_cardinality", params={"name": name, "cardinality": cardinality}, fallback=f"关系基数不合法: {name}={cardinality}")  )  # 原消息)
 
+            # [jonex] P1（M1）：inverse_of / source_types / target_types 校验
+            inverse_of = (item.get("inverse_of") or "").strip() or None
+            if inverse_of:
+                if inverse_of == name:
+                    raise InvalidParameterError(message=translate("err.ontology.inverse_of_self", params={"name": name}, fallback=f"关系 {name} 的 inverse_of 不能指向自身")  )  # 原消息)
+                # 互指（A.inverse_of=B 且 B.inverse_of=A）→ 更明确的报错优先于冲突
+                if inverse_of in all_names and inverse_by_name.get(inverse_of) == name:
+                    raise InvalidParameterError(message=translate("err.ontology.inverse_of_mutual", params={"name": name, "inverse_of": inverse_of}, fallback=f"关系 {name} 与 {inverse_of} 互指 inverse_of，只允许单侧声明")  )  # 原消息)
+                # 逆名是虚拟名，不得与任何 relation_types[].name 冲突
+                if inverse_of in all_names:
+                    raise InvalidParameterError(message=translate("err.ontology.inverse_of_conflict", params={"name": name, "inverse_of": inverse_of}, fallback=f"关系 {name} 的逆名 {inverse_of} 与已有关系名冲突")  )  # 原消息)
+
+            source_types = _dedupe_strings(item.get("source_types") or [])
+            target_types = _dedupe_strings(item.get("target_types") or [])
+            for type_name in source_types:
+                if type_name not in entity_names:
+                    raise InvalidParameterError(message=translate("err.ontology.source_type_missing", params={"name": name, "type": type_name}, fallback=f"关系 {name} 的 source_types 越界: {type_name}")  )  # 原消息)
+            for type_name in target_types:
+                if type_name not in entity_names:
+                    raise InvalidParameterError(message=translate("err.ontology.target_type_missing", params={"name": name, "type": type_name}, fallback=f"关系 {name} 的 target_types 越界: {type_name}")  )  # 原消息)
+            # 数组是单值超集，须包含 source/target 单值
+            if source_types and source not in source_types:
+                raise InvalidParameterError(message=translate("err.ontology.source_types_missing_single", params={"name": name, "source": source}, fallback=f"关系 {name} 的 source_types 必须包含 source 单值: {source}")  )  # 原消息)
+            if target_types and target not in target_types:
+                raise InvalidParameterError(message=translate("err.ontology.target_types_missing_single", params={"name": name, "target": target}, fallback=f"关系 {name} 的 target_types 必须包含 target 单值: {target}")  )  # 原消息)
+
             normalized.append({
                 "name": name,
                 "display_name": (item.get("display_name") or name).strip(),
@@ -994,6 +1056,9 @@ class OntologyCompiler:
                 "target": target,
                 "source_relation_id": item.get("source_relation_id"),
                 "cardinality": cardinality,
+                "inverse_of": inverse_of,
+                "source_types": source_types,
+                "target_types": target_types,
             })
 
         return normalized
@@ -1065,16 +1130,25 @@ class OntologyCompiler:
         return normalized
 
     def _build_prompt_schema(self, entity_types: list[dict], relation_types: list[dict]) -> dict:
+        # [jonex] P1（批 1 第一项）：attribute description 与 relation description/cardinality
+        # 进 prompt——此前 LLM 看不到任何属性语义与基数约束（skill-action §2 前置说明）
+        # [jonex] P9（修复 P7 遗留）：extraction_skills 必须透传进 prompt_schema——
+        # task_manager 把 prompt_schema 作为 tbox 传给 NativeOntologyExtractor.extract()，
+        # 技能链执行器按 schema.entity_types[].extraction_skills 构建声明链，
+        # 不透传则 decl_map 恒空、技能链静默跳过（e2e 观测 P9 技能链日志缺失时发现）。
+        # 只增加字段：LLM prompt 渲染仅取 name 列表，不改变 prompt 文本。
         return {
             "entity_types": [
                 {
                     "name": entity_type["name"],
                     "aliases": entity_type.get("aliases", []),
+                    "extraction_skills": entity_type.get("extraction_skills"),
                     "attributes": [
                         {
                             "name": attr["name"],
                             "type": attr["type"],
                             "required": attr["required"],
+                            "description": attr.get("description") or "",
                         }
                         for attr in entity_type.get("attributes", [])
                     ],
@@ -1086,6 +1160,13 @@ class OntologyCompiler:
                     "name": relation_type["name"],
                     "source": relation_type["source"],
                     "target": relation_type["target"],
+                    "description": relation_type.get("description") or "",
+                    "cardinality": relation_type.get("cardinality") or "custom",
+                    # [jonex] P0-fix：补齐 _post_validate 依赖的三个约束字段
+                    # （此前 prompt_schema 不含，多态扩展失效、逆名关系全丢）
+                    "inverse_of": relation_type.get("inverse_of"),
+                    "source_types": relation_type.get("source_types") or [],
+                    "target_types": relation_type.get("target_types") or [],
                 }
                 for relation_type in relation_types
             ],

@@ -155,7 +155,11 @@ class OntologyQueryService:
 
         schema = await OntologyCompiler().get_compiled_schema(tenant_id, kb_id) or {}
         gdao = OntologyGraphRepository(get_neo4j_driver())
-        counts = await gdao.count_entities_by_type(tenant_id, kb_id)
+        counts = (
+            await gdao._count_entities_by_type_doc(tenant_id, kb_id, req.document_id)
+            if req.document_id
+            else await gdao.count_entities_by_type(tenant_id, kb_id)
+        )
         if not req.include_unknown:
             counts.pop("unknown", None)
 
@@ -165,6 +169,8 @@ class OntologyQueryService:
             name = et["name"]
             known.add(name)
             cnt = counts.get(name, 0)
+            if req.document_id and cnt == 0:
+                continue
             items.append({
                 "name": name,
                 "display_name": et.get("display_name") or name,
@@ -228,6 +234,7 @@ class OntologyQueryService:
                 req.entity_type,
                 req.canonical_name,
                 limit=req.limit,
+                document_id=req.document_id,
             )
             result["degraded"] = False
             return result
@@ -245,7 +252,11 @@ class OntologyQueryService:
 
         schema = await OntologyCompiler().get_compiled_schema(tenant_id, kb_id) or {}
         gdao = OntologyGraphRepository(get_neo4j_driver())
-        counts = await gdao.count_relations_by_type(tenant_id, kb_id)
+        counts = (
+            await gdao.count_relations_by_type_doc(tenant_id, kb_id, req.document_id)
+            if req.document_id
+            else await gdao.count_relations_by_type(tenant_id, kb_id)
+        )
 
         entity_display = {
             et["name"]: (et.get("display_name") or et["name"])
@@ -258,6 +269,8 @@ class OntologyQueryService:
             name = rt["name"]
             known.add(name)
             cnt = counts.get(name, 0)
+            if req.document_id and cnt == 0:
+                continue
             src, tgt = rt.get("source"), rt.get("target")
             items.append({
                 "name": name,

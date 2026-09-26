@@ -5,9 +5,13 @@ from datetime import datetime
 from typing import Any, Optional
 
 try:
-    from pydantic.v1 import BaseModel, Field
+    from pydantic.v1 import BaseModel, Field, ValidationError, validator
 except ImportError:
-    from pydantic import BaseModel, Field
+    from pydantic import BaseModel, Field, ValidationError, validator
+
+import re
+
+_SKILL_REF_RE = re.compile(r"^(builtin|catalog):[A-Za-z0-9_-]+$")
 
 
 class BindTemplateRequest(BaseModel):
@@ -82,6 +86,35 @@ class CompiledEntityTypeInput(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     source_object_id: Optional[str] = Field(default=None, max_length=64)
     attributes: list[CompiledAttributeInput] = Field(default_factory=list)
+    # [jonex] P1：TBox 构建技能声明（可选，缺省零行为变化）。
+    # 保持 dict 形状（与 JSONB 存储 / YAML / models.py 口径一致）：
+    # {"refine": [{skill, description}], "constrain": [{skill, description}]}
+    extraction_skills: Optional[dict] = None
+
+    @validator("extraction_skills")
+    def _validate_extraction_skills(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, dict):
+            raise ValueError("extraction_skills 必须是对象")
+        unknown = set(v.keys()) - {"refine", "constrain"}
+        if unknown:
+            raise ValueError(
+                f"extraction_skills 存在未知分组: {', '.join(sorted(unknown))}"
+            )
+        for group in ("refine", "constrain"):
+            items = v.get(group) or []
+            if not isinstance(items, list):
+                raise ValueError(f"extraction_skills.{group} 必须是列表")
+            for item in items:
+                if not isinstance(item, dict) or not item.get("skill"):
+                    raise ValueError(f"extraction_skills.{group} 每项必须含 skill 字段")
+                skill = str(item["skill"]).strip()
+                if not _SKILL_REF_RE.match(skill):
+                    raise ValueError(
+                        f"extraction_skills 技能名必须以 builtin: 或 catalog: 为前缀: {skill}"
+                    )
+        return v
 
 
 class CompiledRelationTypeInput(BaseModel):
@@ -94,6 +127,10 @@ class CompiledRelationTypeInput(BaseModel):
     target: str = Field(..., min_length=1, max_length=128)
     source_relation_id: Optional[str] = Field(default=None, max_length=64)
     cardinality: str = Field(default="custom", min_length=1, max_length=32)
+    # [jonex] P1：inverse_of 纯声明不建反向边；source_types/target_types 为空回落单值
+    inverse_of: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    source_types: list[str] = Field(default_factory=list)
+    target_types: list[str] = Field(default_factory=list)
 
 
 class CompiledConstraintInput(BaseModel):
@@ -152,6 +189,23 @@ class RelationTypeItem(BaseModel):
     source: Optional[str] = None
     target: Optional[str] = None
     cardinality: Optional[str] = None
+    inverse_of: Optional[str] = None
+    source_types: list[str] = Field(default_factory=list)
+    target_types: list[str] = Field(default_factory=list)
+
+
+class NativeOntologyExtractRequest(BaseModel):
+    """独立本体抽取 HTTP 接口请求（ontology-native-extraction-execution-plan §5.2）。
+
+    chunks + tbox 直传（不绑定 KB），tenant_id 由 Gateway 从认证上下文注入，
+    body 不接受 tenant_id。knowledge_base_id / document_id 仅作 scope 元数据。
+    """
+
+    chunks: list[dict] = Field(..., min_items=1)
+    tbox: dict = Field(...)  # prompt_schema: entity_types/relation_types/synonyms/disambiguation
+    knowledge_base_id: Optional[str] = Field(default=None, max_length=128)
+    document_id: Optional[str] = Field(default=None, max_length=128)
+    options: Optional[dict] = None
 
 
 class ImpactedKBItem(BaseModel):
@@ -178,6 +232,7 @@ __all__ = [
     "EntityTypeItem",
     "ImpactedKBItem",
     "ImpactedKBResponse",
+    "NativeOntologyExtractRequest",
     "RecompileRequest",
     "RelationTypeItem",
     "ReseedCompiledSchemaRequest",

@@ -39,6 +39,12 @@
 #      SUITABLE_FOR_* 关系上，不要只写进自由文本，否则无法图查询。
 #   6) 「业绩与客流数字」统一进 Metric（含 period/scope/yoy_growth），
 #      并标注 accuracy_mark，区分官方口径与博主估算。
+#
+# 增补说明（P6）：按 deploy/config/ontology/default.yaml 最新样例模板对齐
+#   Skill/Action 规程本体（skill-action-ontology-enhancement-plan §2.1/§2.2/§2.5）：
+#   1) 全部含属性实体补 extraction_skills 声明（builtin:no_fabrication 约束技能）；
+#   2) 追加 Skill/Action 实体与 9 条规程关系，按本域类型集适配落地——
+#      无 Product/Method，Product 以 ApparelItem（服装单品）替代并扩展 Accessory。
 
 version: 1
 domain: sasseur_fashion
@@ -56,6 +62,9 @@ entity_types:
       - { name: listing_date, type: date, required: false, description: "上市或成立日期" }
       - { name: portfolio_size, type: string, required: false, description: "管理项目规模，如组合内 4 个奥莱 / 体系内 19 个奥莱" }
       - { name: website, type: string, required: false, description: "官方网站或官方账号" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Brand
     aliases: ["品牌", "牌子", "商标", "入驻品牌", "签约品牌", "国际品牌", "国潮品牌", "运动品牌", "奢侈品牌", "轻奢品牌", "设计师品牌", "买手品牌"]
@@ -68,6 +77,9 @@ entity_types:
       - { name: typical_discount, type: string, required: false, description: "该品牌在奥莱的常规折扣区间，如 5-7 折 / 低至 2 折" }
       - { name: is_anchor_tenant, type: boolean, required: false, description: "是否为主力店/品牌（对客流有带动作用）" }
       - { name: target_audience, type: string, required: false, description: "目标客群，如 25-35 岁都市女性 / 亲子家庭 / 户外爱好者" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Person
     aliases: ["人", "人物", "博主", "达人", "网红", "KOL", "主播", "造型师", "买手", "设计师", "店长", "导购", "嘉宾", "艺人", "主持人", "模特", "顾客", "消费者"]
@@ -80,6 +92,9 @@ entity_types:
       - { name: weight, type: string, required: false, description: "体重（含单位），穿搭参考用，如 52kg" }
       - { name: usual_size, type: string, required: false, description: "日常尺码，如上身 M / 下身 27 码 / 鞋 38" }
       - { name: affiliation, type: string, required: false, description: "所属机构/品牌/商场" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   # ── 场所：综合体 / 分区 / 门店 ───────────────────────────
   - name: Mall
@@ -98,6 +113,9 @@ entity_types:
       - { name: transport, type: text, required: false, description: "交通与停车信息，如地铁 X 号线/免费停车 2 小时/摆渡车班次" }
       - { name: opening_hours, type: string, required: false, description: "营业时间，如 10:00-22:00，大促期间延长至 23:00" }
       - { name: annual_sales, type: string, required: false, description: "年度销售额（含币种），如 RMB 2.x 十亿" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Zone
     aliases: ["分区", "业态分区", "主题馆", "楼层", "区域", "馆", "街区", "中庭", "广场", "意大利购物村", "儿童世界", "美食街", "运动馆", "潮流馆", "艺术中心"]
@@ -107,6 +125,9 @@ entity_types:
       - { name: theme, type: string, required: false, description: "主题定位，如意大利购物村 / 国际美食休闲街" }
       - { name: brand_mix, type: text, required: false, description: "该分区主要品牌构成描述" }
       - { name: navigation_tip, type: text, required: false, description: "逛店动线建议，如先 2F 运动再下 1F 女装，避开中庭人流" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Store
     aliases: ["门店", "店铺", "专卖店", "专柜", "旗舰店", "集合店", "折扣店", "工厂店", "快闪店", "店中店", "柜台"]
@@ -118,6 +139,9 @@ entity_types:
       - { name: opening_date, type: date, required: false, description: "开业/入驻日期" }
       - { name: stock_depth, type: text, required: false, description: "货品深度与断码情况，如尺码齐全 / 仅剩 S 与 XL / 上季款为主" }
       - { name: service_note, type: text, required: false, description: "服务信息，如可改裤长、支持退换、试衣间排队约 10 分钟" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Location
     aliases: ["地点", "位置", "城市", "区县", "商圈", "地铁站", "停车场", "周边"]
@@ -125,6 +149,9 @@ entity_types:
       - { name: location_type, type: enum, required: false, description: "类型：city/district/business_circle/station/parking/landmark" }
       - { name: address, type: string, required: false, description: "地址或所在区域" }
       - { name: distance_note, type: string, required: false, description: "距离/耗时描述，如距市区 25km、地铁转摆渡约 40 分钟" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   # ── 活动：大促 / 年庆 / 现场活动 / 优惠 / 会员 ────────────
   - name: Campaign
@@ -148,6 +175,9 @@ entity_types:
       - { name: yoy_growth, type: string, required: false, description: "同比增幅，如 +30% / 近 28%" }
       - { name: footfall, type: string, required: false, description: "客流量，如 单日 12 万人次" }
       - { name: is_recurring, type: boolean, required: false, description: "是否为年度固定节点（年庆/黄金周为 true）" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Event
     aliases: ["现场活动", "演出", "演艺", "秀", "时装秀", "走秀", "发布会", "展览", "艺术展", "快闪", "工作坊", "亲子活动", "抽奖", "直播", "签售", "见面会", "沙龙", "打卡"]
@@ -161,6 +191,9 @@ entity_types:
       - { name: attendance, type: string, required: false, description: "参与人数/观演人数" }
       - { name: participation_rule, type: text, required: false, description: "参与规则，如消费满 500 元可换取一次抽奖资格" }
       - { name: reward, type: text, required: false, description: "奖品/礼品，如限量帆布袋、100 元无门槛券" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Promotion
     aliases: ["优惠", "折扣", "满减", "券", "优惠券", "代金券", "礼券", "满赠", "返现", "折上折", "会员价", "特价", "秒杀", "第二件半价", "积分兑换", "以旧换新"]
@@ -176,6 +209,9 @@ entity_types:
       - { name: channel, type: enum, required: false, description: "领取或使用渠道：offline/miniprogram/app/livestream/third_party/wechat" }
       - { name: member_only, type: boolean, required: false, description: "是否会员专享" }
       - { name: quantity_limit, type: string, required: false, description: "数量限制/库存，如限量 500 份，先到先得" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: MembershipTier
     aliases: ["会员", "会员等级", "等级", "银卡", "金卡", "白金卡", "黑卡", "VIP", "SVIP", "积分体系"]
@@ -185,6 +221,9 @@ entity_types:
       - { name: points_rate, type: string, required: false, description: "积分倍率，如 1 元 1 分 / 大促期间 3 倍积分" }
       - { name: benefits, type: text, required: false, description: "权益清单，如生日券、专属折扣、免费停车、休息室、优先入场" }
       - { name: validity, type: string, required: false, description: "有效期与保级规则" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Metric
     aliases: ["指标", "数据", "业绩", "销售额", "客流", "出租率", "坪效", "客单价", "转化率", "同比", "环比", "会员数", "增长率"]
@@ -198,6 +237,9 @@ entity_types:
       - { name: baseline, type: string, required: false, description: "对比基准，如较 2019 年疫情前 +55%" }
       - { name: source, type: enum, required: false, description: "来源：official/announcement/research_report/media/blogger_estimate" }
       - { name: accuracy_mark, type: enum, required: false, description: "精度：exact/rounded/estimate" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Award
     aliases: ["奖项", "荣誉", "获奖", "评选", "榜单"]
@@ -206,6 +248,9 @@ entity_types:
       - { name: awarding_body, type: string, required: false, description: "颁奖机构" }
       - { name: year, type: number, required: false, description: "获奖年份" }
       - { name: category, type: string, required: false, description: "奖项类别" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   # ── 穿搭：单品 / 配饰 / 面料 / 颜色 / 图案 ────────────────
   - name: ApparelItem
@@ -236,6 +281,9 @@ entity_types:
       - { name: care_instruction, type: string, required: false, description: "洗护要求，如仅可干洗 / 可机洗低温" }
       - { name: highlight, type: text, required: false, description: "亮点与卖点，如内衬加厚、可拆卸帽子、免烫易打理" }
       - { name: flaw_note, type: text, required: false, description: "缺点/瑕疵提示，如面料易起球、腰围偏大需搭腰带" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Accessory
     aliases: ["配饰", "配件", "包", "包包", "手袋", "托特包", "斜挎包", "鞋", "鞋子", "靴子", "运动鞋", "高跟鞋", "帽子", "围巾", "腰带", "皮带", "眼镜", "墨镜", "首饰", "项链", "耳饰", "手表", "袜子", "丝巾", "手套"]
@@ -251,6 +299,9 @@ entity_types:
       - { name: outlet_price, type: string, required: false, description: "奥莱价（含币种）" }
       - { name: discount, type: string, required: false, description: "折扣力度" }
       - { name: functional_role, type: string, required: false, description: "在整套 Look 中的作用，如提亮点缀/收束比例/通勤装载" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Material
     aliases: ["面料", "材质", "成分", "布料", "羊毛", "羊绒", "棉", "亚麻", "真丝", "涤纶", "尼龙", "皮革", "牛仔", "灯芯绒", "羽绒", "针织", "醋酸", "莱赛尔", "混纺"]
@@ -266,6 +317,9 @@ entity_types:
       - { name: pilling_risk, type: string, required: false, description: "起球风险" }
       - { name: care_level, type: string, required: false, description: "打理难度，如需干洗/可机洗" }
       - { name: is_sustainable, type: boolean, required: false, description: "是否环保/可持续材质（再生纤维等）" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Color
     aliases: ["颜色", "色彩", "配色", "色系", "主色", "辅色", "点缀色", "莫兰迪色", "低饱和", "高饱和", "撞色", "同色系"]
@@ -278,6 +332,9 @@ entity_types:
       - { name: brightness, type: string, required: false, description: "明度描述，如高明度/深色" }
       - { name: pairing_role, type: enum, required: false, description: "在配色中的角色：main/secondary/accent/base" }
       - { name: season_palette, type: string, required: false, description: "四季色彩型适配，如春季型/冬季型" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Pattern
     aliases: ["图案", "花纹", "印花", "条纹", "格纹", "波点", "千鸟格", "碎花", "提花", "刺绣", "迷彩", "字母Logo", "纯色"]
@@ -286,6 +343,9 @@ entity_types:
       - { name: scale, type: string, required: false, description: "图案大小，如细条纹/大格纹（影响显瘦与视觉重量）" }
       - { name: visual_effect, type: text, required: false, description: "视觉效果，如竖条纹显高、大面积格纹显宽" }
       - { name: pairing_note, type: text, required: false, description: "混搭建议，如同图案不叠穿、图案单品全身仅一件" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   # ── 穿搭：风格 / 成套 Look / 场合 / 身材 / 规则 ───────────
   - name: StyleGenre
@@ -297,6 +357,9 @@ entity_types:
       - { name: color_tendency, type: string, required: false, description: "常用色彩倾向" }
       - { name: popular_period, type: string, required: false, description: "流行时段，如 2024 秋冬起走热" }
       - { name: suitable_occasion, type: string, required: false, description: "适配场合概述" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Outfit
     aliases: ["搭配", "穿搭", "造型", "Look", "整套", "套装搭配", "一日穿搭", "OOTD", "搭配方案", "叠穿"]
@@ -315,6 +378,9 @@ entity_types:
       - { name: budget_level, type: string, required: false, description: "预算档位，如 500 元内 / 千元级" }
       - { name: highlight, type: text, required: false, description: "整套亮点与穿着效果，如上短下长拉腿、腰线上提显高" }
       - { name: source, type: enum, required: false, description: "来源：blogger/brand_lookbook/store_display/campaign_poster/user_share" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Occasion
     aliases: ["场合", "场景", "用途", "通勤", "上班", "约会", "逛街", "旅行", "度假", "宴会", "婚礼", "年会", "面试", "健身", "亲子出行", "看展", "露营", "接送孩子"]
@@ -326,6 +392,9 @@ entity_types:
       - { name: activity_intensity, type: string, required: false, description: "活动强度，如久站久走 / 长时间坐姿" }
       - { name: duration, type: string, required: false, description: "持续时长，如全天 8 小时" }
       - { name: weather_note, type: string, required: false, description: "天气与环境提示，如室内空调足需可脱卸外层" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: BodyType
     aliases: ["身材", "体型", "身型", "梨形", "苹果形", "沙漏型", "H型身材", "倒三角", "小个子", "高个子", "微胖", "骨架大", "肩宽", "腰粗", "腿粗"]
@@ -337,6 +406,9 @@ entity_types:
       - { name: common_concern, type: text, required: false, description: "常见修饰诉求，如显高、显瘦、遮胃、修饰手臂、平衡肩宽" }
       - { name: recommended_silhouette, type: string, required: false, description: "推荐廓形" }
       - { name: avoid_silhouette, type: string, required: false, description: "不建议廓形" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: SkinTone
     aliases: ["肤色", "色彩季型", "冷白皮", "暖黄皮", "小麦色", "黑皮", "春季型", "夏季型", "秋季型", "冬季型"]
@@ -345,6 +417,9 @@ entity_types:
       - { name: depth, type: string, required: false, description: "深浅，如白皙/中等/偏深" }
       - { name: suitable_palette, type: text, required: false, description: "适配色彩，如燕麦、驼、雾霾蓝" }
       - { name: avoid_palette, type: text, required: false, description: "慎选色彩，如荧光黄、明黄" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: StylingRule
     aliases: ["搭配规则", "搭配技巧", "穿搭法则", "三色原则", "上短下长", "腰线上提", "内扎外松", "同色系叠穿", "避坑", "雷区", "注意事项"]
@@ -357,6 +432,9 @@ entity_types:
       - { name: applicable_body_type, type: string, required: false, description: "适用体型" }
       - { name: applicable_occasion, type: string, required: false, description: "适用场合" }
       - { name: confidence, type: string, required: false, description: "确定性/普适度，如通用 / 因人而异" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: SizeSpec
     aliases: ["尺码", "码数", "尺寸表", "版型数据", "净尺寸", "肩宽", "胸围", "腰围", "臀围", "衣长", "裤长"]
@@ -369,6 +447,9 @@ entity_types:
       - { name: shoulder, type: string, required: false, description: "肩宽（含单位）" }
       - { name: length, type: string, required: false, description: "衣长/裤长（含单位）" }
       - { name: fit_note, type: text, required: false, description: "版型偏差说明，如整体偏大半码、袖长偏短" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Season
     aliases: ["季节", "季", "节令", "春夏", "秋冬", "换季", "开季", "节点", "春节", "五一", "国庆", "双十一", "圣诞", "跨年", "七夕", "母亲节", "儿童节"]
@@ -377,6 +458,9 @@ entity_types:
       - { name: period, type: string, required: false, description: "对应时间区间，如 2026-02-15 至 2026-02-22" }
       - { name: climate, type: string, required: false, description: "气候特征，如日均 8-15℃、多风" }
       - { name: retail_significance, type: text, required: false, description: "零售意义，如清库存主战场 / 上新窗口 / 礼赠高峰" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Trend
     aliases: ["趋势", "流行趋势", "潮流", "爆款", "热门单品", "流行色", "流行元素", "秀场趋势", "种草"]
@@ -388,10 +472,58 @@ entity_types:
       - { name: heat_level, type: string, required: false, description: "热度，如搜索量同比 +120%" }
       - { name: lifecycle_stage, type: enum, required: false, description: "生命周期：emerging/rising/peak/declining" }
       - { name: representative_item, type: string, required: false, description: "代表单品" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Concept
     aliases: ["概念", "术语", "定义", "分类", "客群", "标签", "打法", "模式"]
     attributes: []
+
+  # ── [jonex] P6：Skill/Action 规程本体（skill-action-ontology-enhancement-plan §2.1）──
+  - name: Skill
+    display_name: 技能
+    aliases: ["技能", "能力项", "操作能力", "作业项", "任务", "业务办理", "规程"]
+    attributes:
+      - { name: definition, type: text, required: false, description: "语义定义：本技能的业务含义及与相近技能的区分" }
+      - { name: skill_domain, type: string, required: false, description: "所属领域/模块" }
+      - { name: goal, type: text, required: false, description: "技能达成的目标（业务办理的终点）" }
+      - { name: prerequisites, type: text, required: false, description: "技能级前置条件（换行分隔）" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
+
+  - name: Action
+    display_name: 动作
+    aliases: ["动作", "操作", "步骤", "作业", "指令", "处置"]
+    attributes:
+      # —— 语义化（四步法第③步）：实例级精准语义 ——
+      - { name: definition, type: text, required: false, description: "语义定义：本动作的精确业务含义及与相近动作的区分（如冻结 vs 止付）" }
+      # —— 行动化（四步法第④步）：执行契约 ——
+      - { name: action_type, type: enum, required: false, description: "operation|decision|interaction|validation" }
+      - { name: step_no, type: number, required: false, description: "在所属技能中的步骤序号（冗余，便于列表展示）" }
+      - { name: parameters, type: text, required: false, description: "参数列表（换行分隔 k=v）" }
+      - { name: preconditions, type: text, required: false, description: "前置条件：执行前必须满足/核验什么（换行分隔）" }
+      - { name: authorization, type: text, required: false, description: "权限约束：谁能执行（角色/职级/审批），换行分隔" }
+      - { name: atomic_effects, type: text, required: false, description: "事务内后果：主状态变更，失败整体回滚（换行分隔）" }
+      - { name: follow_ups, type: text, required: false, description: "提交后联动：通知/审计/其他系统，失败不撤销主操作（换行分隔）" }
+      - { name: failure_policy, type: text, required: false, description: "失败处理边界：什么失败回滚、什么失败不回滚及优先级原则" }
+      - { name: audit_required, type: boolean, required: false, description: "是否需要审计留痕" }
+      - { name: duration, type: string, required: false, description: "耗时/时限" }
+      - { name: frequency, type: string, required: false, description: "执行频率" }
+    # TBox 构建技能声明（§2.5）：抽取该类型时按序调用；P7 技能链执行器上线前为声明占位
+    extraction_skills:
+      refine:
+        - { skill: builtin:step_serializer, description: "无序清单编 step_no、补 NEXT_STEP" }
+        - { skill: builtin:contract_filler, description: "从当前 chunk 上下文补契约字段（authorization/failure_policy 等，禁编造由约束技能保证）" }
+        - { skill: builtin:semantic_definition, description: "生成 definition，与相近动作区分" }
+      constrain:
+        - { skill: builtin:name_normalizer, description: "动作名「动词+宾语」归一、去敬语、截断" }
+        - { skill: builtin:endpoint_verifier, description: "挂接端点必须存在于 chunk 正文，否则丢弃该挂接" }
+        - { skill: builtin:no_fabrication, description: "契约字段禁编造：文档未写 authorization/failure_policy 必须置空" }
+        - { skill: builtin:synonym_merger, description: "KB 级同义词归一（声明技能：执行在 kb-service 写图前 reconcile 的 _apply_synonyms，抽取期 no-op）" }
+        - { skill: builtin:dedup_merger, description: "同名合并（大小写不敏感）" }
+        - { skill: builtin:schema_validator, description: "_post_validate：端点集合校验 + inverse 归一翻转" }
 
 relation_types:
   # ── 主体与场所归属 ───────────────────────────────────────
@@ -709,10 +841,94 @@ relation_types:
     target: Concept
     description: "活动面向某客群标签（如亲子家庭、Z 世代、通勤白领）"
 
+    # ↓ 通用关联：同时是抽取的兜底降级目标（ONTOLOGY_KEEP_UNTYPED_EDGES=true 时，
+    #    TBox 未约束但两端类型都在 TBox 内的关系落成此类型）——故端点声明为全类型，
+    #    保证图谱里的 RELATES_TO 边始终能在编译 schema 中解析。
   - name: RELATES_TO
     source: Concept
     target: Concept
-    description: "概念之间的关联（兜底关系，避免强塞到具体关系上）"
+    source_types: [Organization, Brand, Person, Mall, Zone, Store, Location, Campaign, Event, Promotion, MembershipTier, Metric, Award, ApparelItem, Accessory, Material, Color, Pattern, StyleGenre, Outfit, Occasion, BodyType, SkinTone, StylingRule, SizeSpec, Season, Trend, Concept, Skill, Action]
+    target_types: [Organization, Brand, Person, Mall, Zone, Store, Location, Campaign, Event, Promotion, MembershipTier, Metric, Award, ApparelItem, Accessory, Material, Color, Pattern, StyleGenre, Outfit, Occasion, BodyType, SkinTone, StylingRule, SizeSpec, Season, Trend, Concept, Skill, Action]
+    description: "通用关联（概念间关联 + 抽取兜底降级目标：无更精确关系时归此类型）"
+
+  # ── [jonex] P6：Skill/Action 规程关系（skill-action-ontology-enhancement-plan §2.2，
+  #    物理只存 canonical 方向，inverse_of 为元数据）──
+  # target 为主值（单值回落路径），target_types 为多态扩展集合（P1 已打通）。
+  # [jonex] 领域适配：本域无 Product/Method——ACTS_ON/SKILL_FOR 以 ApparelItem
+  #   （服装单品）替代 Product 并扩展 Accessory；USES_TOOL 工具侧收缩为
+  #   Concept/Accessory（小程序核销、腰带收腰等）；REQUIRES 前置条件侧以
+  #   Promotion（会员/券门槛）扩展。Location 保留模板多态。
+  - name: HAS_STEP
+    source: Skill
+    target: Action
+    target_types: [Action]
+    cardinality: one_to_many
+    inverse_of: STEP_OF
+    description: "技能有哪些步骤"
+
+  - name: NEXT_STEP
+    source: Action
+    target: Action
+    target_types: [Action]
+    cardinality: one_to_one
+    inverse_of: PREV_STEP
+    description: "下一步 / 上一步"
+
+  - name: PERFORMED_BY
+    source: Action
+    target: Person
+    target_types: [Person, Organization]
+    cardinality: many_to_many
+    inverse_of: PERFORMS
+    description: "谁执行 / 某人负责哪些动作"
+
+  - name: ACTS_ON
+    source: Action
+    target: ApparelItem
+    target_types: [ApparelItem, Accessory, Concept, Location]
+    cardinality: many_to_many
+    inverse_of: ACTED_ON_BY
+    description: "作用于什么 / 对某单品或配饰有哪些操作（卷袖口、改裤长、核销券等）"
+
+  - name: USES_TOOL
+    source: Action
+    target: Concept
+    target_types: [Concept, Accessory]
+    cardinality: many_to_many
+    inverse_of: USED_IN
+    description: "用什么工具（本域收缩为概念/配饰：小程序核销、腰带收腰等）"
+
+  - name: RESULTS_IN
+    source: Action
+    target: Event
+    target_types: [Event, Concept]
+    cardinality: many_to_many
+    inverse_of: RESULT_OF
+    description: "产出什么"
+
+  - name: REQUIRES
+    source: Action
+    target: Concept
+    target_types: [Concept, Promotion]
+    cardinality: many_to_many
+    inverse_of: REQUIRED_BY
+    description: "前置条件（如会员等级、券/满减门槛）"
+
+  - name: HAS_SKILL
+    source: Person
+    target: Skill
+    target_types: [Skill]
+    cardinality: many_to_many
+    inverse_of: SKILL_OF
+    description: "谁会做什么"
+
+  - name: SKILL_FOR
+    source: Skill
+    target: ApparelItem
+    target_types: [ApparelItem, Accessory, Concept]
+    cardinality: many_to_many
+    inverse_of: HAS_SKILL_ITEM
+    description: "某单品/品类有哪些操作技能（穿搭/导购规程）"
 
 constraints:
   - type: required_attribute

@@ -53,6 +53,12 @@
 #   ⚠️ 抽取要求（供 OntologyExtractor 提示）：对"版本清单/兼容性表"类文档，
 #      必须**逐条穷举**每个版本条目的 CUDA/GPU/VS/驱动映射，不要只抽头尾几条；
 #      对"规格参数表"必须逐行抽取（含速度/续航/载荷/数量/尺寸），保留单位。
+#
+# 增补说明（v6）：按 deploy/config/ontology/default.yaml 最新样例模板对齐
+#   P6 Skill/Action 规程本体（skill-action-ontology-enhancement-plan §2.1/§2.2/§2.5）：
+#   1) 全部含属性实体补 extraction_skills 声明（builtin:no_fabrication 约束技能）；
+#   2) 追加 Skill/Action 实体与 9 条规程关系，按本域类型集适配落地——
+#      无 Method 以 Software 替代；REQUIRES 与存量「软件系统要求」合并为多态。
 
 version: 1
 domain: technology
@@ -70,6 +76,9 @@ entity_types:
       - { name: ticker, type: string, required: false, description: "股票代码，如 NYSE:XOM" }
       - { name: headquarters, type: string, required: false, description: "总部所在地，如 near Cincinnati, OH" }
       - { name: employee_count, type: number, required: false, description: "员工规模，如 more than 200 employees" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Person
     aliases: ["人", "人员", "个人", "作者", "研究员", "开发者", "贡献者", "提交者", "工程师", "宇航员", "机长", "指令长", "发言人"]
@@ -81,6 +90,9 @@ entity_types:
       - { name: nationality, type: string, required: false, description: "国籍，如 American" }
       - { name: birth_date, type: date, required: false, description: "出生日期" }
       - { name: record_held, type: text, required: false, description: "创下的纪录，如女性单次航天最长 328 天 / 首位离开近地轨道的女性" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   # ── 产品：硬件设备与整机 ─────────────────────────────────
   - name: Product
@@ -127,6 +139,9 @@ entity_types:
       - { name: control_count, type: string, required: false, description: "可操作控件数量，如 16 个编码器 / 16 个 pad(两组各 8，共 16) / 25 键，逐项抽取避免只抽'8 pad'漏掉'共 16'" }
       - { name: climb_angle, type: string, required: false, description: "最大攀爬坡度角，如 35°" }
       - { name: joint_count, type: string, required: false, description: "关节/电机数量，如 16 个关节电机" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Component
     aliases: ["部件", "组件", "配件", "模块", "元件", "零件", "接口", "端口", "芯片", "处理器", "电机", "电池", "充电器", "显示屏", "摄像头", "镜头", "传感器", "激光雷达", "轮胎", "关节电机", "编码器", "旋钮", "踏板"]
@@ -141,6 +156,9 @@ entity_types:
       - { name: cores, type: string, required: false, description: "核心/单元数量，如 6-core CPU/16-core Neural Engine/8 核 CPU" }
       - { name: interface_type, type: string, required: false, description: "接口类型，如 USB-C/XLR/TRS/RCA/1/8\"/Kensington lock" }
       - { name: supports_balanced_xlr, type: boolean, required: false, description: "麦克风等接口是否支持平衡 XLR 线缆" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   # ── 软件与版本 ───────────────────────────────────────────
   - name: Software
@@ -151,6 +169,9 @@ entity_types:
       - { name: latest_version, type: string, required: false, description: "最新/当前版本号" }
       - { name: platform, type: string, required: false, description: "运行平台，如 Windows/macOS/iOS/Linux" }
       - { name: license, type: string, required: false, description: "授权方式，如开源/商业授权/免费" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: SoftwareRelease
     aliases: ["版本", "发行版", "发布版本", "release", "版本号", "更新", "工具包版本"]
@@ -171,6 +192,9 @@ entity_types:
       - { name: dropped_ide, type: string, required: false, description: "该版本正式移除（dropped）支持的 IDE，如 Visual Studio 2017/2019" }
       - { name: is_nonpublic, type: boolean, required: false, description: "是否为非公开发行（如 2024.4.0 仅面向 ISV/OEM）" }
       - { name: prior_version, type: string, required: false, description: "紧邻的上一个版本号，用于版本时间线与前后代推理" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: SoftwareToolkit
     aliases: ["工具包", "SDK", "工具集", "CUDA", "CUDA Toolkit", "Toolkit", "运行时", "开发套件"]
@@ -179,6 +203,9 @@ entity_types:
       - { name: version, type: string, required: false, description: "工具包版本号，如 12.4/12.7/12.8/13.0/13.3（每个 minor 版本单独成实体，便于'哪个版本支持它/最早支持/共有几个'类查询）" }
       - { name: release_year, type: number, required: false, description: "该工具包版本发布年份，如 2024（供'CUDA 12.7 与 12.4 同为哪年'类问题）" }
       - { name: vendor, type: string, required: false, description: "发行方，如 NVIDIA" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   # ── 规格 / 功能 / 技术 ───────────────────────────────────
   - name: Specification
@@ -190,6 +217,9 @@ entity_types:
       - { name: condition, type: text, required: false, description: "测试条件或取值说明，如 25±2°C、75±0.5kg 负载、15km/h 匀速" }
       - { name: compliance_requirement, type: string, required: false, description: "合规要求阈值，如 ≥1200W / 45N·m ± 3N·m" }
       - { name: report_no, type: string, required: false, description: "测试报告编号，如 OTSA1-202501024 / EDG2507250233S00501R" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Feature
     aliases: ["功能", "特性", "模式", "技术", "能力", "系统", "骑行模式", "性能模式"]
@@ -199,6 +229,9 @@ entity_types:
       - { name: default_state, type: enum, required: false, description: "默认状态：enabled/disabled（如 E-ABS、TCS 默认关闭）" }
       - { name: requires_app, type: boolean, required: false, description: "是否需经配套 App 启用（如 Xiaomi Home 才能开启 Boost/Find My）" }
       - { name: autonomy_level, type: string, required: false, description: "自动驾驶/自动化等级（如 Emergency Assist 2.0、五级自动驾驶）" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   # ── 学术：基准 / 论文 ────────────────────────────────────
   - name: Benchmark
@@ -216,6 +249,9 @@ entity_types:
       - { name: year, type: number, required: false, description: "发布年份" }
       - { name: venue, type: string, required: false, description: "发表会议/期刊，如 ICLR 2024" }
       - { name: url, type: string, required: false, description: "数据/榜单地址，如 swebench.com" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Publication
     aliases: ["论文", "出版物", "文章", "会议论文", "预印本", "技术报告"]
@@ -226,6 +262,9 @@ entity_types:
       - { name: author_count, type: number, required: false, description: "作者数量" }
       - { name: institutions, type: string, required: false, description: "作者所属机构，如 Princeton University / University of Chicago" }
       - { name: contact, type: string, required: false, description: "通讯作者邮箱" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   # ── 标准 / 认证 ──────────────────────────────────────────
   - name: Standard
@@ -234,18 +273,27 @@ entity_types:
       - { name: code, type: string, required: false, description: "标准编号，如 IEC 60529:2013、TIS 1039-2547、IPX6、ERP Level VI、RoHS" }
       - { name: standard_body, type: string, required: false, description: "标准机构/发布方，如 IEC/TIS" }
       - { name: edition_year, type: string, required: false, description: "标准版本年份，如 2013" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   # ── 上下文：地点 / 事件 / 概念 ──────────────────────────
   - name: Location
     aliases: ["地点", "位置", "地区", "城市", "国家", "场所", "中心"]
     attributes:
       - { name: address, type: string, required: false, description: "地址或所在区域" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Event
     aliases: ["事件", "活动", "发布会", "任务", "项目", "演示", "会议", "赛事"]
     attributes:
       - { name: date, type: date, required: false, description: "发生日期" }
       - { name: description, type: text, required: false, description: "事件说明" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Concept
     aliases: ["概念", "术语", "定义", "品类", "分类", "技术方向"]
@@ -258,6 +306,9 @@ entity_types:
       - { name: brand, type: string, required: false, description: "品牌，如 Xiaomi/Unitree" }
       - { name: category, type: string, required: false, description: "系列品类，如电动滑板车/四足机器人" }
       - { name: members, type: text, required: false, description: "系列成员示例，如 6 Max/6 Ultra/7 Series；Go2/Go2-W" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: HardwareArchitecture
     aliases: ["架构", "芯片架构", "微架构", "GPU架构", "计算架构", "指令集架构"]
@@ -265,6 +316,9 @@ entity_types:
       - { name: vendor, type: string, required: false, description: "厂商，如 NVIDIA/Apple" }
       - { name: generation, type: string, required: false, description: "代次/系列，如 Blackwell/Ampere/Hopper/Maxwell/Pascal/Volta" }
       - { name: representative_chips, type: string, required: false, description: "代表芯片/GPU，如 B100/B200/GB202/H100/A100/GA102" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   # ── 航天任务 / 设施场站 / 事故（v3 增补域） ─────────────
   - name: Mission
@@ -279,6 +333,9 @@ entity_types:
       - { name: distance_traveled, type: string, required: false, description: "飞行里程，如 122,883,151 miles / 5.7 million miles" }
       - { name: target, type: string, required: false, description: "任务目标/天体，如 Dimorphos / Moon / ISS" }
       - { name: outcome, type: text, required: false, description: "任务结果/成果，如部署哈勃望远镜、部署 AMS-2" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Facility
     aliases: ["设施", "场站", "工厂", "厂", "基础设施", "数据中心", "变电站", "炼油厂", "污水处理厂", "平台", "仓库", "配送中心", "发射台"]
@@ -289,6 +346,9 @@ entity_types:
       - { name: commissioned_date, type: string, required: false, description: "投产/建成时间，如 1937 / Nov. 28, 2017" }
       - { name: location, type: string, required: false, description: "所在位置，如 200 miles offshore Newfoundland" }
       - { name: annual_output, type: string, required: false, description: "年产出，如 up to 12,000 humanoid robots per year" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Incident
     aliases: ["事故", "安全事故", "爆炸", "火灾", "事件", "调查"]
@@ -299,6 +359,9 @@ entity_types:
       - { name: damage_cost, type: string, required: false, description: "经济损失，如 roughly $550 million" }
       - { name: substance_released, type: string, required: false, description: "泄漏/释放物质，如 39,000 pounds of flammable hydrocarbon vapor" }
       - { name: evacuees, type: number, required: false, description: "疏散人数，如 2,500" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   # ── AI 模型 / 通信协议（v4 增补域） ─────────────────────
   - name: AIModel
@@ -312,6 +375,9 @@ entity_types:
       - { name: pretrain_data, type: string, required: false, description: "预训练数据规模" }
       - { name: price, type: string, required: false, description: "调用价格/成本，如每百万 token 价格" }
       - { name: throughput, type: string, required: false, description: "推理吞吐，如 38 tokens/秒(H200)/6.7 tokens/秒(M3 Max)" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Protocol
     aliases: ["协议", "通信协议", "通讯协议", "无线协议", "无线技术", "通信技术", "连接标准", "网络协议"]
@@ -322,6 +388,54 @@ entity_types:
       - { name: signal_strength, type: string, required: false, description: "信号强度示例，如 -91dB/-95dB/-100dB" }
       - { name: is_license_free, type: boolean, required: false, description: "是否免许可频段（如 LoRa 在美国免许可）" }
       - { name: power_profile, type: string, required: false, description: "功耗特性，如低功耗（IoT）" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
+
+  # ── [jonex] P6：Skill/Action 规程本体（skill-action-ontology-enhancement-plan §2.1）──
+  - name: Skill
+    display_name: 技能
+    aliases: ["技能", "能力项", "操作能力", "作业项", "任务", "业务办理", "规程"]
+    attributes:
+      - { name: definition, type: text, required: false, description: "语义定义：本技能的业务含义及与相近技能的区分" }
+      - { name: skill_domain, type: string, required: false, description: "所属领域/模块" }
+      - { name: goal, type: text, required: false, description: "技能达成的目标（业务办理的终点）" }
+      - { name: prerequisites, type: text, required: false, description: "技能级前置条件（换行分隔）" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
+
+  - name: Action
+    display_name: 动作
+    aliases: ["动作", "操作", "步骤", "作业", "指令", "处置"]
+    attributes:
+      # —— 语义化（四步法第③步）：实例级精准语义 ——
+      - { name: definition, type: text, required: false, description: "语义定义：本动作的精确业务含义及与相近动作的区分（如冻结 vs 止付）" }
+      # —— 行动化（四步法第④步）：执行契约 ——
+      - { name: action_type, type: enum, required: false, description: "operation|decision|interaction|validation" }
+      - { name: step_no, type: number, required: false, description: "在所属技能中的步骤序号（冗余，便于列表展示）" }
+      - { name: parameters, type: text, required: false, description: "参数列表（换行分隔 k=v）" }
+      - { name: preconditions, type: text, required: false, description: "前置条件：执行前必须满足/核验什么（换行分隔）" }
+      - { name: authorization, type: text, required: false, description: "权限约束：谁能执行（角色/职级/审批），换行分隔" }
+      - { name: atomic_effects, type: text, required: false, description: "事务内后果：主状态变更，失败整体回滚（换行分隔）" }
+      - { name: follow_ups, type: text, required: false, description: "提交后联动：通知/审计/其他系统，失败不撤销主操作（换行分隔）" }
+      - { name: failure_policy, type: text, required: false, description: "失败处理边界：什么失败回滚、什么失败不回滚及优先级原则" }
+      - { name: audit_required, type: boolean, required: false, description: "是否需要审计留痕" }
+      - { name: duration, type: string, required: false, description: "耗时/时限" }
+      - { name: frequency, type: string, required: false, description: "执行频率" }
+    # TBox 构建技能声明（§2.5）：抽取该类型时按序调用；P7 技能链执行器上线前为声明占位
+    extraction_skills:
+      refine:
+        - { skill: builtin:step_serializer, description: "无序清单编 step_no、补 NEXT_STEP" }
+        - { skill: builtin:contract_filler, description: "从当前 chunk 上下文补契约字段（authorization/failure_policy 等，禁编造由约束技能保证）" }
+        - { skill: builtin:semantic_definition, description: "生成 definition，与相近动作区分" }
+      constrain:
+        - { skill: builtin:name_normalizer, description: "动作名「动词+宾语」归一、去敬语、截断" }
+        - { skill: builtin:endpoint_verifier, description: "挂接端点必须存在于 chunk 正文，否则丢弃该挂接" }
+        - { skill: builtin:no_fabrication, description: "契约字段禁编造：文档未写 authorization/failure_policy 必须置空" }
+        - { skill: builtin:synonym_merger, description: "KB 级同义词归一（声明技能：执行在 kb-service 写图前 reconcile 的 _apply_synonyms，抽取期 no-op）" }
+        - { skill: builtin:dedup_merger, description: "同名合并（大小写不敏感）" }
+        - { skill: builtin:schema_validator, description: "_post_validate：端点集合校验 + inverse 归一翻转" }
 
 relation_types:
   # 主体归属
@@ -429,11 +543,9 @@ relation_types:
     target: Software
     description: "某版本将某 IDE/功能标记为弃用但尚未移除（如 Nsight 2025.1 弃用 VS2019、随后 2025.5.0 才移除），用于区分 deprecated 与 dropped 的时间点"
 
-  - name: REQUIRES
-    source: Software
-    target: Specification
-    description: "软件的运行/系统要求（如最低内存、操作系统版本）"
-
+  # ── [jonex] P6 合并说明：原「REQUIRES（Software→Specification 系统要求）」已与
+  #    下方 P6 的 Action 前置条件关系合并为多态（source_types [Action, Software]），
+  #    关系名不变，存量 Software→Specification 边不分裂、新抽取继续有效。 ──
   - name: RUNS_SOFTWARE
     source: Product
     target: Software
@@ -460,10 +572,15 @@ relation_types:
     target: Location
     description: "组织/机构位于某地"
 
+    # ↓ 通用关联：同时是抽取的兜底降级目标（ONTOLOGY_KEEP_UNTYPED_EDGES=true 时，
+    #    TBox 未约束但两端类型都在 TBox 内的关系落成此类型）——故端点声明为全类型，
+    #    保证图谱里的 RELATES_TO 边始终能在编译 schema 中解析。
   - name: RELATES_TO
     source: Concept
     target: Concept
-    description: "概念之间的关联"
+    source_types: [Organization, Person, Product, Component, Software, SoftwareRelease, SoftwareToolkit, Specification, Feature, Benchmark, Publication, Standard, Location, Event, Concept, ProductSeries, HardwareArchitecture, Mission, Facility, Incident, AIModel, Protocol, Skill, Action]
+    target_types: [Organization, Person, Product, Component, Software, SoftwareRelease, SoftwareToolkit, Specification, Feature, Benchmark, Publication, Standard, Location, Event, Concept, ProductSeries, HardwareArchitecture, Mission, Facility, Incident, AIModel, Protocol, Skill, Action]
+    description: "通用关联（概念间关联 + 抽取兜底降级目标：无更精确关系时归此类型）"
 
   # ── 增补关系（v2）：世系 / 检测 / 依赖 / 生态 ────────────
   - name: MEMBER_OF
@@ -592,6 +709,86 @@ relation_types:
     source: Product
     target: Protocol
     description: "设备采用某通信/无线协议（如无人机用 OcuSync、手机用 Wi-Fi 7/5G、LoRa 板用 LoRa）"
+
+  # ── [jonex] P6：Skill/Action 规程关系（skill-action-ontology-enhancement-plan §2.2，
+  #    物理只存 canonical 方向，inverse_of 为元数据）──
+  # target 为主值（单值回落路径），target_types 为多态扩展集合（P1 已打通）。
+  # [jonex] 领域适配：本域无 Method，USES_TOOL 工具侧以 Software（软件工具）替代；
+  #   REQUIRES 与存量「软件系统要求」（Software→Specification）同名合并为多态
+  #   （source_types [Action, Software]，target_types 扩展 Specification），
+  #   存量边关系名不变、已抽取数据不分裂。
+  - name: HAS_STEP
+    source: Skill
+    target: Action
+    target_types: [Action]
+    cardinality: one_to_many
+    inverse_of: STEP_OF
+    description: "技能有哪些步骤"
+
+  - name: NEXT_STEP
+    source: Action
+    target: Action
+    target_types: [Action]
+    cardinality: one_to_one
+    inverse_of: PREV_STEP
+    description: "下一步 / 上一步"
+
+  - name: PERFORMED_BY
+    source: Action
+    target: Person
+    target_types: [Person, Organization]
+    cardinality: many_to_many
+    inverse_of: PERFORMS
+    description: "谁执行 / 某人负责哪些动作"
+
+  - name: ACTS_ON
+    source: Action
+    target: Product
+    target_types: [Product, Concept, Location]
+    cardinality: many_to_many
+    inverse_of: ACTED_ON_BY
+    description: "作用于什么 / 对某产品有哪些操作"
+
+  - name: USES_TOOL
+    source: Action
+    target: Product
+    target_types: [Product, Software]
+    cardinality: many_to_many
+    inverse_of: USED_IN
+    description: "用什么工具（本域工具含硬件产品与软件工具，如 Claude Code/CUDA Toolkit）"
+
+  - name: RESULTS_IN
+    source: Action
+    target: Event
+    target_types: [Event, Concept]
+    cardinality: many_to_many
+    inverse_of: RESULT_OF
+    description: "产出什么"
+
+  - name: REQUIRES
+    source: Action
+    target: Concept
+    source_types: [Action, Software]
+    target_types: [Concept, Product, Specification]
+    cardinality: many_to_many
+    inverse_of: REQUIRED_BY
+    description: "前置条件；本域与存量「软件系统要求」（Software→Specification）合并为多态，存量边名不变"
+
+  - name: HAS_SKILL
+    source: Person
+    target: Skill
+    target_types: [Skill]
+    cardinality: many_to_many
+    inverse_of: SKILL_OF
+    description: "谁会做什么"
+
+  - name: SKILL_FOR
+    source: Skill
+    target: Product
+    target_types: [Product, Concept]
+    cardinality: many_to_many
+    inverse_of: HAS_SKILL_ITEM
+    description: "某产品有哪些操作技能"
 
 constraints:
   - type: required_attribute

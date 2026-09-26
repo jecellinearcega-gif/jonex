@@ -10,6 +10,7 @@ class OntologyStatsRequest(BaseModel):
 
     knowledge_base_id: str
     include_unknown: bool = True  # 类型目录是否包含未归类(unknown)条目；默认含，便于暴露覆盖率
+    document_id: Optional[str] = None  # 按来源文档过滤计数；缺省 = KB 级全量
 
 
 class OntologyGraphRequest(BaseModel):
@@ -28,6 +29,7 @@ class OntologyNeighborRequest(BaseModel):
     entity_type: str
     canonical_name: str
     limit: int = 50
+    document_id: Optional[str] = None  # 按来源文档过滤邻居节点；缺省 = KB 级全量
 
 
 class OntologyInstanceListRequest(BaseModel):

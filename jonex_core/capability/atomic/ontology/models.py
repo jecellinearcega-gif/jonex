@@ -28,6 +28,9 @@ class EntityTypeDef:
     name: str
     aliases: List[str] = field(default_factory=list)
     attributes: List[AttributeDef] = field(default_factory=list)
+    # [jonex] P1（skill-action 批 1）：TBox 构建技能声明
+    # {refine: [{skill, description}], constrain: [{skill, description}]}，缺省 None
+    extraction_skills: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "EntityTypeDef":
@@ -35,6 +38,7 @@ class EntityTypeDef:
             name=data["name"],
             aliases=data.get("aliases", []),
             attributes=[AttributeDef(**a) for a in data.get("attributes", [])],
+            extraction_skills=data.get("extraction_skills"),
         )
 
 
@@ -46,6 +50,10 @@ class RelationTypeDef:
     source: Optional[str] = None  # 源实体类型约束
     target: Optional[str] = None  # 目标实体类型约束
     description: Optional[str] = None
+    cardinality: str = "custom"  # [jonex] P1：打通已有字段（from_dict 此前丢 cardinality）
+    inverse_of: Optional[str] = None  # [jonex] P1：逆关系名（纯声明，不建反向边）
+    source_types: List[str] = field(default_factory=list)  # 为空则回落到 source 单值
+    target_types: List[str] = field(default_factory=list)  # 为空则回落到 target 单值
 
     @classmethod
     def from_dict(cls, data: dict) -> "RelationTypeDef":
@@ -54,6 +62,10 @@ class RelationTypeDef:
             source=data.get("source"),
             target=data.get("target"),
             description=data.get("description"),
+            cardinality=data.get("cardinality") or "custom",
+            inverse_of=data.get("inverse_of"),
+            source_types=list(data.get("source_types") or []),
+            target_types=list(data.get("target_types") or []),
         )
 
 
@@ -152,12 +164,15 @@ class OntologySchema:
                     name=a.get("name") or a.get("ontology_code", ""),
                     type=a.get("type", "string"),
                     required=a.get("required", False),
-                    description=a.get("display_name") or a.get("description"),
+                    # [jonex] P0-fix：优先真实语义说明；display_name 恒非空
+                    # （fallback=name），旧顺序 description 永不被采用。
+                    description=a.get("description") or a.get("display_name"),
                 ))
             entity_types.append(EntityTypeDef(
                 name=et.get("name", ""),
                 aliases=et.get("aliases", []),
                 attributes=attrs,
+                extraction_skills=et.get("extraction_skills"),
             ))
 
         relation_types = []
@@ -166,7 +181,11 @@ class OntologySchema:
                 name=rt.get("name", ""),
                 source=rt.get("source"),
                 target=rt.get("target"),
-                description=rt.get("display_name") or rt.get("description"),
+                description=rt.get("description") or rt.get("display_name"),
+                cardinality=rt.get("cardinality") or "custom",
+                inverse_of=rt.get("inverse_of"),
+                source_types=list(rt.get("source_types") or []),
+                target_types=list(rt.get("target_types") or []),
             ))
 
         disamb = data.get("disambiguation", {})

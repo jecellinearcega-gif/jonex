@@ -2,14 +2,22 @@
 # -*- coding:utf-8 -*-
 """Neo4j repository for ontology graph instances."""
 
+import asyncio
 import json
 import logging
 import os
+import random
 from typing import Optional
 
 from neo4j import AsyncDriver
+from neo4j.exceptions import TransientError
 
-from jonex_core.common.ontology_embedding import build_embed_text, embed, embed_hash
+from jonex_core.common.ontology_embedding import (
+    build_embed_text,
+    embed,
+    embed_hash,
+    ingest_embed_timeout,
+)
 from jonex_core.common.exceptions import InvalidParameterError, ResourceNotFoundError
 from jonex_core.common.i18n import translate
 from jonex_core.common.tenant import require_tenant
@@ -17,24 +25,67 @@ from jonex_core.common.tenant import require_tenant
 logger = logging.getLogger(__name__)
 
 
-def _row_object_merge_key(entity: dict) -> Optional[dict]:
-    """[jonex] 改动 18（§10.2.5）：row_as_object 实体的增量 upsert 键。
+# [jonex] P0-a：原 _row_object_merge_key（表格对象按 table_sig+pk_value
+# upsert）已删除——该键不受唯一约束保护，会撞 ConstraintValidationFailed
+# 导致整轮写图失败。合并键现统一为约束键，详见 merge_entity 内注释。
 
-    表格对象按 ``(tenant_id, kb_id, table_signature, 主键值)`` upsert——
-    同一张表（列名签名相同）改一行不必全表重建；跨文档同模板的表
-    自然合并（doc_ids 累积）。非表格对象返回 None（沿用
-    ``(entity_type, canonical_name)`` 通用 MERGE 键）。
+
+# ── 写图 transient 错误重试兜底 ──────────────────────────────
+# Neo4j 对 TransientError（尤其 DeadlockDetected、锁超时）的官方语义就是
+# 「重试即可」；但 driver 只在 managed transaction（session.execute_write）
+# 内自动重试，本仓储用手动 ``session.run``，必须自己兜。默认 6 次尝试
+# （1 次首跑 + 5 次重试），指数退避 + 抖动，最坏单条约 15.5s。
+_WRITE_RETRY_ATTEMPTS_DEFAULT = 6
+_WRITE_RETRY_BASE_DELAY_DEFAULT = 0.5
+
+
+def _write_retry_attempts() -> int:
+    try:
+        return max(1, int(os.getenv("ONTOLOGY_WRITE_RETRY_ATTEMPTS", str(_WRITE_RETRY_ATTEMPTS_DEFAULT))))
+    except (TypeError, ValueError):
+        return _WRITE_RETRY_ATTEMPTS_DEFAULT
+
+
+def _write_retry_base_delay() -> float:
+    try:
+        return max(0.0, float(os.getenv("ONTOLOGY_WRITE_RETRY_BASE_DELAY", str(_WRITE_RETRY_BASE_DELAY_DEFAULT))))
+    except (TypeError, ValueError):
+        return _WRITE_RETRY_BASE_DELAY_DEFAULT
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    """Neo4j transient（可重试）错误判据：类型优先，``code`` 前缀兜底。"""
+    if isinstance(exc, TransientError):
+        return True
+    return str(getattr(exc, "code", "") or "").startswith("Neo.TransientError")
+
+
+async def _with_transient_retry(fn, *, what: str):
+    """执行 ``fn()``（async，含结果消费）；transient 错误退避重试，其余上抛。
+
+    重试次数/退避可用 ``ONTOLOGY_WRITE_RETRY_ATTEMPTS`` /
+    ``ONTOLOGY_WRITE_RETRY_BASE_DELAY`` 覆盖（后者置 0 即不等待，测试用）。
     """
-    if (
-        entity.get("extraction_method") == "row_as_object"
-        and entity.get("table_sig")
-        and entity.get("pk_value")
-    ):
-        return {
-            "table_sig": entity["table_sig"],
-            "pk_value": entity["pk_value"],
-        }
-    return None
+    attempts = _write_retry_attempts()
+    base = _write_retry_base_delay()
+    for attempt in range(attempts):
+        try:
+            return await fn()
+        except Exception as exc:  # noqa: BLE001 — 非 transient 原样上抛
+            if attempt >= attempts - 1 or not _is_transient_error(exc):
+                raise
+            delay = base * (2 ** attempt) + (random.uniform(0, base) if base else 0.0)
+            logger.warning(
+                "%s 撞 Neo4j transient 错误（第 %d/%d 次），%.2fs 后重试：%s",
+                what, attempt + 1, attempts, delay, exc,
+            )
+            if delay > 0:
+                await asyncio.sleep(delay)
+
+
+def _endpoint_lock_key(entity_type: Optional[str], name: Optional[str]) -> tuple:
+    """端点加锁排序键（见 merge_relation 死锁修复）。"""
+    return (entity_type or "", name or "")
 
 
 class OntologyGraphRepository:
@@ -73,32 +124,34 @@ class OntologyGraphRepository:
                 vec = await embed(
                     text, tenant_id=tenant_id, kb_id=kb_id, doc_id=doc_id,
                     trace_id=f"ontology_ingest:{doc_id}" if doc_id else None,
+                    timeout=ingest_embed_timeout(),
                 )
                 if vec is not None:
                     embedding = vec
                     embedding_hash_val = new_hash
 
-        # [jonex] 改动 18：表格对象按 (tenant, kb, table_sig, pk_value) upsert，
-        # 键不含 entity_type/canonical_name——类型判定或限定值变化时最新一版
-        # 覆盖旧版（同一行 upsert 语义）；非表格对象沿用通用 MERGE 键。
-        table_key = _row_object_merge_key(entity)
-        if table_key is not None:
-            merge_clause = (
-                "MERGE (e:OntologyEntity {tenant_id:$tenant_id, kb_id:$kb_id, "
-                "table_sig:$table_sig, pk_value:$pk_value})"
-            )
-            type_set = "e.entity_type=$entity_type, e.canonical_name=$canonical_name, "
-        else:
-            merge_clause = (
-                "MERGE (e:OntologyEntity {tenant_id:$tenant_id, kb_id:$kb_id, "
-                "entity_type:$entity_type, canonical_name:$canonical_name})"
-            )
-            type_set = ""
+        # [jonex] P0-a：MERGE 键必须与唯一约束
+        # (tenant_id, kb_id, entity_type, canonical_name) 完全一致。
+        #
+        # 旧实现（改动 18）给表格对象用 (tenant_id, kb_id, table_sig,
+        # pk_value) 做 upsert 键——该键**不受约束保护**，MERGE 匹配不到已有
+        # 节点就落 ON CREATE，随即撞唯一约束抛 ConstraintValidationFailed。
+        # 该错误不是 TransientError（_is_transient_error 只认 Neo.TransientError
+        # 前缀），仓储层重试与整段重写都不兜 → 判写图失败 → 半写收回 →
+        # 文档零贡献。触发条件很常见：table_sig 只由表头 md5 得出，同一主键
+        # 行出现在不同表片段（sig 不同、canonical_name 相同）即撞。
+        # 线上 2026-09-12 c31ac916 实测：29433 实体全部写不进去。
+        #
+        # 表格对象的识别与增量语义不依赖 MERGE 键：table_sig / pk_value 仍
+        # 写为节点属性；canonical_name 由 build_objects 生成时已含主键
+        # （+限定值）保证 KB 内唯一（见 table_object_extractor 文件头 P3 说明），
+        # 故改用约束键不改变表格对象的 upsert 粒度。
         cypher = (
-            merge_clause + "\n"
+            "MERGE (e:OntologyEntity {tenant_id:$tenant_id, kb_id:$kb_id, "
+            "entity_type:$entity_type, canonical_name:$canonical_name})\n"
             "ON CREATE SET\n"
-            + type_set
-            + "e.aliases=$aliases, e.aliases_text=$aliases_text,\n"
+            "e.aliases=$aliases, e.aliases_text=$aliases_text,\n"
+            "    e.table_sig=$table_sig, e.pk_value=$pk_value,\n"
             "    e.attributes=$attributes, e.confidence=$confidence,\n"
             "    e.description=$description,\n"
             "    e.doc_ids=[$doc_id], e.source_chunks=$source_chunks,\n"
@@ -106,8 +159,9 @@ class OntologyGraphRepository:
             "    e.embedding=$embedding, e.embedding_hash=$embedding_hash,\n"
             "    e.stub=false, e.created_at=timestamp(), e.updated_at=timestamp()\n"
             "ON MATCH SET\n"
-            + type_set
-            + "e.aliases=$aliases, e.aliases_text=$aliases_text, e.attributes=$attributes,\n"
+            "e.aliases=$aliases, e.aliases_text=$aliases_text,\n"
+            "    e.table_sig=$table_sig, e.pk_value=$pk_value,\n"
+            "    e.attributes=$attributes,\n"
             "    e.description=CASE WHEN size($description) > size(coalesce(e.description,''))\n"
             "        THEN $description ELSE e.description END,\n"
             "    e.confidence=CASE WHEN $confidence>coalesce(e.confidence,0) THEN $confidence ELSE e.confidence END,\n"
@@ -138,39 +192,72 @@ class OntologyGraphRepository:
             "embedding_hash": embedding_hash_val,
         }
         async with self._driver.session() as session:
-            await session.run(cypher, params)
+            async def _write():
+                result = await session.run(cypher, params)
+                # consume：既确保错误在此刻抛出（否则被静默吞到 GC），
+                # 也让 transient 重试真正覆盖到执行阶段。
+                await result.consume()
 
-    async def merge_relation(self, tenant_id: str, kb_id: str, doc_id: str, rel: dict) -> None:
+            await _with_transient_retry(_write, what=f"merge_entity({entity['canonical_name']})")
+
+    async def merge_relation(
+        self, tenant_id: str, kb_id: str, doc_id: str, rel: dict,
+    ) -> tuple[str, str, str, str, str, int, int]:
+        """MERGE 关系 + 端点兜底 stub，返回实际写入键。
+
+        [jonex] P10 批 4.1：返回 (src_type, src_name, tgt_type, tgt_name,
+        relation_type, src_node_id, tgt_node_id)。src/tgt name 是端点解析
+        后的名字（ONTOLOGY_REL_ENDPOINT_RESOLVE 开启时可能 ≠ rel 原始名），
+        node id 是 MERGE 命中的实际节点。调用方（reconciliation service）
+        用解析后名构造清理名单（口径与图内 canonical_name 一致），用
+        节点 id 豁免本轮刚写入的边。
+        """
         tenant_id = require_tenant(tenant_id)
-        use_endpoint_resolve = os.getenv("ONTOLOGY_REL_ENDPOINT_RESOLVE", "true").lower() in ("1", "true", "yes", "on")
-        if use_endpoint_resolve:
-            src_type, src_name = await self._resolve_endpoint(
-                tenant_id, kb_id, rel["source_name"], rel.get("source_type"))
-            tgt_type, tgt_name = await self._resolve_endpoint(
-                tenant_id, kb_id, rel["target_name"], rel.get("target_type"))
+        (src_type, src_name), (tgt_type, tgt_name) = await self._resolve_relation_endpoints(
+            tenant_id, kb_id, rel)
+        # [jonex] 死锁修复①：两个端点按 (entity_type, canonical_name) 字典序
+        # 先加锁，与关系方向解耦。MERGE 会申请节点写锁，加锁顺序若随方向变化，
+        # A→B 与 B→A 两个并发事务会互相等待对方已持有的锁（线上
+        # DeadlockDetected：并发 24 时 filing_event.md 写图两次全挂）。
+        # s_is_a 记录关系方向落在排序后的哪一侧。
+        if _endpoint_lock_key(src_type, src_name) <= _endpoint_lock_key(tgt_type, tgt_name):
+            a_type, a_name, b_type, b_name, s_is_a = src_type, src_name, tgt_type, tgt_name, True
         else:
-            src_type = await self._resolve_entity_type(
-                tenant_id, kb_id, rel["source_name"], rel.get("source_type"))
-            tgt_type = await self._resolve_entity_type(
-                tenant_id, kb_id, rel["target_name"], rel.get("target_type"))
-            src_name = rel["source_name"]
-            tgt_name = rel["target_name"]
+            a_type, a_name, b_type, b_name, s_is_a = tgt_type, tgt_name, src_type, src_name, False
         # [jonex] 方案⑧：从 rel dict 取关系的 source_chunks，用于 ONT_REL 边出处 + stub 端点兜底
         # Neo4j 不允许 list-of-map 作为属性值，以 JSON string 存储（与 merge_entity 口径一致）
         rel_source_chunks = rel.get("source_chunks") or []
         cypher = """
-        MERGE (s:OntologyEntity {tenant_id:$t, kb_id:$k, entity_type:$src_type, canonical_name:$src_name})
-        ON CREATE SET s.stub=true, s.confidence=0.1, s.aliases=[], s.aliases_text='',
-            s.attributes='{}',
-            s.source_chunks=apoc.convert.toJson($rel_source_chunks),
-            s.lightrag_doc_ids=[],
-            s.extraction_method='stub', s.doc_ids=[$doc_id], s.created_at=timestamp(), s.updated_at=timestamp()
-        MERGE (o:OntologyEntity {tenant_id:$t, kb_id:$k, entity_type:$tgt_type, canonical_name:$tgt_name})
-        ON CREATE SET o.stub=true, o.confidence=0.1, o.aliases=[], o.aliases_text='',
-            o.attributes='{}',
-            o.source_chunks=apoc.convert.toJson($rel_source_chunks),
-            o.lightrag_doc_ids=[],
-            o.extraction_method='stub', o.doc_ids=[$doc_id], o.created_at=timestamp(), o.updated_at=timestamp()
+        MERGE (a:OntologyEntity {tenant_id:$t, kb_id:$k, entity_type:$a_type, canonical_name:$a_name})
+        ON CREATE SET a.stub=true, a.confidence=0.1, a.aliases=[], a.aliases_text='',
+            a.attributes='{}',
+            a.source_chunks=apoc.convert.toJson($rel_source_chunks),
+            a.lightrag_doc_ids=[],
+            a.extraction_method='stub', a.doc_ids=[$doc_id], a.created_at=timestamp(), a.updated_at=timestamp()
+        ON MATCH SET
+            a.doc_ids = CASE WHEN coalesce(a.stub,false)=true
+                THEN apoc.coll.toSet(coalesce(a.doc_ids,[])+[$doc_id]) ELSE a.doc_ids END,
+            a.source_chunks = CASE WHEN coalesce(a.stub,false)=true
+                THEN apoc.convert.toJson(apoc.coll.toSet(apoc.convert.fromJsonList(coalesce(a.source_chunks,'[]'))+$rel_source_chunks))
+                ELSE a.source_chunks END,
+            a.updated_at = CASE WHEN coalesce(a.stub,false)=true THEN timestamp() ELSE a.updated_at END
+        WITH a
+        MERGE (b:OntologyEntity {tenant_id:$t, kb_id:$k, entity_type:$b_type, canonical_name:$b_name})
+        ON CREATE SET b.stub=true, b.confidence=0.1, b.aliases=[], b.aliases_text='',
+            b.attributes='{}',
+            b.source_chunks=apoc.convert.toJson($rel_source_chunks),
+            b.lightrag_doc_ids=[],
+            b.extraction_method='stub', b.doc_ids=[$doc_id], b.created_at=timestamp(), b.updated_at=timestamp()
+        ON MATCH SET
+            b.doc_ids = CASE WHEN coalesce(b.stub,false)=true
+                THEN apoc.coll.toSet(coalesce(b.doc_ids,[])+[$doc_id]) ELSE b.doc_ids END,
+            b.source_chunks = CASE WHEN coalesce(b.stub,false)=true
+                THEN apoc.convert.toJson(apoc.coll.toSet(apoc.convert.fromJsonList(coalesce(b.source_chunks,'[]'))+$rel_source_chunks))
+                ELSE b.source_chunks END,
+            b.updated_at = CASE WHEN coalesce(b.stub,false)=true THEN timestamp() ELSE b.updated_at END
+        WITH a, b,
+             CASE WHEN $s_is_a THEN a ELSE b END AS s,
+             CASE WHEN $s_is_a THEN b ELSE a END AS o
         MERGE (s)-[r:ONT_REL {relation_type:$rel_type}]->(o)
         ON CREATE SET r.confidence=$confidence, r.attributes=$attributes,
             r.lightrag_doc_ids=$lightrag_doc_ids, r.doc_ids=[$doc_id],
@@ -186,15 +273,17 @@ class OntologyGraphRepository:
             r.attributes=$attributes,
             r.confidence=CASE WHEN $confidence>coalesce(r.confidence,0) THEN $confidence ELSE r.confidence END,
             r.updated_at=timestamp()
+        RETURN id(s) AS sid, id(o) AS oid
         """
         params = {
             "t": tenant_id,
             "k": kb_id,
             "doc_id": doc_id,
-            "src_type": src_type,
-            "src_name": src_name,
-            "tgt_type": tgt_type,
-            "tgt_name": tgt_name,
+            "a_type": a_type,
+            "a_name": a_name,
+            "b_type": b_type,
+            "b_name": b_name,
+            "s_is_a": s_is_a,
             "rel_type": rel["relation_type"],
             "confidence": rel.get("confidence", 1.0),
             "attributes": json.dumps(rel.get("attributes", {}), ensure_ascii=False),
@@ -202,7 +291,169 @@ class OntologyGraphRepository:
             "rel_source_chunks": rel_source_chunks,   # [jonex] 方案⑧
         }
         async with self._driver.session() as session:
-            await session.run(cypher, params)
+            async def _write():
+                result = await session.run(cypher, params)
+                return await result.single()
+
+            # [jonex] 死锁修复②：run+consume 是一个重试单元——服务端死锁可能在
+            # 结果消费阶段才抛出，只包 run 会漏掉。
+            record = await _with_transient_retry(_write, what="merge_relation")
+            sid = int(record["sid"]) if record else 0
+            oid = int(record["oid"]) if record else 0
+        # [jonex] P10 批 4.1：返回实际写入键——src/tgt name 经端点解析
+        # 可能已对齐到正式 canonical_name，调用方清理名单必须用解析后名；
+        # sid/oid 供清理第 3 步豁免本轮刚写入的边（防「摘旧类型节点连带
+        # 摘新边」）。
+        return (src_type, src_name, tgt_type, tgt_name, rel["relation_type"], sid, oid)
+
+    async def _resolve_relation_endpoints(
+        self, tenant_id: str, kb_id: str, rel: dict,
+    ) -> tuple[tuple, tuple]:
+        """解析一条关系的两个端点，返回 (src_lock_key, tgt_lock_key)。
+
+        从 merge_relation 里原样抽出，**两边共用同一个实现**——加锁口径
+        与分桶口径一致必须由构造保证，不能靠人工同步。
+        命中 ``_endpoint_cache`` 时零额外查询。
+        """
+        use_endpoint_resolve = os.getenv("ONTOLOGY_REL_ENDPOINT_RESOLVE", "true").lower() in ("1", "true", "yes", "on")
+        if use_endpoint_resolve:
+            src_type, src_name = await self._resolve_endpoint(
+                tenant_id, kb_id, rel["source_name"], rel.get("source_type"))
+            tgt_type, tgt_name = await self._resolve_endpoint(
+                tenant_id, kb_id, rel["target_name"], rel.get("target_type"))
+        else:
+            src_type = await self._resolve_entity_type(
+                tenant_id, kb_id, rel["source_name"], rel.get("source_type"))
+            tgt_type = await self._resolve_entity_type(
+                tenant_id, kb_id, rel["target_name"], rel.get("target_type"))
+            src_name = rel["source_name"]
+            tgt_name = rel["target_name"]
+        return (
+            _endpoint_lock_key(src_type, src_name),
+            _endpoint_lock_key(tgt_type, tgt_name),
+        )
+
+    async def resolve_relation_endpoint_keys(
+        self, tenant_id: str, kb_id: str, rels: list[dict],
+    ) -> list[tuple[tuple, tuple]]:
+        """批量解析，返回与 ``rels`` 等长的 ``[(src_lock_key, tgt_key), ...]``。
+
+        **为什么必须批量**：单条 ``_resolve_endpoint`` 的
+        ``canonical_name=$n OR $n IN aliases`` 与 find_reference_hits 被优化掉
+        的是同一个反模式——OR 让 planner 无法下推索引，只能按 (tenant_id, kb_id)
+        前缀取全部节点再逐行过滤。1992 个行对象名各不相同（缓存全 miss），
+        逐条串行 = 1992 次全 KB 扫描，线上 KB 已 5 万节点，是分钟级至十分钟级
+        的净增开销，且加在 merge 之前的纯等待（改动前这些查询好歹在 24 并发里跑）。
+
+        两段式（口径同 find_reference_hits）：
+          ① canonical_name 等值匹配走 ont_entity_name 索引（等值 seek）；
+          ② 仅对第 ① 段未命中的名字扫 aliases。
+        结果回填 ``_endpoint_cache``，后续 merge_relation 内部解析零额外查询。
+
+        端点选取口径与 ``_resolve_endpoint`` 严格对齐：canonical 精确命中优先 →
+        有 type_hint 时该类型优先 → confidence 降序；未命中兜底
+        ``(type_hint or "Unknown", name)``。**命中与未命中都回填缓存**——未命中
+        端点在热点文档里恰恰是大多数，漏回填会让 merge_relation 内部把它们再查
+        一遍，批量解析省下的开销被抵消一半。
+        """
+        tenant_id = require_tenant(tenant_id)
+        if not rels:
+            return []
+
+        def _cache_key(name: str, hint: Optional[str]) -> tuple:
+            return (kb_id, name, hint or "")
+
+        # 去重（同一名字常被多条关系引用），跳过已缓存的
+        pending: dict[tuple, dict] = {}
+        for rel in rels:
+            for name, hint in (
+                (rel["source_name"], rel.get("source_type")),
+                (rel["target_name"], rel.get("target_type")),
+            ):
+                ck = _cache_key(name, hint)
+                if ck not in self._endpoint_cache and ck not in pending:
+                    pending[ck] = {"v": name, "h": hint or None}
+
+        if pending:
+            hits = await self._lookup_entities_by_names(
+                tenant_id, kb_id, list(pending.values()),
+            )
+            for ck, item in pending.items():
+                name, hint = item["v"], item["h"]
+                self._endpoint_cache[ck] = hits.get(name) or ((hint or "Unknown"), name)
+
+        return [
+            (
+                _endpoint_lock_key(*self._endpoint_cache[_cache_key(rel["source_name"], rel.get("source_type"))]),
+                _endpoint_lock_key(*self._endpoint_cache[_cache_key(rel["target_name"], rel.get("target_type"))]),
+            )
+            for rel in rels
+        ]
+
+    async def _lookup_entities_by_names(
+        self, tenant_id: str, kb_id: str, values: list[dict],
+    ) -> dict[str, tuple[str, str]]:
+        """批量查 ``[{v, h}]`` 命中的正式实体，返回 ``{name: (entity_type, canonical_name)}``。
+
+        与 ``_resolve_endpoint`` 同优先级口径，只是把「逐值一条 Cypher」换成
+        「一次 UNWIND 批量」。``h`` 是 type_hint（可为 null）：
+        它**不**在第 ① 段过滤（canonical 精确命中的一律收），只参与排序优选；
+        在第 ② 段（别名命中、canonical 不等值）则过滤——与非批量版
+        ``WHERE ($hint IS NULL OR e.canonical_name=$name OR e.entity_type=$hint)``
+        等价。
+        """
+        hits: dict[str, tuple[str, str]] = {}
+
+        # ── 第 ① 段：canonical_name 等值命中（走 ont_entity_name 索引 seek）──
+        cypher_exact = """
+        UNWIND $values AS row
+        MATCH (e:OntologyEntity {tenant_id:$t, kb_id:$k, canonical_name:row.v})
+        WHERE coalesce(e.stub,false)=false
+        WITH row, e
+        ORDER BY row.v,
+                 (CASE WHEN row.h IS NOT NULL AND e.entity_type=row.h THEN 0 ELSE 1 END),
+                 coalesce(e.confidence,0) DESC
+        WITH row.v AS value, collect(e)[0] AS best
+        RETURN value AS value, best.entity_type AS entity_type,
+               best.canonical_name AS canonical_name
+        """
+        async with self._driver.session() as session:
+            result = await session.run(
+                cypher_exact, {"t": tenant_id, "k": kb_id, "values": values},
+            )
+            async for record in result:
+                hits[record["value"]] = (
+                    record["entity_type"] or "Unknown",
+                    record["canonical_name"],
+                )
+
+        # ── 第 ② 段：仅剩余值扫 aliases（列表属性无法索引，逐节点过滤）──
+        remaining = [row for row in values if row["v"] not in hits]
+        if remaining:
+            cypher_alias = """
+            UNWIND $values AS row
+            MATCH (e:OntologyEntity {tenant_id:$t, kb_id:$k})
+            WHERE coalesce(e.stub,false)=false
+              AND row.v IN coalesce(e.aliases,[])
+              AND (row.h IS NULL OR e.canonical_name=row.v OR e.entity_type=row.h)
+            WITH row, e
+            ORDER BY row.v,
+                     (CASE WHEN e.canonical_name=row.v THEN 0 ELSE 1 END),
+                     coalesce(e.confidence,0) DESC
+            WITH row.v AS value, collect(e)[0] AS best
+            RETURN value AS value, best.entity_type AS entity_type,
+                   best.canonical_name AS canonical_name
+            """
+            async with self._driver.session() as session:
+                result = await session.run(
+                    cypher_alias, {"t": tenant_id, "k": kb_id, "values": remaining},
+                )
+                async for record in result:
+                    hits[record["value"]] = (
+                        record["entity_type"] or "Unknown",
+                        record["canonical_name"],
+                    )
+        return hits
 
     async def find_reference_hits(
         self, tenant_id: str, kb_id: str, values: list[str],
@@ -212,33 +463,69 @@ class OntologyGraphRepository:
         返回 ``{值: (entity_type, canonical_name)}``——值精确命中 KB 内某
         非 stub 实体的 canonical_name 或 aliases。多命中时 canonical_name
         优先、confidence 降序取一（与 _resolve_endpoint 同优先级口径）。
+
+        [jonex] 两段式：原实现把 ``canonical_name=v OR v IN e.aliases`` 写在同一条
+        谓词里，OR 让 planner 无法下推索引、只能按 ``(tenant_id, kb_id)`` 前缀取全部
+        节点再逐行过滤，复杂度 = 候选值数 × KB 节点数（候选上限 3000，线上 KB 已 5 万
+        节点 → 上亿次属性比较，实测单条 Cypher 满核跑 11 分钟未完成）。拆两段后：
+          ① canonical_name 等值匹配走 ``ont_entity_name`` 索引（等值 seek）；
+          ② **只对第 ① 段未命中的剩余值**扫 aliases——Neo4j 常规索引不支持列表成员
+             查找，这半段无法索引化。正常情况绝大多数值在第 ① 段命中，剩余量很小；
+             最坏情况（值全不命中）仍会退化，故由调用方 ``_write_graph_once`` 套整体
+             超时兜底（超时降级为「本轮无引用关系」，不阻断写图）。
         """
         tenant_id = require_tenant(tenant_id)
         values = [v for v in values if v]
         if not values:
             return {}
-        cypher = """
+        hits: dict[str, tuple[str, str]] = {}
+
+        # ── 第 ① 段：canonical_name 等值命中（走 ont_entity_name 索引 seek）──
+        # 原查询「canonical_name 精确优先、再按 confidence 降序」的语义由两段式天然
+        # 保证：本段命中的都是精确匹配，晚于本段的 aliases 命中不会覆盖它。
+        cypher_exact = """
         UNWIND $values AS v
-        MATCH (e:OntologyEntity {tenant_id:$t, kb_id:$k})
+        MATCH (e:OntologyEntity {tenant_id:$t, kb_id:$k, canonical_name:v})
         WHERE coalesce(e.stub,false)=false
-          AND (e.canonical_name=v OR v IN coalesce(e.aliases,[]))
         WITH v, e
-        ORDER BY v, (CASE WHEN e.canonical_name=v THEN 0 ELSE 1 END),
-                 coalesce(e.confidence,0) DESC
+        ORDER BY v, coalesce(e.confidence,0) DESC
         WITH v, collect(e)[0] AS best
         RETURN v AS value, best.entity_type AS entity_type,
                best.canonical_name AS canonical_name
         """
-        hits: dict[str, tuple[str, str]] = {}
         async with self._driver.session() as session:
             result = await session.run(
-                cypher, {"t": tenant_id, "k": kb_id, "values": values},
+                cypher_exact, {"t": tenant_id, "k": kb_id, "values": values},
             )
             async for record in result:
                 hits[record["value"]] = (
                     record["entity_type"] or "Unknown",
                     record["canonical_name"],
                 )
+
+        # ── 第 ② 段：仅剩余值扫 aliases（列表属性无法索引，逐节点过滤）──
+        remaining = [v for v in values if v not in hits]
+        if remaining:
+            cypher_alias = """
+            UNWIND $values AS v
+            MATCH (e:OntologyEntity {tenant_id:$t, kb_id:$k})
+            WHERE coalesce(e.stub,false)=false
+              AND v IN coalesce(e.aliases,[])
+            WITH v, e
+            ORDER BY v, coalesce(e.confidence,0) DESC
+            WITH v, collect(e)[0] AS best
+            RETURN v AS value, best.entity_type AS entity_type,
+                   best.canonical_name AS canonical_name
+            """
+            async with self._driver.session() as session:
+                result = await session.run(
+                    cypher_alias, {"t": tenant_id, "k": kb_id, "values": remaining},
+                )
+                async for record in result:
+                    hits[record["value"]] = (
+                        record["entity_type"] or "Unknown",
+                        record["canonical_name"],
+                    )
         return hits
 
     async def _resolve_entity_type(
@@ -306,9 +593,37 @@ class OntologyGraphRepository:
         self._endpoint_cache[cache_key] = resolved
         return resolved
 
-    async def delete_by_document(self, tenant_id: str, doc_id: str) -> None:
+    async def count_entities_by_document(self, tenant_id: str, kb_id: str, doc_id: str) -> int:
+        """统计某文档对本体图谱的实体贡献数（doc_ids 含该 doc 的实体）。
+
+        [jonex] P5-var 退化闸门 + delta 观测用：reconcile 写图前/后各查
+        一次，跌幅超阈值拒绝覆盖、日志记 before/after/delta。
+        [jonex] P10：口径对齐其余 count 方法——kb_id 过滤 + stub 排除
+        （stub 是 merge_relation 端点兜底产物，非正式实体；计入 before
+        会系统性高估存量、使闸门误拒）。
+        """
+        tenant_id = require_tenant(tenant_id)
+        async with self._driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (e:OntologyEntity {tenant_id:$t, kb_id:$k})
+                WHERE $doc_id IN coalesce(e.doc_ids,[])
+                  AND coalesce(e.stub,false)=false
+                RETURN count(e) AS c
+                """,
+                {"t": tenant_id, "k": kb_id, "doc_id": doc_id},
+            )
+            record = await result.single()
+            return int(record["c"]) if record else 0
+
+    async def delete_by_document(self, tenant_id: str, kb_id: str, doc_id: str) -> None:
         """移除某文档对本体图谱的贡献：从实体/关系的 doc_ids 摘除该 doc，
         并清理因此变为孤立（无 doc 归属且无边）的实体/关系。
+
+        [jonex] 批 6 根治（删光重来）：写图路径恢复全量删除——重抽/重解析
+        语义统一为「先删后 merge」，图终态 = 本轮产出，实体不再跨轮累积。
+        四条语句带 kb_id 收窄（旧实现全租户扫描，KB 十万级实体时全图
+        扫描 + 写锁成瓶颈；与批 4.3 收窄同源）。
 
         注意：Neo4j 单次 session.run 只接受一条语句，故拆成多条按序执行
         （原先用 ';' 拼多语句会被服务端拒绝）。
@@ -318,38 +633,38 @@ class OntologyGraphRepository:
             # 1) 关系：摘除该 doc_id
             await session.run(
                 """
-                MATCH (:OntologyEntity {tenant_id:$t})-[r:ONT_REL]->(:OntologyEntity {tenant_id:$t})
+                MATCH (:OntologyEntity {tenant_id:$t, kb_id:$k})-[r:ONT_REL]->(:OntologyEntity {tenant_id:$t, kb_id:$k})
                 WHERE $doc_id IN r.doc_ids
                 SET r.doc_ids = [x IN r.doc_ids WHERE x <> $doc_id]
                 """,
-                {"t": tenant_id, "doc_id": doc_id},
+                {"t": tenant_id, "k": kb_id, "doc_id": doc_id},
             )
             # 2) 关系：doc_ids 清空者删除
             await session.run(
                 """
-                MATCH (:OntologyEntity {tenant_id:$t})-[r:ONT_REL]->(:OntologyEntity {tenant_id:$t})
+                MATCH (:OntologyEntity {tenant_id:$t, kb_id:$k})-[r:ONT_REL]->(:OntologyEntity {tenant_id:$t, kb_id:$k})
                 WHERE size(coalesce(r.doc_ids,[]))=0
                 DELETE r
                 """,
-                {"t": tenant_id},
+                {"t": tenant_id, "k": kb_id},
             )
             # 3) 实体：摘除该 doc_id
             await session.run(
                 """
-                MATCH (e:OntologyEntity {tenant_id:$t})
+                MATCH (e:OntologyEntity {tenant_id:$t, kb_id:$k})
                 WHERE $doc_id IN e.doc_ids
                 SET e.doc_ids = [x IN e.doc_ids WHERE x <> $doc_id]
                 """,
-                {"t": tenant_id, "doc_id": doc_id},
+                {"t": tenant_id, "k": kb_id, "doc_id": doc_id},
             )
             # 4) 实体：无 doc 归属且无边者删除
             await session.run(
                 """
-                MATCH (e:OntologyEntity {tenant_id:$t})
+                MATCH (e:OntologyEntity {tenant_id:$t, kb_id:$k})
                 WHERE size(coalesce(e.doc_ids,[]))=0 AND NOT (e)--()
                 DELETE e
                 """,
-                {"t": tenant_id},
+                {"t": tenant_id, "k": kb_id},
             )
 
     async def search_entities(self, tenant_id: str, kb_ids: list[str], query: str, limit: int = 5) -> list[dict]:
@@ -360,7 +675,12 @@ class OntologyGraphRepository:
         RETURN node.canonical_name AS name, node.entity_type AS type,
                node.aliases AS aliases, node.attributes AS attributes,
                node.description AS description,
-               node.confidence AS confidence, node.kb_id AS kb_id,
+               node.confidence AS confidence, node.extraction_method AS extraction_method,
+               node.kb_id AS kb_id,
+               // [jonex] S4（§3.4 排序豁免）：真行对象判据 = extraction_method 为
+               // row_as_object 且 table_sig 非空（分组聚合节点无该属性），
+               // 查询侧据此给候选打 _order_locked。
+               node.table_sig AS table_sig,
                node.doc_ids AS doc_ids, node.source_chunks AS source_chunks, score
         ORDER BY score DESC LIMIT $limit
         """
@@ -428,9 +748,12 @@ class OntologyGraphRepository:
                            attributes: n.attributes, confidence: n.confidence,
                            kb_id: n.kb_id, doc_ids: n.doc_ids,
                            source_chunks: n.source_chunks,
-                           extraction_method: n.extraction_method
+                           extraction_method: n.extraction_method,
+                           // [jonex] S4（§3.4）：真行对象判据（见 search_entities）
+                           table_sig: n.table_sig
                        },
                        relation_source_chunks: r.source_chunks,
+                       relation_attributes: r.attributes,
                        hop: 1,
                        relation_chain: [r.relation_type],
                        path: [e.canonical_name, n.canonical_name]
@@ -450,6 +773,7 @@ class OntologyGraphRepository:
             WITH e, n, rel_dir, rel_types,
                  [pn IN path_nodes | pn.canonical_name] AS path_names,
                  last_rel.source_chunks AS relation_source_chunks,
+                 last_rel.attributes AS relation_attributes,
                  min(hop) AS hop
             ORDER BY hop ASC,
               (CASE
@@ -468,11 +792,14 @@ class OntologyGraphRepository:
                         attributes: n.attributes, confidence: n.confidence,
                         kb_id: n.kb_id, doc_ids: n.doc_ids,
                         source_chunks: n.source_chunks,
-                        extraction_method: n.extraction_method
+                        extraction_method: n.extraction_method,
+                        // [jonex] S4（§3.4）：真行对象判据（见 search_entities）
+                        table_sig: n.table_sig
                     },
                     relation_type: rel_types[-1],
                     relation_chain: rel_types,
                     relation_source_chunks: relation_source_chunks,
+                    relation_attributes: relation_attributes,
                     path: path_names,
                     direction: rel_dir,
                     hop: hop
@@ -546,6 +873,9 @@ class OntologyGraphRepository:
         RETURN e.canonical_name AS name, e.entity_type AS type,
                e.aliases AS aliases, e.attributes AS attributes,
                e.description AS description, e.confidence AS confidence,
+               e.extraction_method AS extraction_method,
+               // [jonex] S4（§3.4 排序豁免）：真行对象判据（见 search_entities）
+               e.table_sig AS table_sig,
                e.kb_id AS kb_id, e.doc_ids AS doc_ids, e.source_chunks AS source_chunks, 1.0 AS score
         """
         async with self._driver.session() as session:
@@ -578,6 +908,9 @@ class OntologyGraphRepository:
         RETURN e.canonical_name AS name, e.entity_type AS type,
                e.aliases AS aliases, e.attributes AS attributes,
                e.description AS description, e.confidence AS confidence,
+               e.extraction_method AS extraction_method,
+               // [jonex] S4（§3.4 排序豁免）：真行对象判据（见 search_entities）
+               e.table_sig AS table_sig,
                e.kb_id AS kb_id, e.doc_ids AS doc_ids, e.source_chunks AS source_chunks, 1.0 AS score
         ORDER BY size(e.canonical_name) ASC
         LIMIT $limit
@@ -692,6 +1025,22 @@ class OntologyGraphRepository:
         """
         async with self._driver.session() as session:
             result = await session.run(cypher, {"t": tenant_id, "k": kb_id})
+            return {rec["type"]: rec["c"] async for rec in result}
+
+    async def count_relations_by_type_doc(
+        self, tenant_id: str, kb_id: str, document_id: str
+    ) -> dict[str, int]:
+        """按 relation_type 聚合关系数（两端均非 stub），仅统计 doc_ids 含指定文档的关系。"""
+        tenant_id = require_tenant(tenant_id)
+        cypher = """
+        MATCH (s:OntologyEntity {tenant_id:$t, kb_id:$k})-[r:ONT_REL]->(o:OntologyEntity {tenant_id:$t, kb_id:$k})
+        WHERE coalesce(s.stub,false)=false AND coalesce(o.stub,false)=false AND $doc_id IN r.doc_ids
+        RETURN r.relation_type AS type, count(r) AS c
+        """
+        async with self._driver.session() as session:
+            result = await session.run(
+                cypher, {"t": tenant_id, "k": kb_id, "doc_id": document_id}
+            )
             return {rec["type"]: rec["c"] async for rec in result}
 
     async def list_entities(
@@ -887,6 +1236,232 @@ class OntologyGraphRepository:
                     f["relation_source_chunks"] = json.loads(f["relation_source_chunks"])
                 except (json.JSONDecodeError, TypeError):
                     f["relation_source_chunks"] = []
+            # [jonex] M3-d：relation_attributes 在 fact 顶层，JSON 字符串 → dict（如 step_no）
+            if isinstance(f.get("relation_attributes"), str):
+                try:
+                    decoded = json.loads(f["relation_attributes"])
+                    f["relation_attributes"] = decoded if isinstance(decoded, dict) else {}
+                except (json.JSONDecodeError, TypeError):
+                    f["relation_attributes"] = {}
+
+    # ══════════════════════════════════════════════════════════════════
+    # P8（M3-c）procedural 步骤链专用模板
+    # ══════════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def _chain_step_no(rel_attributes) -> int:
+        """从 HAS_STEP 边属性 JSON 取 step_no；非法/缺失 → 999（排序兜底排末尾）。"""
+        attrs = rel_attributes
+        if isinstance(attrs, str):
+            try:
+                attrs = json.loads(attrs)
+            except (json.JSONDecodeError, TypeError):
+                attrs = {}
+        step_no = (attrs or {}).get("step_no")
+        try:
+            return int(step_no)
+        except (TypeError, ValueError):
+            return 999
+
+    @staticmethod
+    def _facts_from_chain_rows(
+        rows: list[dict], root_name: str, step_relation: str,
+    ) -> list[dict]:
+        """[jonex] P8（M3-c）：步骤链 Cypher 行 → facts（与 neighbors() 同构 + step_no）。
+
+        排序在构造侧完成（计划 M3-c：answer_from_facts 函数体不动）：
+        按 step_no 升序排列 rows（同 step_no 按名称稳定序）；每个 step 首次
+        出现先产出步骤 fact，再产出其挂接 fact。同一 Action 多行挂接时
+        步骤 fact 只产出一次。
+        """
+        facts: list[dict] = []
+        seen_steps: set[str] = set()
+        rows = sorted(rows, key=lambda r: (r.get("step_no", 999), r.get("step_name") or ""))
+        for row in rows:
+            step_name = row.get("step_name") or ""
+            if not step_name:
+                continue
+            step_no = row.get("step_no", 999)
+            if step_name not in seen_steps:
+                seen_steps.add(step_name)
+                facts.append({
+                    "source": root_name,
+                    "target": step_name,
+                    "target_type": "Action",
+                    "target_entity": {
+                        "name": step_name, "type": "Action",
+                        "aliases": row.get("aliases", []),
+                        "description": row.get("description", ""),
+                        "attributes": row.get("attributes", {}),
+                        "confidence": row.get("confidence", 1.0),
+                        "kb_id": row.get("kb_id", ""),
+                        "doc_ids": row.get("doc_ids", []),
+                        "source_chunks": row.get("source_chunks", []),
+                        "extraction_method": row.get("extraction_method"),
+                        # [jonex] S4（§3.4）：真行对象判据（见 search_entities）
+                        "table_sig": row.get("table_sig"),
+                    },
+                    "relation_type": step_relation,
+                    "relation_chain": [step_relation],
+                    "relation_source_chunks": row.get("step_rel_chunks", []),
+                    "relation_attributes": row.get("step_rel_attributes", {}),
+                    "path": [root_name, step_name],
+                    "direction": "outgoing",
+                    "hop": 1,
+                    "step_no": step_no,
+                })
+            hook_type = row.get("hook_type")
+            target = row.get("target")
+            if not hook_type or not target:
+                continue
+            facts.append({
+                "source": step_name,
+                "target": target,
+                "target_type": row.get("target_type", "unknown"),
+                "target_entity": {
+                    "name": target, "type": row.get("target_type", "unknown"),
+                    "aliases": row.get("target_aliases", []),
+                    "description": row.get("target_description", ""),
+                    "attributes": row.get("target_attributes", {}),
+                    "confidence": row.get("target_confidence", 1.0),
+                    "kb_id": row.get("kb_id", ""),
+                    "doc_ids": row.get("target_doc_ids", []),
+                    "source_chunks": row.get("target_source_chunks", []),
+                    "extraction_method": row.get("target_extraction_method"),
+                    # [jonex] S4（§3.4）：真行对象判据（见 search_entities）
+                    "table_sig": row.get("target_table_sig"),
+                },
+                "relation_type": hook_type,
+                "relation_chain": [hook_type],
+                "relation_source_chunks": row.get("rel_chunks", []),
+                "relation_attributes": row.get("rel_attributes", {}),
+                "path": [step_name, target],
+                "direction": "outgoing",
+                "hop": 1,
+                "step_no": step_no,
+            })
+        OntologyGraphRepository._deserialize_fact_entities(facts)
+        return facts
+
+    async def find_action_chain(
+        self,
+        tenant_id: str,
+        kb_id: str,
+        root_name: str,
+        root_type: str,
+        max_steps: int = 30,
+    ) -> list[dict]:
+        """[jonex] P8（M3-c）步骤链专用模板：不走 neighbors()（自环类型
+        + per_hop_limit 截断会砍后半段、facts 按 confidence 而非步骤序）。
+
+        root_type=="Skill"：沿 HAS_STEP 取步骤（step_no 边属性升序）；
+        root_type=="Action"：沿 NEXT_STEP 走链（深度序号作 step_no）；
+        每步展开 5 挂接（ACTS_ON/USES_TOOL/PERFORMED_BY/REQUIRES/RESULTS_IN）。
+        返回与 neighbors() 同构的 facts（额外 step_no 字段，步骤序排列）。
+        """
+        tenant_id = require_tenant(tenant_id)
+        max_steps = max(1, min(int(max_steps), 50))
+        _HOOK_TYPES = ["ACTS_ON", "USES_TOOL", "PERFORMED_BY", "REQUIRES", "RESULTS_IN"]
+
+        if root_type == "Skill":
+            cypher = """
+            MATCH (s:OntologyEntity {tenant_id:$t, kb_id:$k, canonical_name:$name,
+                                     entity_type:'Skill'})
+            OPTIONAL MATCH (s)-[r:ONT_REL {relation_type:'HAS_STEP'}]
+                           ->(a:OntologyEntity {tenant_id:$t, kb_id:$k})
+            WHERE coalesce(a.stub,false)=false
+            OPTIONAL MATCH (a)-[r2:ONT_REL]->(o:OntologyEntity {tenant_id:$t, kb_id:$k})
+            WHERE r2.relation_type IN $hooks AND coalesce(o.stub,false)=false
+            RETURN a.canonical_name AS step_name,
+                   r.attributes AS step_rel_attributes,
+                   r.source_chunks AS step_rel_chunks,
+                   a.aliases AS aliases, a.description AS description,
+                   a.attributes AS attributes, a.confidence AS confidence,
+                   a.doc_ids AS doc_ids, a.source_chunks AS source_chunks,
+                   a.extraction_method AS extraction_method, a.kb_id AS kb_id,
+                   // [jonex] S4（§3.4）：真行对象判据（见 search_entities）
+                   a.table_sig AS table_sig,
+                   r2.relation_type AS hook_type,
+                   o.canonical_name AS target, o.entity_type AS target_type,
+                   o.aliases AS target_aliases, o.description AS target_description,
+                   o.attributes AS target_attributes,
+                   o.confidence AS target_confidence,
+                   o.doc_ids AS target_doc_ids,
+                   o.source_chunks AS target_source_chunks,
+                   o.extraction_method AS target_extraction_method,
+                   o.table_sig AS target_table_sig,
+                   r2.attributes AS rel_attributes,
+                   r2.source_chunks AS rel_chunks
+            """
+        elif root_type == "Action":
+            # 变长 NEXT_STEP 链：0..N（0 跳 = root 自身，其挂接也要展开）。
+            # 上界沿用 neighbors() 的内联字面量做法（参数绑定不支持）。
+            # 注意：Neo4j 5 不支持「内联属性 map + 变长」组合语法
+            # （-[:ONT_REL {..}*0..N]-> 直接 SyntaxError），属性过滤必须
+            # 移到 WHERE 里用 relationships(path) 逐边校验。
+            cypher = f"""
+            MATCH path = (a0:OntologyEntity {{tenant_id:$t, kb_id:$k,
+                                               canonical_name:$name,
+                                               entity_type:'Action'}})
+                         -[rels:ONT_REL*0..{max_steps}]->(a:OntologyEntity {{tenant_id:$t, kb_id:$k}})
+            WHERE all(rel IN rels WHERE rel.relation_type = 'NEXT_STEP')
+              AND coalesce(a.stub,false)=false
+            WITH path, a, length(path) AS depth
+            OPTIONAL MATCH (a)-[r2:ONT_REL]->(o:OntologyEntity {{tenant_id:$t, kb_id:$k}})
+            WHERE r2.relation_type IN $hooks AND coalesce(o.stub,false)=false
+            RETURN a.canonical_name AS step_name,
+                   depth AS depth,
+                   a.aliases AS aliases, a.description AS description,
+                   a.attributes AS attributes, a.confidence AS confidence,
+                   a.doc_ids AS doc_ids, a.source_chunks AS source_chunks,
+                   a.extraction_method AS extraction_method, a.kb_id AS kb_id,
+                   // [jonex] S4（§3.4）：真行对象判据（见 search_entities）
+                   a.table_sig AS table_sig,
+                   r2.relation_type AS hook_type,
+                   o.canonical_name AS target, o.entity_type AS target_type,
+                   o.aliases AS target_aliases, o.description AS target_description,
+                   o.attributes AS target_attributes,
+                   o.confidence AS target_confidence,
+                   o.doc_ids AS target_doc_ids,
+                   o.source_chunks AS target_source_chunks,
+                   o.extraction_method AS target_extraction_method,
+                   o.table_sig AS target_table_sig,
+                   r2.attributes AS rel_attributes,
+                   r2.source_chunks AS rel_chunks
+            ORDER BY depth ASC, hook_type ASC, target ASC
+            """
+        else:
+            return []
+
+        async with self._driver.session() as session:
+            result = await session.run(
+                cypher,
+                {"t": tenant_id, "k": kb_id, "name": root_name, "hooks": _HOOK_TYPES},
+            )
+            records = await result.data()
+
+        # 构造侧排序在 _facts_from_chain_rows 内完成（step_no 升序）；
+        # 这里只做 step_no 提取与 Action 菱形链去重。
+        rows: list[dict] = []
+        seen_rows: set[tuple] = set()
+        for rec in records:
+            row = dict(rec)
+            if root_type == "Skill":
+                row["step_no"] = self._chain_step_no(row.get("step_rel_attributes"))
+            else:
+                # 菱形链同一节点取最小深度（ORDER BY depth 保证首见即最小）
+                row["step_no"] = int(row.get("depth", 0)) + 1
+                # 同一 (step, hook, target) 挂接在菱形链里会按多个 depth 重复出现，
+                # 首见（最小 depth）为准，其余丢弃
+                key = (row.get("step_name"), row.get("hook_type"), row.get("target"))
+                if key in seen_rows:
+                    continue
+                seen_rows.add(key)
+            rows.append(row)
+
+        step_relation = "HAS_STEP" if root_type == "Skill" else "NEXT_STEP"
+        # 反序列化在 _facts_from_chain_rows 内完成（转换自洽）
+        return self._facts_from_chain_rows(rows, root_name, step_relation)
 
     # ══════════════════════════════════════════════════════════════════
     # P1-6 图查询模板：时间线 / 枚举 / 计数
@@ -1294,37 +1869,43 @@ class OntologyGraphRepository:
         entity_type: str,
         canonical_name: str,
         limit: int = 50,
+        document_id: Optional[str] = None,
     ) -> dict:
         """展开某个实体的一跳邻居，返回邻居节点 + 连接边（同 get_kb_graph 结构）。
 
         前端双击节点时调用，把新邻居增量并入当前图。
+        传入 document_id 时，仅保留 doc_ids 含该文档的邻居节点（文档级下钻）。
         """
         tenant_id = require_tenant(tenant_id)
-        cypher = """
-        MATCH (e:OntologyEntity {tenant_id:$t, kb_id:$k, entity_type:$etype, canonical_name:$name})
-        MATCH (e)-[r:ONT_REL]-(n:OntologyEntity {tenant_id:$t, kb_id:$k})
-        WHERE coalesce(n.stub,false)=false
-        WITH e, r, n, startNode(r) AS sn, endNode(r) AS en
-        RETURN n.entity_type + ':' + n.canonical_name AS id,
-               n.canonical_name AS name,
-               n.entity_type AS type,
-               n.aliases AS aliases,
-               n.attributes AS attributes,
-               n.description AS description,
-               n.confidence AS confidence,
-               n.doc_ids AS doc_ids,
-               sn.canonical_name AS source,
-               sn.entity_type AS source_type,
-               en.canonical_name AS target,
-               en.entity_type AS target_type,
-               r.relation_type AS label,
-               r.confidence AS rel_confidence
-        LIMIT $limit
-        """
+        where_clause = "coalesce(n.stub,false)=false"
         params = {
             "t": tenant_id, "k": kb_id,
             "etype": entity_type, "name": canonical_name, "limit": limit,
         }
+        if document_id:
+            where_clause += " AND $doc_id IN n.doc_ids"
+            params["doc_id"] = document_id
+        cypher = (
+            "MATCH (e:OntologyEntity {tenant_id:$t, kb_id:$k, entity_type:$etype, canonical_name:$name})\n"
+            "MATCH (e)-[r:ONT_REL]-(n:OntologyEntity {tenant_id:$t, kb_id:$k})\n"
+            f"WHERE {where_clause}\n"
+            "WITH e, r, n, startNode(r) AS sn, endNode(r) AS en\n"
+            "RETURN n.entity_type + ':' + n.canonical_name AS id,\n"
+            "       n.canonical_name AS name,\n"
+            "       n.entity_type AS type,\n"
+            "       n.aliases AS aliases,\n"
+            "       n.attributes AS attributes,\n"
+            "       n.description AS description,\n"
+            "       n.confidence AS confidence,\n"
+            "       n.doc_ids AS doc_ids,\n"
+            "       sn.canonical_name AS source,\n"
+            "       sn.entity_type AS source_type,\n"
+            "       en.canonical_name AS target,\n"
+            "       en.entity_type AS target_type,\n"
+            "       r.relation_type AS label,\n"
+            "       r.confidence AS rel_confidence\n"
+            "LIMIT $limit"
+        )
         async with self._driver.session() as session:
             result = await session.run(cypher, params)
             rows = [dict(rec) async for rec in result]
@@ -1423,6 +2004,9 @@ class OntologyGraphRepository:
         RETURN node.canonical_name AS name, node.entity_type AS type,
                node.aliases AS aliases, node.attributes AS attributes,
                node.description AS description, node.confidence AS confidence,
+               node.extraction_method AS extraction_method,
+               // [jonex] S4（§3.4 排序豁免）：真行对象判据（见 search_entities）
+               node.table_sig AS table_sig,
                node.kb_id AS kb_id, node.doc_ids AS doc_ids,
                node.source_chunks AS source_chunks, score AS vscore
         ORDER BY score DESC LIMIT $limit

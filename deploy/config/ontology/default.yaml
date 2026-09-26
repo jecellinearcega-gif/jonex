@@ -12,23 +12,40 @@ entity_types:
   - name: Organization
     aliases: ["公司", "企业", "机构", "集团", "组织"]
     attributes:
-      - { name: legal_name, type: string, required: false, description: "法定全称" }
-      - { name: industry, type: string, required: false, description: "所属行业" }
+      - { name: legal_name, type: string, required: false, description: "法定全称（原文有值才填，禁止推断）" }
+      - { name: industry, type: string, required: false, description: "所属行业（原文有值才填，禁止推断）" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Person
     aliases: ["人", "人员", "个人", "员工"]
     attributes:
-      - { name: title, type: string, required: false, description: "职位头衔" }
+      - { name: title, type: string, required: false, description: "职位头衔（原文有值才填，禁止推断）" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Location
     aliases: ["地点", "位置", "地区", "城市"]
     attributes:
-      - { name: address, type: string, required: false }
+      - { name: address, type: string, required: false, description: "详细地址/地理位置描述（原文有值才填，禁止推断）" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Product
     aliases: ["产品", "服务", "解决方案"]
     attributes:
-      - { name: model, type: string, required: false }
+      # [jonex] 属性修复（P10 批 1）：model 补语义说明并新增参数量/上下文窗口槽位——
+      # 文档中高频出现的参数规格此前无槽位可落（写入 description 而非 attributes）。
+      # model 强调「与产品名不同时才填」：canonical_name 本身即型号时填 attributes 是冗余。
+      - { name: model, type: string, required: false, description: "型号标识串（如版本号/规格代号），与产品名不同时才填" }
+      - { name: params, type: string, required: false, description: "参数量（如 309B/15B，总参数量/激活参数）" }
+      - { name: context_length, type: string, required: false, description: "上下文窗口长度（如 256K）" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
 
   - name: Concept
     aliases: ["概念", "术语", "定义"]
@@ -41,7 +58,55 @@ entity_types:
   - name: Event
     aliases: ["事件", "活动", "会议"]
     attributes:
-      - { name: date, type: string, required: false }
+      - { name: date, type: string, required: false, description: "事件发生日期/时间（原文有值才填，禁止推断）" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
+
+  # ── [jonex] P6：Skill/Action 规程本体（skill-action-ontology-enhancement-plan §2.1）──
+  - name: Skill
+    display_name: 技能
+    aliases: ["技能", "能力项", "操作能力", "作业项", "任务", "业务办理", "规程"]
+    attributes:
+      - { name: definition, type: text, required: false, description: "语义定义：本技能的业务含义及与相近技能的区分" }
+      - { name: skill_domain, type: string, required: false, description: "所属领域/模块" }
+      - { name: goal, type: text, required: false, description: "技能达成的目标（业务办理的终点）" }
+      - { name: prerequisites, type: text, required: false, description: "技能级前置条件（换行分隔）" }
+    extraction_skills:
+      constrain:
+        - { skill: builtin:no_fabrication, description: "属性值必须可在 chunk 原文摘句，不在原文置空（宁缺毋假）" }
+
+  - name: Action
+    display_name: 动作
+    aliases: ["动作", "操作", "步骤", "作业", "指令", "处置"]
+    attributes:
+      # —— 语义化（四步法第③步）：实例级精准语义 ——
+      - { name: definition, type: text, required: false, description: "语义定义：本动作的精确业务含义及与相近动作的区分（如冻结 vs 止付）" }
+      # —— 行动化（四步法第④步）：执行契约 ——
+      - { name: action_type, type: enum, required: false, description: "operation|decision|interaction|validation" }
+      - { name: step_no, type: number, required: false, description: "在所属技能中的步骤序号（冗余，便于列表展示）" }
+      - { name: parameters, type: text, required: false, description: "参数列表（换行分隔 k=v）" }
+      - { name: preconditions, type: text, required: false, description: "前置条件：执行前必须满足/核验什么（换行分隔）" }
+      - { name: authorization, type: text, required: false, description: "权限约束：谁能执行（角色/职级/审批），换行分隔" }
+      - { name: atomic_effects, type: text, required: false, description: "事务内后果：主状态变更，失败整体回滚（换行分隔）" }
+      - { name: follow_ups, type: text, required: false, description: "提交后联动：通知/审计/其他系统，失败不撤销主操作（换行分隔）" }
+      - { name: failure_policy, type: text, required: false, description: "失败处理边界：什么失败回滚、什么失败不回滚及优先级原则" }
+      - { name: audit_required, type: boolean, required: false, description: "是否需要审计留痕" }
+      - { name: duration, type: string, required: false, description: "耗时/时限" }
+      - { name: frequency, type: string, required: false, description: "执行频率" }
+    # TBox 构建技能声明（§2.5）：抽取该类型时按序调用；P7 技能链执行器上线前为声明占位
+    extraction_skills:
+      refine:
+        - { skill: builtin:step_serializer, description: "无序清单编 step_no、补 NEXT_STEP" }
+        - { skill: builtin:contract_filler, description: "从当前 chunk 上下文补契约字段（authorization/failure_policy 等，禁编造由约束技能保证）" }
+        - { skill: builtin:semantic_definition, description: "生成 definition，与相近动作区分" }
+      constrain:
+        - { skill: builtin:name_normalizer, description: "动作名「动词+宾语」归一、去敬语、截断" }
+        - { skill: builtin:endpoint_verifier, description: "挂接端点必须存在于 chunk 正文，否则丢弃该挂接" }
+        - { skill: builtin:no_fabrication, description: "契约字段禁编造：文档未写 authorization/failure_policy 必须置空" }
+        - { skill: builtin:synonym_merger, description: "KB 级同义词归一（声明技能：执行在 kb-service 写图前 reconcile 的 _apply_synonyms，抽取期 no-op）" }
+        - { skill: builtin:dedup_merger, description: "同名合并（大小写不敏感）" }
+        - { skill: builtin:schema_validator, description: "_post_validate：端点集合校验 + inverse 归一翻转" }
 
 relation_types:
   - name: BELONGS_TO
@@ -69,10 +134,15 @@ relation_types:
     target: Method
     description: "组织使用某种方法"
 
+    # ↓ 通用关联：同时是抽取的兜底降级目标（ONTOLOGY_KEEP_UNTYPED_EDGES=true 时，
+    #    TBox 未约束但两端类型都在 TBox 内的关系落成此类型）——故端点声明为全类型，
+    #    保证图谱里的 RELATES_TO 边始终能在编译 schema 中解析。
   - name: RELATES_TO
     source: Concept
     target: Concept
-    description: "概念之间的关联"
+    source_types: [Organization, Person, Location, Product, Concept, Method, Event, Skill, Action]
+    target_types: [Organization, Person, Location, Product, Concept, Method, Event, Skill, Action]
+    description: "通用关联（概念间关联 + 抽取兜底降级目标：无更精确关系时归此类型）"
 
   - name: PART_OF
     source: Concept
@@ -83,6 +153,115 @@ relation_types:
     source: Product
     target: Concept
     description: "产品/解决方案包含某概念/功能"
+
+  # ── [jonex] C-2 技术域关系补白 ──────────────────────────────
+  # 技术文档 KB 的实体大头是 Method/Product/Concept，旧 TBox 里 Method 只能
+  # 做 USES 的 target、Product 无出边、Concept 仅 RELATES_TO——reject 分桶
+  # 实测大头即由此而来（no_constraint ~77/轮、endpoint_mismatch ~60/轮）。
+  # 补白后 recompile 需 force=True（prompt_schema 不 force 不重编译）。
+  - name: BASED_ON
+    source: Method
+    target: Method
+    target_types: [Method, Concept]
+    description: "方法基于/改进自另一方法或概念"
+
+  - name: APPLIED_TO
+    source: Method
+    target: Product
+    target_types: [Product, Concept]
+    description: "方法应用于产品/领域"
+
+  - name: IMPLEMENTS
+    source: Product
+    target: Method
+    target_types: [Method, Concept]
+    description: "产品采用/实现某方法或技术"
+
+  - name: COMPARED_WITH
+    source: Product
+    target: Product
+    target_types: [Product, Method]
+    description: "产品之间的对比/竞争关系"
+
+  - name: REALIZED_BY
+    source: Concept
+    target: Method
+    target_types: [Method, Product]
+    description: "概念/能力由方法或产品实现"
+
+  # ── [jonex] P6：Skill/Action 规程关系（§2.2，物理只存 canonical 方向，inverse_of 为元数据）──
+  # target 为主值（单值回落路径），target_types 为多态扩展集合（P1 已打通）
+  - name: HAS_STEP
+    source: Skill
+    target: Action
+    target_types: [Action]
+    cardinality: one_to_many
+    inverse_of: STEP_OF
+    description: "技能有哪些步骤"
+
+  - name: NEXT_STEP
+    source: Action
+    target: Action
+    target_types: [Action]
+    cardinality: one_to_one
+    inverse_of: PREV_STEP
+    description: "下一步 / 上一步"
+
+  - name: PERFORMED_BY
+    source: Action
+    target: Person
+    target_types: [Person, Organization]
+    cardinality: many_to_many
+    inverse_of: PERFORMS
+    description: "谁执行 / 某人负责哪些动作"
+
+  - name: ACTS_ON
+    source: Action
+    target: Product
+    target_types: [Product, Concept, Location]
+    cardinality: many_to_many
+    inverse_of: ACTED_ON_BY
+    description: "作用于什么 / 对某产品有哪些操作"
+
+  - name: USES_TOOL
+    source: Action
+    target: Product
+    target_types: [Product, Method]
+    cardinality: many_to_many
+    inverse_of: USED_IN
+    description: "用什么工具"
+
+  - name: RESULTS_IN
+    source: Action
+    target: Event
+    target_types: [Event, Concept]
+    cardinality: many_to_many
+    inverse_of: RESULT_OF
+    description: "产出什么"
+
+  - name: REQUIRES
+    source: Action
+    target: Concept
+    target_types: [Concept, Product]
+    cardinality: many_to_many
+    inverse_of: REQUIRED_BY
+    description: "前置条件"
+
+  - name: HAS_SKILL
+    source: Person
+    target: Skill
+    target_types: [Skill]
+    cardinality: many_to_many
+    inverse_of: SKILL_OF
+    description: "谁会做什么"
+
+  - name: SKILL_FOR
+    source: Skill
+    target: Product
+    target_types: [Product, Concept]
+    cardinality: many_to_many
+    inverse_of: HAS_SKILL_ITEM
+    description: "某产品有哪些操作技能"
 
 constraints:
   - type: required_attribute

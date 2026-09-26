@@ -109,7 +109,15 @@ class OntologyRegistry:
                     "name": et.name,
                     "aliases": et.aliases,
                     "attributes": [
-                        {"name": a.name, "type": a.type, "required": a.required}
+                        {
+                            "name": a.name,
+                            "type": a.type,
+                            "required": a.required,
+                            # [jonex] P0-fix：语义说明随 prompt 下发，抽取侧
+                            # 属性表据此渲染「属性名 → 说明」；缺失时仅属性名，
+                            # LLM 无说明可依会整批不填 attributes。
+                            "description": a.description or "",
+                        }
                         for a in et.attributes
                     ],
                 }
@@ -120,6 +128,15 @@ class OntologyRegistry:
                     "name": rt.name,
                     "source": rt.source,
                     "target": rt.target,
+                    # [jonex] P0-fix：补齐 _post_validate 依赖的约束字段——
+                    # source_types/target_types 缺失 → 多态扩展恒回落单值，
+                    # 非主值类型的关系被丢；inverse_of 缺失 → inverse_map
+                    # 恒空，LLM 输出逆名（STEP_OF/PERFORMS/…）全部静默丢弃。
+                    "description": rt.description or "",
+                    "cardinality": rt.cardinality or "custom",
+                    "inverse_of": rt.inverse_of,
+                    "source_types": list(rt.source_types or []),
+                    "target_types": list(rt.target_types or []),
                 }
                 for rt in schema.relation_types
             ],
