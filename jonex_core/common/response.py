@@ -12,7 +12,7 @@ from typing import Optional, Any, Dict
 from datetime import datetime, timezone
 
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 
 @dataclass
@@ -124,3 +124,37 @@ def error_response(
         details=details,
     )
     return JSONResponse(status_code=status_code, content=response.to_dict())
+
+
+def passthrough_upstream_response(resp) -> Response:
+    """把上游代理响应原样透传（保留状态码 + Location + Set-Cookie，不解析 JSON）。
+
+    代理层（Gateway/Sidecar）对 capability 返回的 3xx 重定向必须透传而非
+    ``resp.json()``：OIDC 授权码回调（platform ``oidc_callback``）返回
+    ``RedirectResponse(302)`` 并 ``set_cookie`` 下发 refresh httpOnly cookie，
+    响应体为空。代理层若对其 ``json()`` 会抛 ``JSONDecodeError``，且
+    ``raise_for_status()`` 对 3xx 也抛 ``HTTPStatusError``（httpx >= 0.28），
+    最终转成 500，SSO 登录不可用。
+
+    Args:
+        resp: httpx.Response 上游响应。
+
+    Returns:
+        携带原状态码、Location 与全部 Set-Cookie 的 starlette Response。
+    """
+    headers = {}
+    location = resp.headers.get("location")
+    if location:
+        headers["location"] = location
+    # 2xx refresh 透传需保留 content-type（JSON body），否则前端按 text 解析失败。
+    content_type = resp.headers.get("content-type")
+    if content_type:
+        headers["content-type"] = content_type
+    response = Response(
+        content=resp.content,
+        status_code=resp.status_code,
+        headers=headers,
+    )
+    for cookie in resp.headers.get_list("set-cookie"):
+        response.headers.append("set-cookie", cookie)
+    return response
