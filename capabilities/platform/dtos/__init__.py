@@ -53,3 +53,23 @@ from capabilities.platform.dtos.mcp_service_dto import (
     McpServiceListResponse,
     PublishRequest,
 )
+from capabilities.platform.dtos.identity_integration import (
+    SsoStatus,
+    DatasourceStatus,
+    SyncRecordSummary,
+    IntegrationStatusResponse,
+    SsoConfigUpdate,
+    DatasourceConfigUpdate,
+    IntegrationConfigUpdateRequest,
+    SsoConfigResponse,
+    DatasourceConfigResponse,
+    IntegrationConfigResponse,
+    TestConnectionRequest,
+    TestConnectionResponse,
+    SyncRequest,
+    SyncResponse,
+    SyncRecordListResponse,
+    UserChangeCounts,
+    SyncFailureDetail,
+    SyncRecordDetailResponse,
+)

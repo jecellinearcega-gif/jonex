@@ -5,6 +5,7 @@
 """
 from fastapi import APIRouter, Depends, Query, Request
 
+from jonex_core.common.config import get_config
 from jonex_core.common.database import get_db
 from jonex_core.common.exceptions import PermissionDeniedError, ResourceNotFoundError
 from jonex_core.common.i18n import translate
@@ -16,6 +17,7 @@ from capabilities.platform.repository.menu_repository import MenuRepository
 from capabilities.platform.services.user_service import UserService
 from capabilities.platform.services.role_service import RoleService
 from capabilities.platform.services.menu_service import MenuService
+from capabilities.platform.services.role_binding import ensure_default_role_binding
 from capabilities.platform.services.misc_services import (
     ApplicationService,
     PermissionService,
@@ -270,13 +272,22 @@ async def create_user(
     result = await svc.create(tenant_id, req)
     # RBAC 角色绑定：创建时选择了角色则绑定（set_roles 内校验角色存在并失效权限缓存）。
     # [jonex] 支持多角色；role_ids 优先，回落到旧的单值 role_id。
-    # 与 create 同一 session/事务，绑定失败会整体回滚，不会留下无角色的用户。
+    # 与 create 同一 session/事务：一旦调用 set_roles，绑定失败会整体回滚。
+    # 两者皆空时走兜底绑定（见 else 分支）—— 建号不产出零角色用户。
     role_ids = req.role_ids or ([req.role_id] if req.role_id is not None else [])
     if role_ids:
         # [jonex] B1（D4）：建用户时直接选「租户管理员」角色同样要拦，否则绕过 PUT roles
         await svc.set_roles(
             tenant_id, result.id, role_ids,
             operator_permissions=await _operator_permissions(_p),
+        )
+    else:
+        # 未指定角色 → 兜底绑该租户「普通用户」。不绑的话用户只写遗留列 users.role、
+        # 无任何 user_roles 绑定 ⇒ 权限集为空集、侧边栏全空，而请求仍返回 200（静默坏状态，
+        # 遗留列对该缺陷完全透明）。口径与 SSO 首登 / 企业身份同步两条自动建号路径一致。
+        # 走内部调用语义（operator_permissions=None）：绑的是「普通用户」，不涉 D4 闸门。
+        await ensure_default_role_binding(
+            svc, tenant_id, result.id, source="admin_create"
         )
     return success_response(data=result.dict())
 
@@ -324,6 +335,37 @@ async def delete_user(
 
     await invalidate_user_permissions(tenant_id, user_id)
     return success_response(message="用户已删除")
+
+
+@router.post("/users/{user_id}/disable")
+async def disable_user(
+    request: Request, user_id: int,
+    target_tenant_id: str | None = Query(None),
+    db=Depends(get_db),
+    _p: dict = Depends(require_permission("user:write")),
+    current: dict = Depends(get_current_user),
+):
+    # [jonex] B8：账号停用。status=0 后登录链路（auth_service login/refresh/me）
+    # 已校验 status!=1 拒绝签发 token；service 层负责写 status、失效权限缓存、
+    # 自我停用/最后管理员防护，此处只解析目标租户并透传操作者身份。
+    tenant_id = await _resolve_target_tenant(request, db, target_tenant_id, current)
+    svc = UserService(db)
+    result = await svc.disable(tenant_id, user_id, operator_id=current["user_id"])
+    return success_response(data=result.dict())
+
+
+@router.post("/users/{user_id}/enable")
+async def enable_user(
+    request: Request, user_id: int,
+    target_tenant_id: str | None = Query(None),
+    db=Depends(get_db),
+    _p: dict = Depends(require_permission("user:write")),
+    current: dict = Depends(get_current_user),
+):
+    tenant_id = await _resolve_target_tenant(request, db, target_tenant_id, current)
+    svc = UserService(db)
+    result = await svc.enable(tenant_id, user_id)
+    return success_response(data=result.dict())
 
 
 @router.get("/users/{user_id}/roles")
@@ -556,6 +598,20 @@ async def get_frontend_manifest(db=Depends(get_db), _p: dict = Depends(get_curre
     svc = ApplicationService(db)
     result = await svc.get_frontend_manifest()
     return success_response(data=result.dict())
+
+
+# ==================== 前端外壳 UI 开关 ====================
+
+@router.get("/frontend/ui-config")
+async def get_frontend_ui_config(_p: dict = Depends(get_current_user)):
+    """前端外壳的 UI 开关（已登录即可读，不额外要权限码）。
+
+    目前只有一项：``hide_task_center`` —— shell 顶栏那个「任务中心」快捷按钮渲不渲染。
+    取值来自部署级环境变量 ``HIDE_TASK_CENTER``（**默认 false = 显示**）。任务中心功能
+
+    ⚠ 不回传权限码、密钥或任何用户数据：这是「界面开关」的通道，不是配置中心。
+    """
+    return success_response(data={"hide_task_center": bool(get_config().HIDE_TASK_CENTER)})
 
 
 @router.get("/applications")

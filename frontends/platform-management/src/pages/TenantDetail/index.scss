@@ -1,0 +1,46 @@
+/* 租户详情页样式 */
+
+/**
+ * 「单点登录」「用户与组织同步」两张卡：一行一条信息 + 行间分隔线。
+ *
+ * 线画在 td.ant-descriptions-item 上 —— antd 6 的 DOM 是
+ * tr.ant-descriptions-row > td.ant-descriptions-item > div.ant-descriptions-item-container，
+ * row 本身是 <tr>，给它加 border 在 border-collapse 下表现不稳定，画在单元格上更可靠。
+ * 一行有多列时同一行的多个单元格各画一段，拼起来仍是一条完整的线；最后一行不画。
+ */
+.yx-desc-divided {
+  .ant-descriptions-row:first-child .ant-descriptions-item {
+   padding-top: 0px;
+  }
+  .ant-descriptions-item {
+    padding-bottom: 6px !important;
+    padding-top: 8px;
+    border-bottom: 1px solid var(--yx-border-table);
+  }
+
+  .ant-descriptions-row:last-child .ant-descriptions-item {
+    border-bottom: none;
+  }
+}
+
+/**
+ * 描述项两端对齐：label 贴左、value 贴右。
+ * 只用于「单点登录」「用户与组织同步」两张一行一条的子卡 —— 基本信息是一行四格，
+ * 两端对齐会让每格的 value 与相邻格的 label 只隔一个单元格 padding，分组感反而消失。
+ *
+ * antd 6 的 DOM 是 td.ant-descriptions-item > div.ant-descriptions-item-container，
+ * container 是 flex 容器，label / content 各占一个 span，content 默认已 flex-grow: 1
+ * 吃掉剩余宽度，所以右对齐只要把它内部的内容推到右侧：文字走 text-align，
+ * Tag / Link 这类子元素走 content 自身的 justify-content（content 本身也是 flex 容器）。
+ * label 钉住不收缩，否则长 value 会先把它的冒号折到第二行。
+ */
+.yx-desc-value-right {
+  .ant-descriptions-item-label {
+    flex-shrink: 0;
+  }
+
+  .ant-descriptions-item-content {
+    justify-content: flex-end;
+    text-align: right;
+  }
+}

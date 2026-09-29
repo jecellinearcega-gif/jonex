@@ -22,4 +22,18 @@ def create_platform_router() -> APIRouter:
     from capabilities.platform.api.mcp_service_api import router as mcp_svc_router
     router.include_router(mcp_svc_router, prefix="/platform", tags=["MCP 服务目录"])
 
+    from capabilities.platform.api.identity_integration_config import (
+        router as identity_config_router,
+    )
+    router.include_router(
+        identity_config_router, prefix="/platform", tags=["企业身份集成配置"]
+    )
+
+    from capabilities.platform.api.identity_integration_sync import (
+        router as identity_sync_router,
+    )
+    router.include_router(
+        identity_sync_router, prefix="/platform", tags=["企业身份同步"]
+    )
+
     return router

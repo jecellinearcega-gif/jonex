@@ -4,14 +4,22 @@
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from jonex_core.common.exceptions import ResourceNotFoundError, ResourceConflictError
+from jonex_core.common.exceptions import (
+    PermissionDeniedError,
+    ResourceConflictError,
+    ResourceNotFoundError,
+)
 from jonex_core.common.i18n import translate
 from jonex_core.common.tenant import require_tenant
 from capabilities.platform.models.user import User
 from capabilities.platform.repository.role_repository import RoleRepository
 from capabilities.platform.repository.user_repository import UserRepository
 from capabilities.platform.repository.user_role_repository import UserRoleRepository
-from capabilities.platform.services.admin_role_guard import assert_can_assign_roles
+from capabilities.platform.services.admin_role_guard import (
+    TENANT_ADMIN_CODE,
+    assert_can_assign_roles,
+    find_admin_role_ids,
+)
 from jonex_core.security.user_auth import get_user_auth
 from capabilities.platform.dtos.platform import (
     UserCreateRequest,
@@ -32,6 +40,11 @@ class UserService:
         self.role_repo = RoleRepository(session)
         self.user_role_repo = UserRoleRepository(session)
         self.user_auth = get_user_auth()
+        # 局部 import 防循环（auth.__init__ -> auth_service -> user_service），
+        # 与 disable/enable 内同步 Keycloak 的局部 import 同因。
+        from capabilities.platform.auth.account_sync_service import AccountSyncService
+
+        self.account_sync = AccountSyncService(session)
 
     async def create(self, tenant_id: str, req: UserCreateRequest) -> UserResponse:
         tenant_id = require_tenant(tenant_id)
@@ -123,7 +136,154 @@ class UserService:
             message=translate("err.user.not_found", params={"user_id": str(user_id)}, fallback=f"用户不存在: {user_id}")
         )  # 原消息: 用户不存在: {user_id}
         await self.repo.delete_soft(user, tenant_id)
+        # 软删等效停用：清权限缓存 + 同步 Keycloak enabled=false +
+        # 吊销 refresh 家族，立即失效已登录会话与权限缓存，与 disable() 安全
+        # 语义一致。invalidate 内部吞异常故放 try 外；同步/吊销失败降级不抛，
+        # 绝不因 IdP / Redis 不可用阻塞本地软删判定。
+        from jonex_core.security.permission import invalidate_user_permissions
+
+        await invalidate_user_permissions(tenant_id, user_id)
+        try:
+            await self.account_sync.sync_status_to_keycloak(user, False)
+            from capabilities.platform.auth.auth_service import AuthService
+
+            await AuthService(self.session).revoke_user_sessions(tenant_id, user_id)
+        except Exception:  # 同步/吊销失败不阻塞业务
+            logger.exception("软删账号同步 Keycloak / 吊销会话失败: user_id=%s", user_id)
         logger.info(f"删除用户: {user.username} (id={user.id})")
+
+    async def disable(self, tenant_id: str, user_id: int, operator_id: int) -> UserResponse:
+        """停用账号：状态置 0，含自我停用与「最后活跃管理员」防护。"""
+        tenant_id = require_tenant(tenant_id)
+        user = await self.repo.get_by_id(user_id, tenant_id)
+        if not user or user.is_deleted:
+            raise ResourceNotFoundError(
+                message=translate(
+                    "err.user.not_found",
+                    params={"user_id": str(user_id)},
+                    fallback=f"用户不存在: {user_id}",
+                )
+            )
+        # 自我停用防护：操作者不能停用自己
+        if operator_id == user_id:
+            raise PermissionDeniedError(
+                message=translate("err.user.disable_self", fallback="不能停用自己的账号")
+            )
+        # 最后管理员防护：目标是租户管理员时，确保租户内仍有其他活跃管理员
+        role_ids = await self.user_role_repo.get_role_ids(tenant_id, user_id)
+        admin_role_ids = await find_admin_role_ids(self.session, tenant_id, role_ids)
+        if admin_role_ids:
+            from sqlalchemy import func, select
+
+            from capabilities.platform.models.permission import Permission
+            from capabilities.platform.models.role import Role
+            from capabilities.platform.models.role_permission import RolePermission
+            from capabilities.platform.models.user_role import UserRole
+
+            result = await self.session.execute(
+                select(func.count(func.distinct(User.id)))
+                .select_from(User)
+                .join(UserRole, UserRole.user_id == User.id)
+                .join(Role, Role.id == UserRole.role_id)
+                .join(RolePermission, RolePermission.role_id == UserRole.role_id)
+                .join(Permission, Permission.id == RolePermission.permission_id)
+                .where(
+                    User.tenant_id == tenant_id,
+                    User.status == 1,
+                    User.is_deleted == 0,
+                    User.id != user_id,
+                    UserRole.tenant_id == tenant_id,
+                    Role.is_deleted == 0,
+                    RolePermission.tenant_id == tenant_id,
+                    Permission.code == TENANT_ADMIN_CODE,
+                )
+            )
+            other_active_admins = result.scalar() or 0
+            if other_active_admins == 0:
+                raise PermissionDeniedError(
+                    message=translate(
+                        "err.user.disable_last_admin",
+                        fallback="不能停用租户内最后一个活跃管理员",
+                    )
+                )
+        user.status = 0
+        await self.session.flush()
+
+        from jonex_core.security.permission import invalidate_user_permissions
+
+        await invalidate_user_permissions(tenant_id, user_id)
+        # 同步 Keycloak enabled=false 并吊销 refresh 家族，立即失效已登录会话。
+        # 局部 import 防循环（auth_service 反向 import user_service）；同步/吊销失败降级不抛，
+        # 绝不因 IdP / Redis 不可用阻塞本地停用判定。
+        try:
+            from capabilities.platform.auth.account_sync_service import AccountSyncService
+            from capabilities.platform.auth.auth_service import AuthService
+
+            await AccountSyncService(self.session).sync_status_to_keycloak(user, False)
+            await AuthService(self.session).revoke_user_sessions(tenant_id, user_id)
+        except Exception:  # 同步/吊销失败不阻塞业务
+            logger.exception("停用账号同步 Keycloak / 吊销会话失败: user_id=%s", user_id)
+        try:
+            from capabilities.platform.services.audit_log_service import AuditLogService
+
+            audit_svc = AuditLogService(self.session)
+            await audit_svc.record(
+                tenant_id=tenant_id,
+                log_type="OPERATION",
+                action="user.disable",
+                user_id=operator_id,
+                resource="user",
+                resource_id=str(user_id),
+                sync=True,
+            )
+        except Exception:  # 审计失败不阻塞业务
+            logger.exception("停用账号审计日志写入失败: user_id=%s", user_id)
+        logger.info(f"停用账号: {user.username} (id={user.id})")
+        return UserResponse.from_orm(user)
+
+    async def enable(self, tenant_id: str, user_id: int) -> UserResponse:
+        """启用账号：状态置 1，无自我停用/最后管理员防护。"""
+        tenant_id = require_tenant(tenant_id)
+        user = await self.repo.get_by_id(user_id, tenant_id)
+        if not user or user.is_deleted:
+            raise ResourceNotFoundError(
+                message=translate(
+                    "err.user.not_found",
+                    params={"user_id": str(user_id)},
+                    fallback=f"用户不存在: {user_id}",
+                )
+            )
+        user.status = 1
+        await self.session.flush()
+
+        from jonex_core.security.permission import invalidate_user_permissions
+
+        await invalidate_user_permissions(tenant_id, user_id)
+        # 同步 Keycloak enabled=true（启用不吊销会话）；局部 import 防循环，
+        # 同步失败降级不抛，绝不因 IdP 不可用阻塞本地启用判定。
+        try:
+            from capabilities.platform.auth.account_sync_service import AccountSyncService
+
+            await AccountSyncService(self.session).sync_status_to_keycloak(user, True)
+        except Exception:  # 同步失败不阻塞业务
+            logger.exception("启用账号同步 Keycloak 失败: user_id=%s", user_id)
+        try:
+            from capabilities.platform.services.audit_log_service import AuditLogService
+
+            audit_svc = AuditLogService(self.session)
+            await audit_svc.record(
+                tenant_id=tenant_id,
+                log_type="OPERATION",
+                action="user.enable",
+                user_id=None,
+                resource="user",
+                resource_id=str(user_id),
+                sync=True,
+            )
+        except Exception:  # 审计失败不阻塞业务
+            logger.exception("启用账号审计日志写入失败: user_id=%s", user_id)
+        logger.info(f"启用账号: {user.username} (id={user.id})")
+        return UserResponse.from_orm(user)
 
     async def get_roles(self, tenant_id: str, user_id: int) -> list[int]:
         tenant_id = require_tenant(tenant_id)
@@ -175,7 +335,7 @@ class UserService:
                     message=translate("err.role.not_found", params={"role_id": str(role_id)}, fallback=f"角色不存在: {role_id}")
                 )  # 原消息: 角色不存在: {role_id}
 
-        # [jonex] 权限重构 B1（D4）：「租户管理员只能由平台管理员指定」。
+        # 权限重构：「租户管理员只能由平台管理员指定」。
         # 只在 RoleService.set_permissions 拦「配码」是不够的 —— 029 迁移后
         # 「租户管理员」角色天然持有 tenant:admin，租户管理员把别人绑到这个**既有**
         # 角色上即可绕过。这里补上「用户 → 角色」方向的闸门。

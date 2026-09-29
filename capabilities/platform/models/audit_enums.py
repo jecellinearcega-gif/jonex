@@ -48,6 +48,7 @@ _LABEL_ZH: dict[str, str] = {
     "auth.login": "登录",
     "auth.exchange_ticket": "票据交换",
     "auth.logout": "登出",
+    "auth.backchannel_logout": "SLO 登出",
     # ---- 文档 ----
     "document.upload": "上传文档",
     "document.parse": "解析文档",
@@ -293,6 +294,17 @@ _LABEL_ZH: dict[str, str] = {
     "check_prompt_template_name": "校验提示词模板名称",
     "publish_template_scenario": "发布模板场景",
     "list_impacted_knowledge_bases": "受影响知识库列表",
+    # ---- 企业身份集成 ----
+    "update_identity_integration": "更新企业身份集成配置",
+    "test_identity_integration_connection": "测试企业身份集成连接",
+    "sync_identity_integration": "同步企业用户",
+    "identity_sync.user_disabled": "同步停用用户",
+    "identity_sync.user_enabled": "同步启用用户",
+    "identity_sync.user_deleted": "同步删除用户",
+    "identity_sync.user_restored": "同步恢复用户",
+    "identity_sync.missing_admin_credentials": "账号同步跳过（缺凭据）",
+    "identity_sync.upstream_user_not_found": "账号同步未能核实（Keycloak 未答复）",
+    "identity_sync.keycloak_user_absent": "账号同步无需停用（Keycloak 无此账号）",
 }
 
 _LABEL_EN: dict[str, str] = {
@@ -300,6 +312,7 @@ _LABEL_EN: dict[str, str] = {
     "auth.login": "Login",
     "auth.exchange_ticket": "Exchange Ticket",
     "auth.logout": "Logout",
+    "auth.backchannel_logout": "Backchannel Logout",
     # ---- 文档 ----
     "document.upload": "Upload Document",
     "document.parse": "Parse Document",
@@ -545,6 +558,17 @@ _LABEL_EN: dict[str, str] = {
     "check_prompt_template_name": "Check Prompt Template Name",
     "publish_template_scenario": "Publish Template Scenario",
     "list_impacted_knowledge_bases": "List Impacted Knowledge Bases",
+    # ---- 企业身份集成 ----
+    "update_identity_integration": "Update Identity Integration Config",
+    "test_identity_integration_connection": "Test Identity Integration Connection",
+    "sync_identity_integration": "Sync Enterprise Users",
+    "identity_sync.user_disabled": "Disable User via Identity Sync",
+    "identity_sync.user_enabled": "Enable User via Identity Sync",
+    "identity_sync.user_deleted": "Delete User via Identity Sync",
+    "identity_sync.user_restored": "Restore User via Identity Sync",
+    "identity_sync.missing_admin_credentials": "Account Sync Skipped (Missing Credentials)",
+    "identity_sync.upstream_user_not_found": "Account Sync Unverified (Keycloak Unreachable)",
+    "identity_sync.keycloak_user_absent": "Account Sync Not Needed (No Keycloak Account)",
 }
 
 
@@ -566,6 +590,7 @@ class AuditAction(str, Enum):
     AUTH_LOGIN = "auth.login"
     AUTH_EXCHANGE_TICKET = "auth.exchange_ticket"
     AUTH_LOGOUT = "auth.logout"
+    AUTH_BACKCHANNEL_LOGOUT = "auth.backchannel_logout"
 
     # ---- 文档 ----
     DOCUMENT_UPLOAD = "document.upload"
@@ -575,6 +600,18 @@ class AuditAction(str, Enum):
     DOCUMENT_PARSE_RECOVER = "document.parse_recover"
     DOCUMENT_REPARSE = "document.reparse"
     DOCUMENT_DELETE = "document.delete"
+
+    # ---- 企业身份集成 ----
+    UPDATE_IDENTITY_INTEGRATION = "update_identity_integration"
+    TEST_IDENTITY_INTEGRATION_CONNECTION = "test_identity_integration_connection"
+    SYNC_IDENTITY_INTEGRATION = "sync_identity_integration"
+    IDENTITY_SYNC_USER_DISABLED = "identity_sync.user_disabled"
+    IDENTITY_SYNC_USER_ENABLED = "identity_sync.user_enabled"
+    IDENTITY_SYNC_USER_DELETED = "identity_sync.user_deleted"
+    IDENTITY_SYNC_USER_RESTORED = "identity_sync.user_restored"
+    IDENTITY_SYNC_MISSING_ADMIN_CREDENTIALS = "identity_sync.missing_admin_credentials"
+    IDENTITY_SYNC_UPSTREAM_USER_NOT_FOUND = "identity_sync.upstream_user_not_found"
+    IDENTITY_SYNC_KEYCLOAK_USER_ABSENT = "identity_sync.keycloak_user_absent"
 
     @property
     def label_zh(self) -> str:

@@ -1,57 +1,129 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Input, Button, Table, Tag, Spin, Result } from 'antd';
-import { SearchOutlined, PlusOutlined, EditOutlined } from '@ant-design/icons';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, Button, Input, Modal, Result, Space, Table, Tag, message } from 'antd';
+import type { TableProps } from 'antd';
+import { DeleteOutlined, EditOutlined, EyeOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { readCachedUser, isPlatformAdmin, type ShellUser } from '@jonex/shell-sdk';
-import { listTenants, type TenantItem } from '../../api/tenants';
+import { readCachedUser, type ShellUser } from '@jonex/shell-sdk';
+import { PageContent, PageHeader, PermButton, usePermission } from '@jonex/shared-lib';
+import {
+  TENANT_PAGE_SIZE_MAX,
+  TENANT_READ_PERMISSION,
+  TENANT_WRITE_PERMISSION,
+  deleteTenant,
+  listTenants,
+  type TenantItem,
+} from '../../api/tenants';
 import { tenantDisplay } from '../../utils/tenantDisplay';
-import TenantFormModal, { type TenantFormModalRef } from './TenantFormModal';
+import DisabledTip from '../../components/DisabledTip';
+import TenantFormModal, { type TenantFormModalRef } from '../../components/TenantFormModal';
+
+/** 输入防抖：避免每敲一个字符就拉一页数据 */
+const SEARCH_DEBOUNCE_MS = 300;
+const PAGE_SIZE_DEFAULT = 10;
 
 export default function TenantManagement() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const user = readCachedUser<ShellUser>();
-  const isAdmin = isPlatformAdmin(user);
+  // 权限来自 shell 下发的 permissions（hosted / standalone 两种形态都由 ShellContext 提供）
+  const { permissions: userPermissions, hasPerm } = usePermission();
+  const canRead = hasPerm(TENANT_READ_PERMISSION);
+  // 比 PermButton 默认的「无权限」更具体：直接告诉用户差哪个码
+  const writePermTip = t('tenantManagement.noPermission', { permission: TENANT_WRITE_PERMISSION });
+
   const [tenants, setTenants] = useState<TenantItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(PAGE_SIZE_DEFAULT);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
   const modalRef = useRef<TenantFormModalRef>(null);
+
+  const searching = searchTerm.length > 0;
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const r = await listTenants();
+      // 列表接口没有关键字参数：搜索时退化为「拉一页上限数据 + 前端过滤」
+      const r = searching ? await listTenants(1, TENANT_PAGE_SIZE_MAX) : await listTenants(page, pageSize);
       setTenants(r.items);
+      setTotal(r.total);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : t('common.loadFailed'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [page, pageSize, searching, t]);
 
   useEffect(() => {
-    if (isAdmin) load();
-  }, [load, isAdmin]);
+    if (canRead) load();
+  }, [load, canRead]);
 
-  const filtered = tenants.filter((tenant) => {
-    const display = tenantDisplay(tenant, t);
-    return (
-      !search ||
-      `${display.name} ${display.description} ${tenant.name} ${tenant.id}`.toLowerCase().includes(search.toLowerCase())
-    );
-  });
+  // 输入防抖；页码与关键字在同一次批处理里更新，切入/切出搜索态只触发一次请求
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearchTerm(search.trim());
+      setPage(1);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const filtered = searching
+    ? tenants.filter((tenant) => {
+        const display = tenantDisplay(tenant, t);
+        return `${display.name} ${display.description} ${tenant.name} ${tenant.id}`
+          .toLowerCase()
+          .includes(searchTerm.toLowerCase());
+      })
+    : tenants;
 
   const openCreate = () => modalRef.current?.openCreate();
   const openEdit = (item: TenantItem) => modalRef.current?.openEdit(item);
+  const openDetail = (item: TenantItem) =>
+    navigate(`/tenant-management/${encodeURIComponent(item.id)}`, { state: { tenant: item } });
 
-  const columns = [
-    { title: t('tenantManagement.tenantId'), dataIndex: 'id', key: 'id', width: 180 },
+  const handleDelete = (item: TenantItem) => {
+    Modal.confirm({
+      title: t('tenantManagement.deleteConfirmTitle'),
+      content: t('tenantManagement.deleteConfirmDesc', { name: item.name, id: item.id }),
+      okText: t('common.confirm'),
+      okButtonProps: { danger: true },
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        try {
+          await deleteTenant(item.id);
+          message.success(t('tenantManagement.deleted'));
+          // 删掉当前页最后一条时回退一页，避免停在空页
+          if (tenants.length === 1 && page > 1) setPage(page - 1);
+          else load();
+        } catch (e: unknown) {
+          message.error(e instanceof Error ? e.message : t('tenantManagement.deleteFailed'));
+        }
+      },
+    });
+  };
+
+  const columns: TableProps<TenantItem>['columns'] = [
+    {
+      title: t('tenantManagement.tenantId'),
+      dataIndex: 'id',
+      key: 'id',
+      width: 180,
+      render: (id: string, tenant: TenantItem) => (
+        <a className="yx-table-action" onClick={() => openDetail(tenant)}>
+          {id}
+        </a>
+      ),
+    },
     {
       title: t('tenantManagement.name'),
       dataIndex: 'name',
       key: 'name',
-      render: (_: string, tenant: TenantItem) => <a className="yx-table-action">{tenantDisplay(tenant, t).name}</a>,
+      render: (_: string, tenant: TenantItem) => tenantDisplay(tenant, t).name,
     },
     {
       title: t('tenantManagement.description'),
@@ -64,7 +136,7 @@ export default function TenantManagement() {
       title: t('common.status'),
       dataIndex: 'status',
       key: 'status',
-      width: 80,
+      width: 90,
       render: (v: number) => (
         <Tag color={v === 1 ? 'success' : 'warning'}>{v === 1 ? t('status.enabled') : t('status.disabled')}</Tag>
       ),
@@ -72,19 +144,52 @@ export default function TenantManagement() {
     {
       title: t('common.actions'),
       key: 'actions',
-      width: 100,
-      render: (_: unknown, r: TenantItem) => (
-        <a className="yx-table-action" onClick={() => openEdit(r)}>
-          <EditOutlined /> {t('common.edit')}
-        </a>
-      ),
+      // 三个带图标的 link 按钮，比原 `.yx-table-action` 的裸文本宽
+      width: 240,
+      render: (_: unknown, r: TenantItem) => {
+        // 删除自己所属的租户会把当前登录会话所在租户一并软删，直接置灰
+        const isSelf = r.id === user?.tenantId;
+        return (
+          <Space size={0}>
+            {/* 能进本页即已通过 read 权限的路由守卫，查看不再单独判权 */}
+            <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => openDetail(r)}>
+              {t('tenantManagement.view')}
+            </Button>
+            <PermButton
+              type="link"
+              size="small"
+              icon={<EditOutlined />}
+              permissions={userPermissions}
+              requiredPerm={TENANT_WRITE_PERMISSION}
+              noPermissionText={writePermTip}
+              onClick={() => openEdit(r)}
+            >
+              {t('common.edit')}
+            </PermButton>
+            <DisabledTip tip={isSelf ? t('tenantManagement.deleteSelfTip') : ''}>
+              <PermButton
+                type="link"
+                size="small"
+                danger
+                icon={<DeleteOutlined />}
+                permissions={userPermissions}
+                requiredPerm={TENANT_WRITE_PERMISSION}
+                noPermissionText={writePermTip}
+                // 业务原因（本租户不可删）比权限原因更具体，此时由外层 DisabledTip 出提示
+                noPermissionTip={!isSelf}
+                disabled={isSelf}
+                onClick={() => handleDelete(r)}
+              >
+                {t('common.delete')}
+              </PermButton>
+            </DisabledTip>
+          </Space>
+        );
+      },
     },
   ];
 
-  if (!isAdmin)
-    return (
-      <Result status="403" title="403" subTitle={t('error.403')} />
-    );
+  if (!canRead) return <Result status="403" title="403" subTitle={t('error.403')} />;
 
   if (error)
     return (
@@ -101,35 +206,60 @@ export default function TenantManagement() {
     );
 
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1>{t('tenantManagement.title')}</h1>
-      </div>
-      <div className="yx-card">
-        <div className="yx-toolbar">
-          <Input
-            prefix={<SearchOutlined />}
-            placeholder={t('tenantManagement.searchTenants')}
-            style={{ width: 240 }}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            allowClear
+    <>
+      <PageHeader title={t('tenantManagement.title')} />
+      <PageContent showCard={false}>
+        <div className="yx-card">
+          <div className="yx-toolbar">
+            <Input
+              prefix={<SearchOutlined />}
+              placeholder={t('tenantManagement.searchTenants')}
+              style={{ width: 240 }}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              allowClear
+            />
+            <PermButton
+              type="primary"
+              icon={<PlusOutlined />}
+              permissions={userPermissions}
+              requiredPerm={TENANT_WRITE_PERMISSION}
+              noPermissionText={writePermTip}
+              onClick={openCreate}
+            >
+              {t('tenantManagement.createTenant')}
+            </PermButton>
+          </div>
+          {searching && total > TENANT_PAGE_SIZE_MAX && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message={t('tenantManagement.searchLimitHint', { total, limit: TENANT_PAGE_SIZE_MAX })}
+            />
+          )}
+          <Table
+            columns={columns}
+            dataSource={filtered}
+            loading={loading}
+            rowKey="id"
+            pagination={{
+              current: page,
+              pageSize: searching ? PAGE_SIZE_DEFAULT : pageSize,
+              total: searching ? filtered.length : total,
+              showSizeChanger: !searching,
+              pageSizeOptions: ['10', '20', '50'],
+              onChange: (p, ps) => {
+                setPage(p);
+                if (!searching) setPageSize(ps);
+              },
+            }}
+            size="middle"
           />
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            {t('tenantManagement.createTenant')}
-          </Button>
         </div>
-        <Table
-          columns={columns}
-          dataSource={filtered}
-          loading={loading}
-          rowKey="id"
-          pagination={{ total: filtered.length, pageSize: 10 }}
-          size="middle"
-        />
-      </div>
 
-      <TenantFormModal ref={modalRef} onSaved={load} />
-    </div>
+        <TenantFormModal ref={modalRef} onSaved={load} />
+      </PageContent>
+    </>
   );
 }

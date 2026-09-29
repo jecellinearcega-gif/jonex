@@ -21,6 +21,7 @@ from capabilities.platform.repository.application_repository import ApplicationR
 from capabilities.platform.repository.permission_repository import PermissionRepository
 from capabilities.platform.repository.system_config_repository import SystemConfigRepository
 from capabilities.platform.repository.task_schedule_repository import TaskScheduleRepository
+from capabilities.platform.services.role_binding import DEFAULT_USER_ROLE_NAME
 from capabilities.platform.dtos.platform import (
     ApplicationCreateRequest,
     ApplicationUpdateRequest,
@@ -320,8 +321,11 @@ class TaskScheduleService:
 # （空间 space_manager/member、知识库 kb_manager/member）。
 #
 # ⚠️ 这个常量必须与 migrations/006_seed_data.sql 的「每租户预设角色播种」块、
-#    以及 update/027 的 4.1 保持一致。三处描述的是同一件事：一个租户开箱应有哪些账号角色。
-_TENANT_ROLE_TEMPLATE = ("租户管理员", "普通用户")
+#    以及 update/034 的第 3、5 节保持一致。三处描述的是同一件事：一个租户开箱应有哪些账号角色。
+#
+# 「普通用户」不再写字面量，改引用 role_binding.DEFAULT_USER_ROLE_NAME ——
+#    自动建号补默认角色绑定时查的就是这个角色名，两处必须字面一致，否则建号会静默绑不上。
+_TENANT_ROLE_TEMPLATE = ("租户管理员", DEFAULT_USER_ROLE_NAME)
 
 
 async def seed_tenant_roles(session, tenant_id: str) -> None:
@@ -333,7 +337,7 @@ async def seed_tenant_roles(session, tenant_id: str) -> None:
 
     [jonex] B1：模板从 demo 按**角色名**复制，且查询带 `is_deleted == 0` ——
     这意味着 demo 里某个模板角色被软删后，新租户会**静默地少一个角色**。
-    027 软删三个降级角色时就会踩到（旧模板里有它们）。所以本函数末尾加了完整性校验：
+    所以本函数末尾加了完整性校验：
     模板角色没建齐就抛异常，而不是造出一个「没有普通用户角色」的残缺租户 ——
     那种租户里所有普通用户都绑不到账号角色，登录后菜单全空，且现象与权限缓存问题难以区分。
     """
@@ -359,7 +363,7 @@ async def seed_tenant_roles(session, tenant_id: str) -> None:
             message=(
                 f"运营租户 tenant_jonex_demo 缺少预设角色模板 {sorted(missing_in_demo)}，"
                 f"无法为租户 {tenant_id} 播种角色。请先修复 demo 租户的角色数据"
-                f"（参见 deploy/postgres/update/027_permission_codes_tenant_admin.sql 第 4 节）"
+                f"（参见 deploy/postgres/update/034_repair_tenant_role_seed.sql 第 3 节）"
             )
         )
 
@@ -430,6 +434,18 @@ class TenantService:
             raise ResourceConflictError(
                 message=translate("err.tenant.id_exists", params={"tenant_id": req.id}, fallback=f"租户 ID 已存在: {req.id}")
             )
+        # 已软删的同 id 记录：恢复复用（主键 id 仍被占用，直接 insert 会撞 tenants_pkey）
+        revived = await self.repo.get_including_deleted_by_id(req.id)
+        if revived is not None:
+            revived.is_deleted = 0
+            revived.name = req.name
+            revived.description = req.description
+            revived.plan_type = req.plan_type
+            revived.expire_time = req.expire_time
+            revived.status = 1
+            await self.repo.session.flush()
+            # 角色随租户软删而保留（delete 不级联），无需重复播种
+            return self._to_dict(revived)
         t = self.Tenant(
             id=req.id, name=req.name, description=req.description,
             plan_type=req.plan_type, expire_time=req.expire_time,

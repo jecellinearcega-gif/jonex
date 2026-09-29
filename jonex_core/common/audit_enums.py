@@ -83,6 +83,10 @@ class ResourceType(str, Enum):
     # ---- 编辑器 ----
     EDITOR_STATE = "editor_state"
 
+    # ---- 企业身份集成 ----
+    IDENTITY_INTEGRATION = "identity_integration"
+    IDENTITY_SYNC = "identity_sync"
+
     # ---- 通用 ----
     HTTP = "http"
     MCP_KEY = "mcp_key"
@@ -174,6 +178,9 @@ _RESOURCE_LABEL_ZH: dict[str, str] = {
     "search_history": "搜索历史",
     # ---- 编辑器 ----
     "editor_state": "编辑器状态",
+    # ---- 企业身份集成 ----
+    "identity_integration": "企业身份集成配置",
+    "identity_sync": "同步任务",
     # ---- 通用 ----
     "http": "HTTP 请求",
     "mcp_key": "MCP Key",
@@ -230,6 +237,9 @@ _RESOURCE_LABEL_EN: dict[str, str] = {
     "search_history": "Search History",
     # ---- 编辑器 ----
     "editor_state": "Editor State",
+    # ---- 企业身份集成 ----
+    "identity_integration": "Identity Integration Config",
+    "identity_sync": "Sync Task",
     # ---- 通用 ----
     "http": "HTTP Request",
     "mcp_key": "MCP Key",
@@ -242,6 +252,7 @@ _ACTION_TO_RESOURCE: dict[str, str] = {
     "auth.login": "auth",
     "auth.exchange_ticket": "auth",
     "auth.logout": "auth",
+    "auth.backchannel_logout": "auth",
     "impersonate_start": "auth",
     "impersonate_end": "auth",
     # ---- 文档 → document ----
@@ -448,6 +459,9 @@ _ACTION_TO_RESOURCE: dict[str, str] = {
     "mcp_key.recreate": "mcp_key",
     "mcp_key.delete": "mcp_key",
     "mcp_key.update": "mcp_key",
+    # ---- 账号停用/启用 → user ----
+    "user.disable": "user",
+    "user.enable": "user",
     # ---- 服务启停 → service ----
     "enable_service": "service",
     "disable_service": "service",
@@ -491,6 +505,17 @@ _ACTION_TO_RESOURCE: dict[str, str] = {
     "check_prompt_template_name": "prompt_template",
     "publish_template_scenario": "template_scenario",
     "list_impacted_knowledge_bases": "knowledge_info",
+    # ---- 企业身份集成 → identity_integration / identity_sync ----
+    "update_identity_integration": "identity_integration",
+    "test_identity_integration_connection": "identity_integration",
+    "sync_identity_integration": "identity_sync",
+    "identity_sync.user_disabled": "user",
+    "identity_sync.user_enabled": "user",
+    "identity_sync.user_deleted": "user",
+    "identity_sync.user_restored": "user",
+    "identity_sync.missing_admin_credentials": "user",
+    "identity_sync.upstream_user_not_found": "user",
+    "identity_sync.keycloak_user_absent": "user",
 }
 
 # ============ ResourceType → ID 字段名映射 ============

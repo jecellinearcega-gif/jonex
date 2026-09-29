@@ -36,6 +36,11 @@ from .space_permission_service import (
 # 字符串两两比较）—— 将来加层级只改 _SPACE_ROLE_RANK 一处。
 _SPACE_ROLE_RANK: dict[str, int] = {SPACE_MEMBER: 0, SPACE_MANAGER: 1}
 
+# [jonex] 默认领域空间：新租户/空租户由租户管理员首次进入时懒创建的兜底空间名。
+# 名称固定中文、不随请求 locale 变化（决策：默认空间名 i18n 采用「名称固定中文」）。
+DEFAULT_SPACE_NAME = "默认空间"
+DEFAULT_SPACE_DESCRIPTION = "系统默认领域空间"
+
 
 class SpaceService:
     """领域空间 CRUD + 权限"""
@@ -79,6 +84,33 @@ class SpaceService:
             raise ResourceConflictError(
                 message=translate("err.space.name_exists", params={"name": name}, fallback=f"空间名称已存在: {name}")
             )
+
+    async def ensure_default_space(self, tenant_id: str, user_id: str | None) -> dict | None:
+        """幂等懒创建：租户无任何空间且调用者为租户管理员时，自动创建「默认空间」。
+
+        - 匿名 / 无 user、非租户管理员：直接返回 None（不触发）。
+        - 已有空间：返回 None（幂等，不重复创建）。
+        - 并发下两个请求可能同时看到 count==0，由 create 的 IntegrityError 兜底，
+          这里捕获 ResourceConflictError 后静默返回 None。
+        """
+        tenant_id = require_tenant(tenant_id)
+        if not user_id or user_id == "anonymous":
+            return None
+        if not await is_tenant_admin(tenant_id, user_id):
+            return None
+        async with get_db_session() as session:
+            repo = SpaceRepository(session)
+            if await repo.count(tenant_id) > 0:
+                return None
+        try:
+            return await self.create(
+                tenant_id,
+                {"name": DEFAULT_SPACE_NAME, "description": DEFAULT_SPACE_DESCRIPTION},
+                owner_id=str(user_id),
+            )
+        except ResourceConflictError:
+            # 并发竞态：另一请求已抢先创建，忽略即可
+            return None
 
     async def create(self, tenant_id: str, data: dict, owner_id: str | None = None) -> dict:
         tenant_id = require_tenant(tenant_id)
@@ -178,6 +210,9 @@ class SpaceService:
     async def list(self, tenant_id: str, offset: int = 0, limit: int = 20,
                    user_id: str | None = None) -> dict:
         tenant_id = require_tenant(tenant_id)
+        # [jonex] 默认空间懒创建：ensure 内部自判「租户管理员 + 空空间」，
+        # 匿名/非管理员/已有空间一律 no-op。放在查列表之前，保证本次 list 就含默认空间。
+        await self.ensure_default_space(tenant_id, user_id)
         async with get_db_session() as session:
             repo = SpaceRepository(session)
             tenant_admin = await is_tenant_admin(tenant_id, user_id)
