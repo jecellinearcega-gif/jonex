@@ -19,7 +19,7 @@ export default function Dashboard() {
         justifyContent: 'center',
         alignItems: 'center',
         height: '100%',
-        minHeight: 'calc(100vh - var(--yx-topbar-height, 64px) - 2 * var(--yx-content-padding-y, 28px))',
+        minHeight: 'calc(100vh - var(--yx-topbar-height, 50px) - 2 * var(--yx-content-padding-y, 28px))',
         textAlign: 'center',
       }}
     >

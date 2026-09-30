@@ -53,7 +53,6 @@ const S: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     padding: '8px 0',
-    margin: '0 8px 8px',
     cursor: 'pointer',
   },
   collapsedChar: {
@@ -90,7 +89,9 @@ const SpaceSwitcher: React.FC<SpaceSwitcherProps> = ({ collapsed }) => {
       setSpaces(list);
       const persisted = readPersistedSpaceId();
       setCurrentId((prev) =>
-        persisted ? (list.some((s: ShellSpaceItem) => s.id === persisted) ? persisted : (list[0]?.id ?? null)) : prev,
+        persisted
+          ? (list.some((s: ShellSpaceItem) => s.id === persisted) ? persisted : (list[0]?.id ?? null))
+          : (prev ?? list[0]?.id ?? null),
       );
     } catch {
       // 静默

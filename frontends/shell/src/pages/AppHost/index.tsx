@@ -151,7 +151,9 @@ export default function AppHost() {
     const hostNode = containerEl;
     const mountNode = document.createElement('div');
     mountNode.dataset.remoteApp = appConfig.id;
-    mountNode.style.minHeight = '100%';
+    // 必须给确定高度：子应用页面根靠 flex:1 铺满剩余高度，而 height:100% 只对「已声明高度」
+    // 的父级生效——min-height 撑出来的高度不被百分比解析，链会在这一层静默断掉。
+    mountNode.style.height = '100%';
 
     disposeCurrentRemote();
     hostNode.appendChild(mountNode);
@@ -294,7 +296,7 @@ export default function AppHost() {
   }
 
   return (
-    <div style={{ minHeight: '100%', position: 'relative' }}>
+    <div style={{ height: '100%', position: 'relative' }}>
       {embeddedUrl ? (
         <iframe
           title={`${appConfig.name}-standalone`}
@@ -306,7 +308,7 @@ export default function AppHost() {
           }}
         />
       ) : (
-        <div ref={setContainerEl} style={{ minHeight: '100%' }} />
+        <div ref={setContainerEl} style={{ height: '100%' }} />
       )}
       {remoteLoading && (
         <div
