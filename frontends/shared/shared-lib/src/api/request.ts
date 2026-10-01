@@ -1,6 +1,6 @@
 import axios from 'axios';
 import type { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
-import { emitSessionExpired, readAccessToken } from '@jonex/shell-sdk';
+import { emitSessionExpired, readAccessToken, refreshTokens } from '@jonex/shell-sdk';
 import type { ApiError, ApiResponse } from './types';
 
 export interface CreateRequestOptions {
@@ -53,6 +53,14 @@ function toHttpApiError(error: import('axios').AxiosError): ApiError {
 function isLoginRequest(config: AxiosRequestConfig | undefined): boolean {
   return /\/auth\/login(\?.*)?$/.test(config?.url ?? '');
 }
+
+/** 刷新接口自身 401 说明 refresh token 已失效，不能再次触发刷新（防递归） */
+function isRefreshRequest(config: AxiosRequestConfig | undefined): boolean {
+  return /\/auth\/refresh(\?.*)?$/.test(config?.url ?? '');
+}
+
+/** 已自动刷新重放过的请求：同一请求只重放一次，避免刷新后仍 401 时无限重试 */
+const retriedRequests = new WeakSet<object>();
 
 async function unwrap<T>(promise: Promise<AxiosResponse<ApiResponse<T>>>): Promise<T> {
   const response = await promise;
@@ -111,10 +119,30 @@ export function createRequest(options: CreateRequestOptions = {}): ApiClient {
       }
       return response;
     },
-    (error) => {
+    async (error) => {
       if (axios.isAxiosError(error)) {
         const apiError = toHttpApiError(error);
         const config = error.config;
+        const canAutoRetry =
+          apiError.status === 401 &&
+          handle401 &&
+          !isLoginRequest(config) &&
+          !isRefreshRequest(config) &&
+          !tokenExpiredHandled &&
+          (config == null || !retriedRequests.has(config));
+
+        // 自动刷新并重放一次：access token 失效但 refresh token 仍有效时滑动续期，
+        // 用户无感知；刷新失败或 refresh 也失效才真正走会话失效（emitSessionExpired）。
+        if (canAutoRetry && config) {
+          const ok = await refreshTokens();
+          if (ok) {
+            retriedRequests.add(config);
+            // 用新 access token 重新发原请求
+            config.headers.Authorization = `Bearer ${readAccessToken()}`;
+            return client(config);
+          }
+        }
+
         if (apiError.status === 401 && handle401 && !isLoginRequest(config) && !tokenExpiredHandled) {
           tokenExpiredHandled = true;
           // 发会话失效信号（清 token + jonex:token-expired 事件），跳转由监听者统一执行；

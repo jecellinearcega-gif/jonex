@@ -239,6 +239,18 @@ importers:
         specifier: ^1.18.1
         version: 1.18.1
 
+  e2e:
+    devDependencies:
+      '@playwright/test':
+        specifier: ^1.60.0
+        version: 1.60.0
+      '@types/node':
+        specifier: ^26.1.2
+        version: 26.1.2
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+
   ecosystem-management:
     dependencies:
       '@ant-design/cssinjs':
@@ -332,6 +344,9 @@ importers:
       '@ant-design/icons':
         specifier: ^6.2.3
         version: 6.2.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@ant-design/plots':
+        specifier: ^2.6.8
+        version: 2.6.8(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       '@jonex/i18n-resources':
         specifier: workspace:*
         version: link:../shared/i18n-resources
@@ -425,6 +440,21 @@ importers:
         specifier: ^2.1.2
         version: 2.1.2(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
     devDependencies:
+      '@ant-design/icons':
+        specifier: ^6.2.3
+        version: 6.2.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@types/react':
+        specifier: ^18.3.0
+        version: 18.3.29
+      antd:
+        specifier: ^6.4.3
+        version: 6.4.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.2.0
+        version: 18.3.1(react@18.3.1)
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
@@ -437,12 +467,24 @@ importers:
       '@jonex/shell-sdk':
         specifier: workspace:*
         version: link:../shell-sdk
+      '@loadable/component':
+        specifier: ^5.15.3
+        version: 5.16.7(react@18.3.1)
       antd:
         specifier: ^6.4.3
         version: 6.4.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       axios:
         specifier: ^1.10.0
         version: 1.16.1
+      dompurify:
+        specifier: ^3.3.1
+        version: 3.4.5
+      i18next:
+        specifier: ^25.3.1
+        version: 25.10.10(typescript@5.9.3)
+      lodash:
+        specifier: ^4.17.21
+        version: 4.18.1
       react:
         specifier: ^18.2.0
         version: 18.3.1
@@ -452,7 +494,13 @@ importers:
       react-i18next:
         specifier: ^15.6.0
         version: 15.7.4(i18next@25.10.10(typescript@5.9.3))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(typescript@5.9.3)
+      react-router-dom:
+        specifier: ^6.22.3
+        version: 6.30.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
     devDependencies:
+      '@types/lodash':
+        specifier: ^4.17.24
+        version: 4.17.24
       '@types/react':
         specifier: ^18.3.0
         version: 18.3.29
@@ -526,8 +574,17 @@ importers:
       vite:
         specifier: ^4.5.2
         version: 4.5.14(@types/node@26.1.2)(sass@1.100.0)
+      vitest:
+        specifier: ^1.6.1
+        version: 1.6.1(@types/node@26.1.2)(sass@1.100.0)
 
 packages:
+
+  '@ant-design/charts-util@0.0.3':
+    resolution: {integrity: sha512-x1H7UT6t4dXAyGRoHqlOnEsEqBSTANFGTZEAMI0CWYhYUpp13n0o9grl9oPtoL6FEQMjUBTY+zGJKlHkz8smMw==}
+    peerDependencies:
+      react: '>=16.8.4'
+      react-dom: '>=16.8.4'
 
   '@ant-design/colors@8.0.1':
     resolution: {integrity: sha512-foPVl0+SWIslGUtD/xBr1p9U4AKzPhNYEseXYRRo5QSzGACYZrQbe11AYJbYfAWnWSpGBx6JjBmSeugUsD9vqQ==}
@@ -558,6 +615,12 @@ packages:
       react: '>=16.0.0'
       react-dom: '>=16.0.0'
 
+  '@ant-design/plots@2.6.8':
+    resolution: {integrity: sha512-QsunUs2d5rbq/1BwVhga/siA5H50OaG23YopMYwPD4sPsza6NQzPQ8FM3elNIsD/BIk298tihqX1cJ/MmvVJbQ==}
+    peerDependencies:
+      react: '>=16.8.4'
+      react-dom: '>=16.8.4'
+
   '@ant-design/react-slick@2.0.0':
     resolution: {integrity: sha512-HMS9sRoEmZey8LsE/Yo6+klhlzU12PisjrVcydW3So7RdklyEd2qehyU6a7Yp+OYN72mgsYs3NFCyP2lCPFVqg==}
     peerDependencies:
@@ -569,6 +632,9 @@ packages:
 
   '@antv/component@2.1.11':
     resolution: {integrity: sha512-dTdz8VAd3rpjOaGEZTluz82mtzrP4XCtNlNQyrxY7VNRNcjtvpTLDn57bUL2lRu1T+iklKvgbE2llMriWkq9vQ==}
+
+  '@antv/coord@0.4.7':
+    resolution: {integrity: sha512-UTbrMLhwJUkKzqJx5KFnSRpU3BqrdLORJbwUbHK2zHSCT3q3bjcFA//ZYLVfIlwqFDXp/hzfMyRtp0c77A9ZVA==}
 
   '@antv/event-emitter@0.1.3':
     resolution: {integrity: sha512-4ddpsiHN9Pd4UIlWuKVK1C4IiZIdbwQvy9i7DUSI3xNJ89FPUFt8lxDYj8GzzfdllV0NkJTRxnG+FvLk0llidg==}
@@ -600,6 +666,12 @@ packages:
   '@antv/g-webgl@2.1.1':
     resolution: {integrity: sha512-Fhg21NruxSxYaQETXTSa9guTI9XlUE7M3Kjz8iFh3ihnMKkuUGlL8P8Gn5CQ8O/WWiFPqskoE82TPhqMAIup5Q==}
 
+  '@antv/g2-extension-plot@0.2.2':
+    resolution: {integrity: sha512-KJXCXO7as+h0hDqirGXf1omrNuYzQmY3VmBmp7lIvkepbQ7sz3pPwy895r1FWETGF3vTk5UeFcAF5yzzBHWgbw==}
+
+  '@antv/g2@5.4.8':
+    resolution: {integrity: sha512-IvgIpwmT4M5/QAd3Mn2WiHIDeBqFJ4WA2gcZhRRSZuZ2KmgCqZWZwwIT0hc+kIGxwYeDoCQqf//t6FMVu3ryBg==}
+
   '@antv/g6@5.1.1':
     resolution: {integrity: sha512-50bXxMUf4mChyOv4ePVeWZLwotih9VunKfp0a++Wofv/wCyY8fb9+CV2wouIBCOZnd5ydBRA4NNaX9yLJzqa2w==}
 
@@ -617,6 +689,9 @@ packages:
 
   '@antv/scale@0.4.16':
     resolution: {integrity: sha512-5wg/zB5kXHxpTV5OYwJD3ja6R8yTiqIOkjOhmpEJiowkzRlbEC/BOyMvNUq5fqFIHnMCE9woO7+c3zxEQCKPjw==}
+
+  '@antv/scale@0.5.2':
+    resolution: {integrity: sha512-rTHRAwvpHWC5PGZF/mJ2ZuTDqwwvVBDRph0Uu5PV9BXwzV7K8+9lsqGJ+XHVLxe8c6bKog5nlzvV/dcYb0d5Ow==}
 
   '@antv/util@2.0.17':
     resolution: {integrity: sha512-o6I9hi5CIUvLGDhth0RxNSFDRwXeywmt6ExR4+RmVAzIi48ps6HUy+svxOCayvrPBN37uE6TAc2KDofRo0nK9Q==}
@@ -2557,6 +2632,10 @@ packages:
   flatted@3.4.2:
     resolution: {integrity: sha512-PjDse7RzhcPkIJwy5t7KPWQSZ9cAbzQXcafsetQoD7sOJRQlGikNbx7yZp2OotDnJyrDcbyRq3Ttb18iYOqkxA==}
 
+  flru@1.0.2:
+    resolution: {integrity: sha512-kWyh8ADvHBFz6ua5xYOPnUroZTT/bwWfrCeL0Wj1dzG4/YOmOcfJ99W8dOVyyynJN35rZ9aCOtHChqQovV7yog==}
+    engines: {node: '>=6'}
+
   follow-redirects@1.16.0:
     resolution: {integrity: sha512-y5rN/uOsadFT/JfYwhxRS5R7Qce+g3zG97+JrtFZlC9klX/W5hD7iiLzScI4nZqUS7DNUdhPgw4xI8W2LuXlUw==}
     engines: {node: '>=4.0'}
@@ -3313,6 +3392,9 @@ packages:
   pathval@1.1.1:
     resolution: {integrity: sha512-Dp6zGqpTdETdR63lehJYPeIOqpiNBNtc7BpWSLrOje7UaIsE5aY92r/AunQA7rsXvet3lrJ3JnZX29UPTKXyKQ==}
 
+  pdfast@0.2.0:
+    resolution: {integrity: sha512-cq6TTu6qKSFUHwEahi68k/kqN2mfepjkGrG9Un70cgdRRKLKY6Rf8P8uvP2NvZktaQZNF3YE7agEkLj0vGK9bA==}
+
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
 
@@ -3978,6 +4060,12 @@ packages:
 
 snapshots:
 
+  '@ant-design/charts-util@0.0.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1)':
+    dependencies:
+      lodash: 4.18.1
+      react: 18.3.1
+      react-dom: 18.3.1(react@18.3.1)
+
   '@ant-design/colors@8.0.1':
     dependencies:
       '@ant-design/fast-color': 3.0.1
@@ -4015,6 +4103,17 @@ snapshots:
       react: 18.3.1
       react-dom: 18.3.1(react@18.3.1)
 
+  '@ant-design/plots@2.6.8(react-dom@18.3.1(react@18.3.1))(react@18.3.1)':
+    dependencies:
+      '@ant-design/charts-util': 0.0.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@antv/event-emitter': 0.1.3
+      '@antv/g': 6.3.1
+      '@antv/g2': 5.4.8
+      '@antv/g2-extension-plot': 0.2.2
+      lodash: 4.18.1
+      react: 18.3.1
+      react-dom: 18.3.1(react@18.3.1)
+
   '@ant-design/react-slick@2.0.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1)':
     dependencies:
       '@babel/runtime': 7.29.2
@@ -4035,6 +4134,12 @@ snapshots:
       '@antv/scale': 0.4.16
       '@antv/util': 3.3.11
       svg-path-parser: 1.1.0
+
+  '@antv/coord@0.4.7':
+    dependencies:
+      '@antv/scale': 0.4.16
+      '@antv/util': 2.0.17
+      gl-matrix: 3.4.4
 
   '@antv/event-emitter@0.1.3': {}
 
@@ -4107,6 +4212,27 @@ snapshots:
       gl-matrix: 3.4.4
       tslib: 2.8.1
 
+  '@antv/g2-extension-plot@0.2.2':
+    dependencies:
+      '@antv/g2': 5.4.8
+      '@antv/util': 3.3.11
+      '@antv/vendor': 1.0.11
+
+  '@antv/g2@5.4.8':
+    dependencies:
+      '@antv/component': 2.1.11
+      '@antv/coord': 0.4.7
+      '@antv/event-emitter': 0.1.3
+      '@antv/expr': 1.0.2
+      '@antv/g': 6.3.1
+      '@antv/g-canvas': 2.2.0
+      '@antv/g-plugin-dragndrop': 2.1.1
+      '@antv/scale': 0.5.2
+      '@antv/util': 3.3.11
+      '@antv/vendor': 1.0.11
+      flru: 1.0.2
+      pdfast: 0.2.0
+
   '@antv/g6@5.1.1':
     dependencies:
       '@antv/algorithm': 0.1.26
@@ -4151,6 +4277,12 @@ snapshots:
       tslib: 2.8.1
 
   '@antv/scale@0.4.16':
+    dependencies:
+      '@antv/util': 3.3.11
+      color-string: 1.9.1
+      fecha: 4.2.3
+
+  '@antv/scale@0.5.2':
     dependencies:
       '@antv/util': 3.3.11
       color-string: 1.9.1
@@ -4728,7 +4860,7 @@ snapshots:
       detect-libc: 2.1.2
       is-glob: 4.0.3
       node-addon-api: 7.1.1
-      picomatch: 4.0.4
+      picomatch: 4.0.5
     optionalDependencies:
       '@parcel/watcher-android-arm64': 2.5.6
       '@parcel/watcher-darwin-arm64': 2.5.6
@@ -6278,6 +6410,8 @@ snapshots:
 
   flatted@3.4.2: {}
 
+  flru@1.0.2: {}
+
   follow-redirects@1.16.0: {}
 
   for-each@0.3.5:
@@ -7298,6 +7432,8 @@ snapshots:
   pathe@2.0.3: {}
 
   pathval@1.1.1: {}
+
+  pdfast@0.2.0: {}
 
   picocolors@1.1.1: {}
 

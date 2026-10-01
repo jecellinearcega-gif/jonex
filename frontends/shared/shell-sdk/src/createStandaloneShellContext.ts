@@ -1,6 +1,7 @@
 import type { ShellContext, ShellUser } from './types';
 import { readAccessToken, readCachedUser, clearAuthStorage } from './authStorage';
-import { redirectToLogin } from './sessionExpired';
+import { finishLogout } from './sessionExpired';
+import { revokeServerSession } from './logout';
 
 interface StandaloneOptions {
   appId: string;
@@ -35,9 +36,12 @@ export function createStandaloneShellContext(options: StandaloneOptions): ShellC
       }
     },
 
-    logout: () => {
+    logout: async () => {
+      // 与 shell 宿主同口径：先吊销服务端会话与 httpOnly refresh cookie，再清本地并跳转；
+      // SSO 会话返回 sso_logout_url 时由 finishLogout 走顶层导航到 Keycloak 结束会话
+      const ssoLogoutUrl = await revokeServerSession();
       clearAuthStorage({ keepLocale: true });
-      redirectToLogin({ loginUrl: options.loginUrl || '/login', appId });
+      finishLogout(ssoLogoutUrl, { loginUrl: options.loginUrl || '/login', appId });
     },
 
     getToken: () => options.token ?? readAccessToken(),

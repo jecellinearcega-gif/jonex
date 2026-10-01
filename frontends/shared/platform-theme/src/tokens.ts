@@ -45,7 +45,7 @@ export const spacing = {
   topbarHeight: 64,
   contentPaddingX: 32,
   contentPaddingY: 28,
-  cardPadding: 24,
+  cardPadding: 16,
   pageTitleMb: 24,
   toolbarMb: 20,
   sectionHeaderMb: 16,
@@ -53,7 +53,7 @@ export const spacing = {
 } as const;
 
 export const radius = {
-  card: 14,
+  card: 10,
   btn: 8,
   tag: 12,
   pageBtn: 8,

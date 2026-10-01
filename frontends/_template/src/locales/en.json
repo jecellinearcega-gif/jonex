@@ -83,11 +83,6 @@
     "selectPlaceholder": "Please select",
     "confirmDelete": "Are you sure you want to delete this item?"
   },
-  "language": {
-    "chinese": "Simplified Chinese",
-    "english": "English",
-    "switchLanguage": "Switch Language"
-  },
   "error": {
     "401": "Unauthorized access. Please sign in.",
     "403": "Forbidden. You don't have permission to access this resource.",

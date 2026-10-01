@@ -18,30 +18,6 @@ body {
   color: #0a0a0a;
 }
 
-.ant-typography {
-  font-family: 'Inter', system-ui, sans-serif !important;
-}
-
-.ant-btn {
-  border-radius: 10px;
-  font-weight: 500;
-  box-shadow: none;
-}
-
-.ant-input,
-.ant-select-selector,
-.ant-tag {
-  border-radius: 10px !important;
-}
-
-.ant-card-bordered {
-  box-shadow:
-    0 10px 15px -3px #0000001a,
-    0 4px 6px -4px #0000001a;
-  border-color: #e5e5e5;
-  border-radius: 16px;
-}
-
 .custom-login-btn:disabled {
   background-color: #f5f5f5 !important;
   color: #171717 !important;

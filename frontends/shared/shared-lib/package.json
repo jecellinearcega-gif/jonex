@@ -16,15 +16,21 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@ant-design/icons": "^6.2.3",
+    "@jonex/shell-sdk": "workspace:*",
+    "@loadable/component": "^5.15.3",
     "antd": "^6.4.3",
     "axios": "^1.10.0",
+    "dompurify": "^3.3.1",
+    "i18next": "^25.3.1",
+    "lodash": "^4.17.21",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-i18next": "^15.6.0",
-    "@ant-design/icons": "^6.2.3",
-    "@jonex/shell-sdk": "workspace:*"
+    "react-router-dom": "^6.22.3"
   },
   "devDependencies": {
+    "@types/lodash": "^4.17.24",
     "@types/react": "^18.3.0",
     "typescript": "^5.4.0"
   }

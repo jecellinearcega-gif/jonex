@@ -7,7 +7,7 @@ import { useNavigate, useLocation, useMatches } from 'react-router-dom';
 import { useStore } from '@/store';
 import { findMenuPathKeys, getMenuItemsByPermission } from '@/utils/menu';
 import { getAvatarText, clearLocalStorageExcept } from '@/utils/utils';
-import { clearAuthStorage, redirectToLogin } from '@jonex/shell-sdk';
+import { clearAuthStorage, finishLogout, revokeServerSession } from '@jonex/shell-sdk';
 import { safeMessage } from '@/utils/safeMessage';
 import useIsMobile from '@/hooks/useIsMobile';
 import { getMenuFromRoutes } from '@/router/menu';
@@ -77,15 +77,17 @@ export default function HeaderNav({ type = null, previous = '', title = '', prev
     setDrawerOpen(false);
   };
 
-  const handleUserMenuClick = () => {
+  const handleUserMenuClick = async () => {
     const shellContext = (window as any).__SHELL_CONTEXT__;
     if (shellContext?.mode === 'hosted' && typeof shellContext.logout === 'function') {
       shellContext.logout();
       return;
     }
+    // SSO 会话返回 sso_logout_url 时由 finishLogout 走顶层导航到 Keycloak 结束会话
+    const ssoLogoutUrl = await revokeServerSession();
     clearAuthStorage({ keepLocale: true });
     global.setUserInfo(null);
-    redirectToLogin({ loginUrl: VITE_LOGIN || '/login', appId: VITE_APP_ID });
+    finishLogout(ssoLogoutUrl, { loginUrl: VITE_LOGIN || '/login', appId: VITE_APP_ID });
   };
 
   const renderMenuContent = () => (

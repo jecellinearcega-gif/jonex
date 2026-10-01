@@ -20,6 +20,11 @@ export { isPlatformAdmin } from './platformAdmin';
 export * from './authRedirect';
 export { bootstrapStandaloneAuth } from './authBootstrap';
 export * from './sessionExpired';
+export * from './logoutNavigation';
+export * from './crossAppNavigation';
+export { revokeServerSession } from './logout';
+export { refreshTokens, scheduleAutoRefresh, stopAutoRefresh } from './autoRefresh';
+export { isImpersonating, readAccessTokenExpiresAtMs } from './impersonation';
 export type { AuthBootstrapOptions, AuthBootstrapResult } from './authBootstrap';
 
 const SHELL_CONTEXT_KEY = '__SHELL_CONTEXT__';

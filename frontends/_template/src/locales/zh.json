@@ -83,11 +83,6 @@
     "selectPlaceholder": "请选择",
     "confirmDelete": "确定要删除此数据吗？"
   },
-  "language": {
-    "chinese": "中文",
-    "english": "英文",
-    "switchLanguage": "切换语言"
-  },
   "error": {
     "401": "未经授权，请登录。",
     "403": "禁止访问，您没有权限。",

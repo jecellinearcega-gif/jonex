@@ -1,34 +1,110 @@
 /* ===== 平台级通用布局原语 ===== */
 
-.yx-sidebar {
-  width: var(--yx-sidebar-width);
-  background: #ffffff;
+/* 以下骨架规则一律提权为 `.yx-app-layout <后代>`：antd 对 .ant-layout-header /
+   .ant-layout-sider / .ant-layout-content 用的是单类选择器（0-1-0），与本节同级，
+   而 cssinjs 的注入顺序在运行时决定、不可控。提权到 0-2-0 可稳定胜过 antd 默认值。
+
+   antd Sider/Header 已承担的部分（width、flex-basis、折叠 transition、底色、
+   box-sizing、min-height:0、has-sider 的 flex-direction:row 与 content width:0）
+   此处不再重复声明，只保留主题化覆盖与 antd 无法表达的语义。 */
+
+.yx-app-layout .yx-sidebar {
+  /* theme="light" 已给出白底（lightSiderBg = colorBgContainer = tokens.white），
+     这里显式保留一份，避免全局 colorBgContainer 变更时侧栏被动跟着变色 */
+  background: var(--yx-bg-white);
   color: var(--yx-text-primary);
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-  transition: width 0.3s ease;
-  z-index: 100;
-  box-shadow: var(--yx-sidebar-shadow);
+  /* 不再有 box-shadow（原 --yx-sidebar-shadow 已随本节一并删除）：侧栏与内容区靠
+     白底 / --yx-bg-page 的底色差分界，不需要再叠一层投影。变量本身也从 theme.css 移除 ——
+     它是本节唯一的消费者，留着就是死变量。
+     z-index:1 保留并另有职责：给侧栏建立层叠上下文，把折叠钮的 z-index:2 圈在侧栏内部，
+     否则它会逃到上一层、与 .yx-topbar(2) 平级而按 DOM 顺序压过 header。 */
+  z-index: 1;
 }
 
-.yx-topbar {
-  height: var(--yx-topbar-height);
+/* Sider 会在 aside 与内容之间多包一层 .ant-layout-sider-children（height:100%）。
+   侧栏内容唯一的布局需求是「导航区吃满剩余高度并自行滚动」，
+   而 .yx-sidebar-nav{flex:1} 依赖父级是 flex column —— 这一层必须补上。 */
+.yx-app-layout .yx-sidebar .ant-layout-sider-children {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 折叠钮：骑在侧栏右边界、落在侧栏 40% 高度处（AppLayout 自渲染，antd 自带 trigger 已关闭）。
+   定位相对 .ant-layout-sider 展开 —— 它是 position:relative（antd 给），而中间那层
+   .ant-layout-sider-children 未定位，故 right:0 + translateX(50%) 让按钮中心压在侧栏右缘
+   （与 left:100% + translateX(-50%) 等价，取前者是为了贴合给定的样式式样）。
+   纵向 top:40% + translateY(-50%)：按钮中心落在侧栏高度的 40% 处（几何中点是 50%，故为「中点偏上」）。
+   取百分比而非固定 px 是有意的 —— 上移幅度随侧栏高度等比缩放：侧栏高时上移更多、矮时更少，
+   观感上始终是「同一个相对位置」。代价是侧栏越高、绝对上移量越大（800px 视口约 75px）。
+   层级：.yx-sidebar 自身 z-index:1 已成层叠上下文，按钮必然盖过 z-index:auto 的 .yx-content；
+   z-index:2 是为了压过侧栏内同为定位/层叠的导航项，避免悬浮图标时按钮被盖。 */
+.yx-app-layout .yx-sidebar .yx-sider-toggle {
+  position: absolute;
+  right: 0;
+  top: 40%;
+  transform: translateX(50%) translateY(-50%);
+  z-index: 2;
+  /* 竖长胶囊 13×42：宽度定死，不依赖 antd Button 的 token 推导
+     （size=small 在本项目 token 下推出的是 27×28 的非正圆，字面值比推导更可控）。
+     展开态与折叠态同尺寸 —— 13px 已足够窄，折叠态再收一档反而失去可点面积 */
+  width: 13px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 100px;
+  cursor: pointer;
+  /* 静息底色比原稿 #f2f2f4 更亮一档：原稿在白色侧栏上偏灰、有重量感，压不住细窄的条状；
+     提亮后仍留 7 阶差（#f8f8fa vs 侧栏纯白），静态下靠这点色差辨识，hover 再交给阴影。 */
+  background: #f8f8fa;
+  color: #14151c3d;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+/* hover：白底 + 加深的图标色 + 三层投影浮起。底色由 #f8f8fa 转纯白，色差只有 7 阶，
+   所以这一次的「浮起」几乎全靠那组阴影承担 —— 落在同为白底的侧栏上时，它就是唯一的边界。 */
+.yx-app-layout .yx-sidebar .yx-sider-toggle:hover {
+  background: #ffffff;
+  color: #14151c99;
+  box-shadow: 0px 9px 28px 8px rgba(0, 0, 0, 0.05), 0px 3px 6px -4px rgba(0, 0, 0, 0.12),
+    0px 6px 16px 0px rgba(0, 0, 0, 0.08);
+}
+/* 13px 宽的条里图标不能沿用常规字号：默认 14px 会撑满整条、顶到圆角边缘 */
+.yx-app-layout .yx-sidebar .yx-sider-toggle .anticon {
+  font-size: 11px;
+}
+
+.yx-app-layout .yx-topbar {
+  /* antd 默认 height:64px 是固定值，会把更高的内容裁掉；这里改回 min-height 语义 */
+  height: auto;
+  /* 高度不写死：min-height 保证 ≥ 顶栏基线，内容更高时由内容撑起 */
+  min-height: var(--yx-topbar-height);
+  /* antd 默认 line-height:64px 会传染给顶栏内所有文字（含 span），把行撑高 */
+  line-height: normal;
+  padding: 0 var(--yx-content-padding-x);
   background: var(--yx-bg-white);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 var(--yx-content-padding-x);
   border-bottom: 1px solid var(--yx-border-table);
   flex-shrink: 0;
   box-shadow: var(--yx-header-shadow);
+  /* 通栏 header 要压过 .yx-sidebar(1)：让自身底边框与下投影在跨越侧栏那一段仍连续，
+     不被侧栏的白底切断（侧栏原有的上溢阴影已随 box-shadow 一并移除，此处的层级仍有此用途） */
+  position: relative;
+  z-index: 2;
 }
 
-.yx-content {
+.yx-app-layout .yx-content {
+  /* antd 默认 flex:auto（basis 为内容宽度），改为 flex:1 避免被内容撑开 */
   flex: 1;
   overflow-y: auto;
   padding: var(--yx-content-padding-y) var(--yx-content-padding-x);
   background: var(--yx-bg-page);
+  /* 页面纵向布局的根，供 PageContent 的 flex:1 吃掉剩余高度 */
+  display: flex;
+  flex-direction: column;
 }
 
 .yx-card {
@@ -335,6 +411,138 @@
   background: var(--yx-accent);
 }
 
+/* ===== Sidebar Collapsed（窄栏）：分组以分隔线分隔，图标可点/hover 浮层 ===== */
+.yx-nav-collapsed-sep {
+  height: 1px;
+  background: var(--yx-sidebar-border);
+  margin: 6px 10px;
+}
+
+.yx-nav-collapsed-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 44px;
+  color: var(--yx-sidebar-text);
+  font-size: 16px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: all 0.2s ease;
+}
+.yx-nav-collapsed-icon:hover {
+  background: var(--yx-sidebar-hover);
+  color: var(--yx-text-primary);
+}
+.yx-nav-collapsed-icon.active {
+  background: var(--yx-sidebar-active);
+  color: var(--yx-accent);
+  border-left-color: var(--yx-accent);
+}
+
+/* ===== 折叠悬浮分组弹窗：紧凑行高、收紧内边距，避免弹窗偏大 ===== */
+.yx-nav-popup-menu .ant-menu-item,
+.yx-nav-popup-menu .ant-menu-submenu-title {
+  height: 30px;
+  line-height: 30px;
+  font-size: 13px;
+}
+.yx-nav-popup-menu .ant-menu-item-group-title {
+  padding: 4px 10px 0;
+}
+
+/* ===== App Layout（四壳统一布局骨架，由 @jonex/platform-theme AppLayout 消费）=====
+   骨架由 antd Layout 组件族承担：
+     Layout.yx-app-layout      → div.ant-layout          纵向 column
+     Layout.Header.yx-topbar   → header.ant-layout-header
+     Layout.yx-app-body        → div.ant-layout.ant-layout-has-sider   横向 row
+     Layout.Sider.yx-sidebar   → aside.ant-layout-sider
+     Layout.Content.yx-content → main.ant-layout-content
+   data-collapsed 仍作为 CSS 钩子供 .yx-topbar-right 等使用；侧栏宽度不再由 CSS 控制
+   （antd Sider 以内联 style 输出 width/flex-basis，折叠走 collapsed/collapsedWidth）。 */
+.yx-app-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* 侧栏常驻块（壳在 nav slot 顶部用此 class 包裹，如 SpaceSwitcher）：sticky 保证菜单滚动时不滚走 */
+.yx-sidebar-slot {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--yx-bg-white, #fff);
+  padding-bottom: 8px;
+  flex-shrink: 0;
+}
+.yx-sidebar-nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 0;
+}
+
+/* 通栏 header 之下的分栏（左 sidebar + 右 content）。
+   antd 的 .ant-layout-has-sider 已给出 flex-direction:row，这里显式复述一遍：
+   它与 .yx-app-body 同为单类选择器，cssinjs 若后注入就会把 row 改回 Layout 默认的 column。 */
+.yx-app-layout .yx-app-body {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  /* min-height 必需：column 子项默认 min-height:auto 会按内容最小高度撑破 100vh，
+     导致 .yx-sidebar-nav 拿不到有界高度、侧栏滚动失效 */
+  min-height: 0;
+  /* 横向收缩闸门（antd 另给 .ant-layout-content{width:0} 兜底） */
+  min-width: 0;
+}
+
+/* topbar 左容器：仅 logo（折叠钮已移至侧栏右边界，见 .yx-sider-toggle） */
+.yx-topbar-left {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* 顶栏 logo：header 最左，不随侧栏折叠变化；flex-shrink:0 保证窄屏挤的是右侧而非 logo */
+.yx-topbar-brand {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: inherit;
+  text-decoration: none;
+}
+.yx-topbar-brand img {
+  /* logo.svg 本征约 6:1，不设 max-width 时 height:32px 会宽达 193px */
+  height: 32px;
+  width: auto;
+  max-width: 160px;
+  object-fit: contain;
+}
+.yx-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--yx-topbar-right-gap, 20px);
+}
+.yx-app-layout[data-collapsed='true'] .yx-topbar-right {
+  gap: 8px;
+}
+
+/* 统一首字母头像（standalone 三壳顶栏右侧复用，替代各自 scss .user-avatar） */
+.yx-user-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, var(--yx-accent, #3b82f6), var(--yx-brand-blue, #1248a0));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
 .yx-tag-future {
   margin-left: auto;
   font-size: 10px;
@@ -344,33 +552,8 @@
   color: var(--yx-text-muted);
 }
 
-/* ===== Breadcrumb ===== */
-.yx-breadcrumb {
-  font-size: 14px;
-  color: var(--yx-text-secondary);
-}
-.yx-breadcrumb a {
-  color: var(--yx-text-secondary);
-  text-decoration: none;
-}
-.yx-breadcrumb a:hover {
-  color: var(--yx-accent);
-}
-.yx-breadcrumb .current {
-  color: var(--yx-brand-dark);
-  font-weight: 600;
-}
-
 /* ===== Page Title ===== */
-.yx-page-title {
-  margin-bottom: 24px;
-}
-.yx-page-title h1 {
-  font-size: var(--yx-font-size-page-title);
-  font-weight: var(--yx-font-weight-page-title);
-  color: var(--yx-brand-dark);
-  letter-spacing: 0.5px;
-}
+/* 页面标题改由 shared-lib 的 PageHeader 承载（字号/字重/色值同 token），此处只留副标题 */
 .yx-page-subtitle {
   font-size: var(--yx-font-size-body);
   color: var(--yx-text-secondary);
@@ -398,39 +581,6 @@
 }
 .yx-section-header .yx-more:hover {
   color: var(--yx-accent-hover);
-}
-
-/* ===== Data Table ===== */
-.yx-data-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 14px;
-}
-.yx-data-table thead th {
-  text-align: left;
-  padding: 12px 16px;
-  font-weight: 600;
-  color: var(--yx-text-secondary);
-  border-bottom: 2px solid var(--yx-border-table);
-  font-size: 13px;
-  white-space: nowrap;
-}
-.yx-data-table tbody td {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--yx-row-border);
-  color: var(--yx-text-body);
-}
-.yx-data-table tbody tr:hover {
-  background: var(--yx-row-hover);
-}
-
-.yx-data-table code {
-  font-size: 12px;
-  background: var(--yx-row-border);
-  padding: 2px 8px;
-  border-radius: 4px;
-  color: var(--yx-text-code);
-  font-family: var(--yx-font-mono);
 }
 
 /* ===== Buttons ===== */
@@ -670,246 +820,6 @@
   margin-bottom: 6px;
 }
 
-/* ===== antd Button Overrides — match prototype .btn styles ===== */
-.ant-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 16px;
-  border-radius: var(--yx-btn-radius);
-  font-size: 13px;
-  font-weight: 500;
-  height: auto;
-  box-shadow: none;
-  transition: all 0.2s ease;
-}
-.ant-btn .anticon {
-  font-size: 14px;
-}
-.ant-btn-primary {
-  background: var(--yx-accent);
-  border-color: var(--yx-accent);
-  color: #fff;
-}
-
-.ant-btn-primary:active {
-  background: var(--yx-brand-blue) !important;
-  border-color: var(--yx-brand-blue) !important;
-}
-.ant-btn-default {
-  background: #fff;
-  color: var(--yx-text-secondary);
-  border-color: var(--yx-border);
-}
-.ant-btn-default:hover {
-  background: var(--yx-row-hover) !important;
-  border-color: var(--yx-border-hover) !important;
-  color: var(--yx-brand-dark) !important;
-}
-.ant-btn-dangerous {
-  background: var(--yx-danger-bg, #fef2f2);
-  color: #dc2626;
-  border-color: #fecaca;
-}
-
-.ant-btn-sm {
-  padding: 5px 12px;
-  font-size: 12px;
-}
-.ant-btn-link {
-  background: transparent;
-  border-color: transparent;
-  color: var(--yx-accent);
-  padding: 4px 8px;
-}
-.ant-btn-link:hover {
-  color: var(--yx-accent-hover) !important;
-  background: transparent !important;
-}
-.ant-btn-icon-only {
-  padding: 7px;
-  justify-content: center;
-}
-
-/* ===== antd Input Overrides ===== */
-.ant-input-affix-wrapper {
-  border-radius: var(--yx-input-radius);
-  border-color: var(--yx-border);
-  transition: all 0.2s;
-}
-.ant-input-affix-wrapper:hover {
-  border-color: var(--yx-border-hover);
-}
-.ant-input-affix-wrapper:focus,
-.ant-input-affix-wrapper-focused {
-  border-color: var(--yx-accent);
-  box-shadow: var(--yx-search-focus-shadow);
-}
-.ant-input-affix-wrapper .ant-input {
-  font-size: 13px;
-}
-.ant-input-affix-wrapper .ant-input::placeholder {
-  color: var(--yx-text-muted);
-}
-.ant-input {
-  border-radius: var(--yx-input-radius);
-  font-size: 13px;
-}
-.ant-input:hover {
-  border-color: var(--yx-border-hover);
-}
-.ant-input:focus {
-  border-color: var(--yx-accent);
-  box-shadow: var(--yx-search-focus-shadow);
-}
-
-/* ===== antd Select Overrides — match .filter-select ===== */
-.ant-select-selector {
-  border-radius: var(--yx-input-radius) !important;
-  border-color: var(--yx-border) !important;
-  font-size: 13px !important;
-  padding: 4px 11px !important;
-}
-.ant-select:hover .ant-select-selector {
-  border-color: var(--yx-border-hover) !important;
-}
-.ant-select-focused .ant-select-selector {
-  border-color: var(--yx-accent) !important;
-  box-shadow: var(--yx-search-focus-shadow) !important;
-}
-
-/* ===== antd Card Overrides ===== */
-.ant-card {
-  border-radius: var(--yx-card-radius);
-  box-shadow: var(--yx-card-shadow);
-  border: 1px solid var(--yx-border-light);
-}
-.ant-card .ant-card-body {
-  padding: var(--yx-card-padding);
-}
-
-/* ===== antd Table Overrides ===== */
-.ant-table-wrapper .ant-table-thead > tr > th {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--yx-text-secondary);
-  border-bottom: 2px solid var(--yx-border-table);
-  padding: 12px 16px;
-}
-.ant-table-wrapper .ant-table-tbody > tr > td {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--yx-row-border);
-  color: var(--yx-text-body);
-}
-.ant-table-wrapper .ant-table-tbody > tr:hover > td {
-  background: var(--yx-row-hover);
-}
-
-
-/* ===== antd Tabs Overrides ===== */
-.ant-tabs-nav::before {
-  border-bottom: 2px solid var(--yx-border-table);
-}
-.ant-tabs-tab {
-  padding: 12px 20px !important;
-  font-size: 14px;
-  color: var(--yx-text-secondary);
-}
-.ant-tabs-tab:hover {
-  color: var(--yx-accent);
-}
-.ant-tabs-tab-active .ant-tabs-tab-btn {
-  color: var(--yx-accent);
-}
-
-/* ===== antd Tag Overrides ===== */
-.ant-tag {
-  font-size: 12px;
-  padding: 2px 10px;
-  border-radius: 10px;
-  border: none;
-}
-
-/* ===== antd Modal Overrides ===== */
-.ant-modal-content {
-  border-radius: 16px;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.2);
-}
-.ant-modal-header {
-  border-bottom: 1px solid var(--yx-border-light);
-  padding: 20px 24px;
-}
-.ant-modal-title {
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--yx-brand-dark);
-}
-.ant-modal-body {
-  padding: 20px 24px;
-}
-.ant-modal-footer {
-  border-top: 1px solid var(--yx-border-light);
-  padding: 16px 24px;
-}
-
-/* ===== antd Pagination Overrides ===== */
-.ant-pagination-item {
-  width: var(--yx-page-btn-size, 34px);
-  height: var(--yx-page-btn-size, 34px);
-  border-radius: var(--yx-btn-radius);
-  border: 1px solid var(--yx-border);
-  font-size: 13px;
-  line-height: 32px;
-}
-.ant-pagination-item a {
-  color: var(--yx-text-code);
-}
-.ant-pagination-item:hover {
-  border-color: var(--yx-accent);
-}
-.ant-pagination-item:hover a {
-  color: var(--yx-accent);
-}
-.ant-pagination-item-active {
-  background: var(--yx-accent);
-  border-color: var(--yx-accent);
-}
-.ant-pagination-item-active a {
-  color: #fff;
-}
-.ant-pagination-item-active:hover a {
-  color: #fff;
-}
-
-/* ===== antd Breadcrumb Overrides ===== */
-.ant-breadcrumb {
-  font-size: 14px;
-}
-.ant-breadcrumb a {
-  color: var(--yx-text-secondary);
-}
-.ant-breadcrumb a:hover {
-  color: var(--yx-accent);
-}
-
-/* ===== antd Menu Overrides (for standalone sub-app menus) ===== */
-.ant-menu-dark {
-  background: transparent;
-}
-.ant-menu-dark .ant-menu-item {
-  border-radius: 0;
-  margin: 0;
-  width: 100%;
-  height: auto;
-  padding: 11px 20px;
-  font-size: 14px;
-  color: var(--yx-sidebar-text);
-}
-.ant-menu-dark .ant-menu-item:hover {
-  background: var(--yx-sidebar-hover);
-  color: var(--yx-text-primary);
-}
-
 /* ===== Responsive ===== */
 @media (max-width: 1200px) {
   .yx-config-grid {
@@ -917,9 +827,8 @@
   }
 }
 @media (max-width: 768px) {
-  .yx-sidebar {
-    width: 64px;
-  }
+  /* 侧栏窄栏形态不在此声明：由 AppLayout 的 breakpoint="md" + collapsedWidth 驱动
+     （antd Sider 以内联 style 输出宽度，CSS 宽度在此视口下必被覆盖，写了也是死代码）。 */
   .yx-sidebar .yx-nav-section,
   .yx-sidebar .yx-nav-item span,
   .yx-sidebar .yx-nav-item .yx-tag-future,
@@ -938,11 +847,16 @@
     padding: 14px 0;
     border-left: none;
   }
-  .yx-content {
+  /* 与基础规则同权重（0-2-0），靠文件顺序取胜 —— 必须保持提权，否则会被上面
+     基础块的 .yx-app-layout .yx-content / .yx-topbar 压掉，窄屏内边距失效 */
+  .yx-app-layout .yx-content {
     padding: 20px 16px;
   }
-  .yx-topbar {
+  .yx-app-layout .yx-topbar {
     padding: 0 16px;
+  }
+  .yx-topbar-brand img {
+    max-width: 120px;
   }
   .yx-toolbar {
     flex-direction: column;

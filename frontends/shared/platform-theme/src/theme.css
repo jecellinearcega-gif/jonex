@@ -27,16 +27,17 @@
   --yx-sidebar-hover: #f1f5f9;
   --yx-sidebar-active: #eff6ff;
   --yx-sidebar-border: #e2e8f0;
-  --yx-sidebar-width: 240px;
-  --yx-topbar-height: 64px;
-  --yx-card-radius: 14px;
+  /* --yx-sidebar-width 已移除：侧栏宽度改由 antd Sider 的 JS props 驱动
+     （AppLayout.tsx 的 SIDEBAR_WIDTH / SIDEBAR_COLLAPSED_WIDTH 常量，单一来源）。
+     宽度必须以数值传给 Sider，CSS 变量无法参与其内联 style 计算。 */
+  --yx-topbar-height: 50px; /* 通栏顶栏高度基线（layout.css 用 min-height 消费，内容可上撑） */
+  --yx-card-radius: 10px;
   --yx-btn-radius: 8px;
   --yx-tag-radius: 12px;
   --yx-input-radius: 8px;
-  --yx-content-padding-x: 32px;
-  --yx-content-padding-y: 28px;
-  --yx-card-padding: 24px;
-  --yx-sidebar-shadow: 0 0 10px rgba(0, 0, 0, 0.05);
+  --yx-content-padding-x: 16px;
+  --yx-content-padding-y: 16px;
+  --yx-card-padding: 16px;
   --yx-card-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
   --yx-header-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
   --yx-search-focus-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
@@ -60,4 +61,11 @@
   --yx-font-weight-card-title: 600;
   --yx-page-btn-size: 34px;
   --yx-danger-bg: #fef2f2;
+}
+
+/* ── 全局基础字体（单一来源）──────────────────────────────
+   修改全站字体只需改上层 :root 的 --yx-font-family；
+   antd 组件侧经 antdTheme 使用同一 tokens.typography.fontFamily 值，两者需保持一致。 */
+body {
+  font-family: var(--yx-font-family);
 }

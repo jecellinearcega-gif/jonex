@@ -8,10 +8,21 @@ import type { TenantListItem } from '../../api/auth';
 
 interface Props {
   user: ShellUser | null;
+  /** 折叠态：只显示图标、隐藏文字标签，按钮更紧凑 */
+  collapsed?: boolean;
 }
 
+/**
+ * E2E 量具契约（`frontends/e2e/lib/harness.ts` 的 `TESTID`），值必须**逐字符一致**。
+ * ⛔ 不要改成按按钮文案定位：antd 是 v6，两字按钮名会被插入空格 ⇒ 文案定位必然假 FAIL。
+ * testid 挂在 antd 组件上是安全的：antd 会把 `data-*` 透传到根 DOM 元素
+ * （Button → `<button>`；Dropdown 的 `menu.items` 配置项 → `<li>`，`MenuItemType` 显式声明了 `data-*`）。
+ */
+const TESTID_SWITCHER = 'tenant-impersonation-switcher';
+const testIdSwitcherOption = (tenantId: string): string => `tenant-impersonation-option-${tenantId}`;
+
 /** 顶栏「切换租户」入口：仅平台管理员、非模拟态可见；模拟态由横幅承接 */
-export default function TenantImpersonationSwitcher({ user }: Props) {
+export default function TenantImpersonationSwitcher({ user, collapsed = false }: Props) {
   const { t } = useTranslation();
   const [tenants, setTenants] = useState<TenantListItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -48,6 +59,7 @@ export default function TenantImpersonationSwitcher({ user }: Props) {
         items: switchable.map((item) => ({
           key: item.id,
           label: item.name,
+          'data-testid': testIdSwitcherOption(item.id),
           onClick: async () => {
             setBusy(true);
             try {
@@ -61,8 +73,14 @@ export default function TenantImpersonationSwitcher({ user }: Props) {
         })),
       }}
     >
-      <Button type="text" icon={<SwapOutlined />} loading={busy || loading} style={{ fontSize: 14 }}>
-        {t('impersonation.switch')}
+      <Button
+        type="text"
+        icon={<SwapOutlined />}
+        loading={busy || loading}
+        data-testid={TESTID_SWITCHER}
+        style={{ fontSize: 14, ...(collapsed ? { padding: '0 8px' } : {}) }}
+      >
+        {!collapsed && t('impersonation.switch')}
       </Button>
     </Dropdown>
   );

@@ -1,7 +1,14 @@
 import type { ShellUser } from './types';
-import { readAccessToken, writeAccessToken, writeRefreshToken, writeCachedUser } from './authStorage';
+import {
+  readAccessToken,
+  writeAccessToken,
+  writeRefreshToken,
+  writeTokenExpiresAt,
+  writeCachedUser,
+} from './authStorage';
 import { hasTicketCallback, getTicketCallback, stripBlockedAuthQuery, stripCallbackQuery } from './authRedirect';
 import { emitSessionExpired, redirectToLogin } from './sessionExpired';
+import { refreshTokens, scheduleAutoRefresh } from './autoRefresh';
 
 export interface AuthBootstrapOptions {
   appId: string;
@@ -32,6 +39,7 @@ interface AuthenticatedPayload {
   accessToken?: string;
   refresh_token?: string;
   refreshToken?: string;
+  expires_in?: number;
   user?: Record<string, unknown>;
 }
 
@@ -116,10 +124,15 @@ export async function bootstrapStandaloneAuth(options: AuthBootstrapOptions): Pr
           if (refreshToken) {
             writeRefreshToken(refreshToken);
           }
+          if (typeof data?.expires_in === 'number' && data.expires_in > 0) {
+            writeTokenExpiresAt(Date.now() + data.expires_in * 1000);
+          }
           if (user) writeCachedUser(user);
           // 清理 URL 中的 ticket/code/state
           stripCallbackQuery(url);
           window.history.replaceState({}, '', url.toString());
+          // ticket 交换成功同样启动定时自动刷新（滑动续期）
+          scheduleAutoRefresh();
           return { authenticated: true, token: accessToken, user: user || null, source: 'ticket' };
         }
       }
@@ -135,8 +148,17 @@ export async function bootstrapStandaloneAuth(options: AuthBootstrapOptions): Pr
     window.history.replaceState({}, '', url.toString());
   }
 
-  // 3. 如果本域有 token，验证有效性
-  const token = readAccessToken();
+  // 3. 取本域 token：本域没有时，先尝试用 httpOnly refresh cookie 换一次。
+  //    SSO 回调只下发 refresh cookie、不下发 access token，宿主 shell 靠 RequireAuth 里的
+  //    refreshTokens() 接住（frontends/shell/src/App.tsx），standalone 这条启动路径原先直接
+  //    跳登录、把登录态丢了。须在 redirectToLogin 之前：/auth/refresh 无 cookie 时快速 401
+  //    （RefreshTokenRevokedError），换不到再走第 4 步跳登录。
+  let token = readAccessToken();
+  if (!token && (await refreshTokens())) {
+    token = readAccessToken();
+    // 换到了新的 access：启动定时自动刷新（滑动续期），与 ticket 交换成功路径一致
+    if (token) scheduleAutoRefresh();
+  }
   if (token) {
     if (options.authMeUrl) {
       try {

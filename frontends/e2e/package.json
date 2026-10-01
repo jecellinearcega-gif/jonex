@@ -1,0 +1,27 @@
+{
+  "name": "@jonex/e2e",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20.18.0",
+    "pnpm": ">=9.0.0"
+  },
+  "description": "Jonex 平台跨应用浏览器验收（Playwright E2E）。当前承载：模拟租户会话续期隔离 S1/S2/S3/S7/S9。",
+  "scripts": {
+    "test": "playwright test",
+    "test:s1": "playwright test specs/s1-impersonation-no-refresh.spec.ts",
+    "test:s2": "playwright test specs/s2-expiry-warning.spec.ts",
+    "test:s3": "playwright test specs/s3-auto-exit.spec.ts",
+    "test:s7": "playwright test specs/s7-post-exit-refresh.spec.ts",
+    "test:s9": "playwright test specs/s9-impersonation-401.spec.ts",
+    "test:fast": "playwright test specs/s1-impersonation-no-refresh.spec.ts specs/s9-impersonation-401.spec.ts",
+    "report": "playwright show-report",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@types/node": "^26.1.2",
+    "typescript": "^5.4.0"
+  }
+}

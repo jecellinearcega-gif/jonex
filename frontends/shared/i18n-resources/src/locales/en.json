@@ -9,6 +9,8 @@
     "create": "Create",
     "search": "Search",
     "reset": "Reset",
+    "refresh": "Refresh",
+    "totalItems": "Total {{total}} items",
     "submit": "Submit",
     "back": "Back",
     "more": "More",
@@ -39,7 +41,26 @@
     "loginSuccess": "Signed in successfully",
     "loginFailed": "Login failed",
     "sessionExpired": "Your session has expired. Please sign in again.",
-    "noPermission": "You do not have permission to access this resource."
+    "ssoNotCompleted": "Enterprise sign-in was not completed. Please try again or sign in with your password.",
+    "signInSSO": "Sign in with your organization's SSO",
+    "noPermission": "You do not have permission to access this resource.",
+    "ssoError": {
+      "titleSyncRequired": "No access",
+      "descSyncRequired": "Your enterprise identity was verified, but this account has not been granted access to this platform.",
+      "reasonSyncRequired": "This tenant only allows synced users to sign in. Please contact your administrator to enable access.",
+      "titleAccountDisabled": "Account disabled",
+      "descAccountDisabled": "This account has been disabled by an administrator and cannot sign in right now. Please contact your administrator to restore it.",
+      "reasonAccountDisabled": "The account is disabled. Please contact your administrator to restore it.",
+      "titleIdentityConflict": "Account conflict",
+      "descIdentityConflict": "Your enterprise identity conflicts with an existing account on this platform and cannot be linked automatically.",
+      "reasonIdentityConflict": "Sign-in failed due to an account conflict. Please contact your administrator.",
+      "titleFallback": "No access",
+      "descFallback": "Your enterprise identity was verified, but this account has not been granted access to this platform.",
+      "reasonFallback": "Please contact your administrator to confirm your account permissions.",
+      "reasonLabel": "Reason: ",
+      "backToLogin": "Back to sign in",
+      "tenantLabel": "Tenant"
+    }
   },
   "impersonation": {
     "switch": "Switch tenant",
@@ -67,6 +88,7 @@
     "domainManagement": "Domain Services",
     "domainSpaceManagement": "Domain Space Management",
     "platformManagement": "Platform Management",
+    "dataOperations": "Data Operations",
     "accountPermission": "Accounts & Permissions",
     "systemOperations": "System Operations",
     "administration": "Administration",
@@ -82,6 +104,7 @@
     "systemConfig": "System Settings",
     "operationLog": "Audit Logs",
     "systemMonitor": "System Monitoring",
+    "taskCenter": "Task Center",
     "integrationExtension": "Integration & Extensions",
     "ecosystemManagement": "Integrations",
     "ecoAdapter": "Integration Adapters",
@@ -111,11 +134,6 @@
     "failed": "Failed",
     "draft": "Draft"
   },
-  "language": {
-    "switch": "Switch Language",
-    "zh": "Simplified Chinese",
-    "en": "English"
-  },
   "site": {
     "title": "Jonex Platform",
     "subtitle": "AI Capability Platform"
@@ -139,6 +157,11 @@
     "missingRedirectAppId": "Login successful, but missing redirect app identifier",
     "loginSyncFailed": "Login successful, but login state synchronization failed. Please try again later",
     "loginSubtitle": "Sign in to the Multimodal Domain Knowledge Engine",
+    "loginTabTenant": "Tenant sign-in",
+    "loginTabCompany": "Company SSO",
+    "orDivider": "or",
+    "ssoRedirecting": "Redirecting to SSO…",
+    "ssoRedirectHint": "Sign in with your company account. You'll be redirected to your organization's sign-in page.",
     "testAccount": "Test account: admin / admin123",
     "welcomeToPlatform": "Welcome to Jonex Platform, {{name}}",
     "platformSubtitle": "Intelligent knowledge management and AI capabilities",
@@ -155,10 +178,8 @@
     "loadingApp": "Loading app...",
     "loadAppFailed": "Failed to load app",
     "cannotLoadSubApp": "Unable to load app",
-    "cannotLoadApp": "Unable to load \"{{appName}}\"",
     "openInNewWindow": "Open in new window",
     "appRunError": "App error",
-    "appRunErrorMessage": "App \"{{appName}}\" failed to run: {{message}}",
     "selectSpace": "Select space",
     "addSpace": "Add space",
     "builtInTenants": {

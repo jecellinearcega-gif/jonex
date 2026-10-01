@@ -1,20 +1,18 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Layout, Dropdown, Button } from 'antd';
-import { LogoutOutlined, HomeOutlined, GlobalOutlined, CaretDownOutlined } from '@ant-design/icons';
-import { Outlet, useNavigate, useLocation, Link, useMatches, matchRoutes } from 'react-router-dom';
+import React, { useMemo } from 'react';
+import { LogoutOutlined } from '@ant-design/icons';
+import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { LANGUAGE_OPTIONS, LANGUAGE_STORAGE_KEY } from '@jonex/i18n-resources';
+import { switchLocale } from '@jonex/i18n-resources';
 import { useStore } from '@/store';
 import { usePermission } from '@jonex/shared-lib';
 import { getMenuFromRoutes, IconMap } from '@/router/menu';
-import { getRoutes } from '@/router/routes.config';
 import type { MenuItem } from '@/router/menu';
-import { clearAuthStorage, redirectToLogin } from '@jonex/shell-sdk';
+import { getRoutes } from '@/router/routes.config';
+import { clearAuthStorage, finishLogout, revokeServerSession } from '@jonex/shell-sdk';
 import SpaceSwitcher from '@/components/SpaceSwitcher';
 import RouteSync from '@/components/RouteSync';
-import styles from './index.module.scss';
-
-const { Content } = Layout;
+import { AppLayout } from '@jonex/platform-theme';
+import type { LayoutNavItem } from '@jonex/platform-theme';
 
 const BasicLayout = () => {
   const { global } = useStore();
@@ -22,8 +20,6 @@ const BasicLayout = () => {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
-  const matches = useMatches();
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const VITE_LOGIN = (import.meta as any).env?.VITE_LOGIN || '/login';
   const VITE_APP_ID = (import.meta as any).env?.VITE_APP_ID || 'core-business';
@@ -41,156 +37,53 @@ const BasicLayout = () => {
     });
   }, [allMenuItems, userPermissions]);
 
-  const currentTitle = useMemo(() => {
-    const routeMatches = matchRoutes(getRoutes() as any[], location);
-    const matched = routeMatches?.reverse().find((m) => (m.route as Record<string, unknown>)?.title);
-    return ((matched?.route as Record<string, unknown>)?.title as string) || '';
-  }, [location]);
-
-  useEffect(() => {
-    const isMobile = window.innerWidth < 768;
-    if (isMobile) setSidebarCollapsed(true);
-  }, []);
-
-  const isItemActive = (item: MenuItem): boolean => {
-    if (!item.path) return false;
-    return location.pathname === item.path || location.pathname.startsWith(item.path + '/');
+  // 路由菜单元 → 引擎受控数据（icon 名解析为 ReactNode）
+  const toNavItem = (item: MenuItem): LayoutNavItem => {
+    const IconComp = item.icon ? IconMap[item.icon] : undefined;
+    return {
+      key: item.key,
+      label: item.label,
+      path: item.path,
+      icon: IconComp ? <IconComp /> : undefined,
+    };
   };
 
-  const handleLogout = () => {
+  // 与既有视觉一致：单 section（site.title 标题）+ 扁平菜单项；无菜单时不出导航
+  const navItems: LayoutNavItem[] = visibleMenuItems.length
+    ? [{ key: 'root', label: t('site.title'), children: visibleMenuItems.map(toNavItem) }]
+    : [];
+
+  const handleLogout = async () => {
+    // SSO 会话返回 sso_logout_url 时由 finishLogout 走顶层导航到 Keycloak 结束会话
+    const ssoLogoutUrl = await revokeServerSession();
     clearAuthStorage({ keepLocale: true });
     global.setUserInfo(null);
-    redirectToLogin({ loginUrl: VITE_LOGIN || '/login', appId: VITE_APP_ID });
+    finishLogout(ssoLogoutUrl, { loginUrl: VITE_LOGIN || '/login', appId: VITE_APP_ID });
   };
-
-  const renderNavIcon = (iconName?: string) => {
-    if (!iconName) return <span className="yx-sub-dot" />;
-    const IconComp = IconMap[iconName];
-    if (!IconComp) return <span className="yx-sub-dot" />;
-    return (
-      <span className="yx-nav-icon">
-        <IconComp />
-      </span>
-    );
-  };
-
-  const sidebarWidth = sidebarCollapsed ? 64 : 240;
 
   return (
-    <div className={styles['page-layout']}>
-      {/* Sidebar */}
-      <aside className="yx-sidebar" style={{ width: sidebarWidth }}>
-        <div className={styles['sidebar-brand']}>
-          <Link
-            to="/knowledge-search"
-            style={{ textDecoration: 'none', color: 'inherit', display: 'flex', alignItems: 'center' }}
-          >
-            <img
-              src={sidebarCollapsed ? '/favicon.png' : i18n.language === 'en' ? '/logo-en.svg' : '/logo.svg'}
-              alt={t('site.title')}
-              style={{ height: sidebarCollapsed ? 36 : 32, transition: 'height 0.2s' }}
-            />
-          </Link>
-        </div>
-
-        <SpaceSwitcher collapsed={sidebarCollapsed} />
-
-        <nav className={styles['sidebar-nav']}>
-          {!sidebarCollapsed && <div className="yx-nav-section">{t('site.title')}</div>}
-          {visibleMenuItems.map((item) => (
-            <a
-              key={item.key}
-              className={`yx-nav-item${isItemActive(item) ? ' active' : ''}`}
-              onClick={(e) => {
-                e.preventDefault();
-                navigate(item.path!);
-              }}
-              style={{ cursor: 'pointer', textDecoration: 'none' }}
-            >
-              {renderNavIcon(item.icon)}
-              {!sidebarCollapsed && <span>{item.label}</span>}
-            </a>
-          ))}
-        </nav>
-      </aside>
-
-      {/* Main Area */}
-      <div className={styles['main-area']}>
-        {/* Topbar */}
-        <header className="yx-topbar">
-          <div className="yx-breadcrumb">
-            <HomeOutlined style={{ marginRight: 6 }} />
-            <span className="current">{currentTitle ? t(currentTitle) : t('site.title')}</span>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <Dropdown
-              menu={{
-                items: LANGUAGE_OPTIONS.filter((o) => o.value !== i18n.language).map((o) => ({
-                  key: o.value,
-                  label: t(`language.${o.value}`, { defaultValue: o.label }),
-                })),
-                onClick: ({ key }) => {
-                  i18n.changeLanguage(key);
-                  localStorage.setItem(LANGUAGE_STORAGE_KEY, key);
-                  window.dispatchEvent(new CustomEvent('jonex:locale-change', { detail: key }));
-                },
-              }}
-              placement="bottomRight"
-              trigger={['click']}
-            >
-              <Button
-                type="text"
-                icon={<GlobalOutlined />}
-                style={{
-                  height: 38,
-                  borderRadius: 10,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 4,
-                  fontSize: 14,
-                  color: 'inherit',
-                  padding: '0 10px',
-                }}
-              >
-                <span>
-                  {(() => {
-                    const option = LANGUAGE_OPTIONS.find((o) => o.value === i18n.language);
-                    return option ? t(`language.${option.value}`, { defaultValue: option.label }) : i18n.language;
-                  })()}
-                </span>
-                <CaretDownOutlined style={{ fontSize: 10, color: '#94a3b8' }} />
-              </Button>
-            </Dropdown>
-            {userInfo && (
-              <Dropdown
-                menu={{
-                  items: [
-                    {
-                      key: 'logout',
-                      icon: <LogoutOutlined />,
-                      label: t('auth.signOut'),
-                      onClick: handleLogout,
-                    },
-                  ],
-                }}
-                placement="bottomRight"
-              >
-                <div className={styles['user-avatar']}>
-                  {(userInfo.realName || userInfo.username || 'U').charAt(0).toUpperCase()}
-                </div>
-              </Dropdown>
-            )}
-          </div>
-        </header>
-
-        {/* Content */}
-        <main className="yx-content">
-          <RouteSync />
-          <Outlet />
-        </main>
-      </div>
-    </div>
+    <AppLayout
+      logo={{ href: '/knowledge-search', alt: t('site.title'), locale: i18n.language }}
+      navItems={navItems}
+      sidebarExtra={({ collapsed }) => <SpaceSwitcher collapsed={collapsed} />}
+      activePath={location.pathname}
+      onNavigate={(path) => navigate(path)}
+      topbarRight={{
+        language: {
+          current: i18n.language,
+          onSwitch: (key: string) => switchLocale(i18n, key),
+        },
+        user: userInfo
+          ? {
+              avatarText: userInfo.realName || userInfo.username || 'U',
+              actions: [{ key: 'logout', icon: <LogoutOutlined />, label: t('auth.signOut'), onClick: handleLogout }],
+            }
+          : undefined,
+      }}
+    >
+      <RouteSync />
+      <Outlet />
+    </AppLayout>
   );
 };
 
