@@ -237,14 +237,7 @@ const UserFormModal = forwardRef<UserFormModalHandle, Props>(({ tenants, onSaved
         <Form.Item
           name="role_ids"
           label={t('userManagement.role')}
-          rules={[
-            {
-              validator: (_: unknown, value: number[]) =>
-                value && value.length > 0
-                  ? Promise.resolve()
-                  : Promise.reject(new Error(t('userManagement.requiredRole'))),
-            },
-          ]}
+          rules={[{ required: true, message: t('userManagement.requiredRole') }]}
         >
           <Select
             mode="multiple"

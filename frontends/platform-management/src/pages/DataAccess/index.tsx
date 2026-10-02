@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Spin, Result, Button } from 'antd';
 import { CloudOutlined, FolderOpenOutlined, UploadOutlined, WifiOutlined, ApiOutlined } from '@ant-design/icons';
-import { colors } from '@jonex/platform-theme/tokens';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 import { listDataAccessMethods, type DataAccessItem } from '../../api/dataAccess';
 import './index.css';
 
@@ -81,36 +81,34 @@ export default function DataAccess() {
   }
 
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: colors.brandDark, margin: 0 }}>
-          {t('dataSource.pageTitle')}
-        </h1>
-      </div>
-      <div className="access-grid">
-        {items.map((item) => {
-          const cfg = typeIcons[item.access_type] || { icon: <CloudOutlined />, label: item.access_type, desc: '' };
-          const isActive = item.status === 'active';
-          const isBuiltIn = BUILT_IN_ACCESS_METHOD_IDS.has(item.id);
+    <>
+      <PageHeader title={t('dataSource.pageTitle')} />
+      <PageContent showCard={false}>
+        <div className="access-grid">
+          {items.map((item) => {
+            const cfg = typeIcons[item.access_type] || { icon: <CloudOutlined />, label: item.access_type, desc: '' };
+            const isActive = item.status === 'active';
+            const isBuiltIn = BUILT_IN_ACCESS_METHOD_IDS.has(item.id);
 
-          return (
-            <div key={item.id} className={`access-card${isActive ? ' active' : ' grey'}`}>
-              <div className="icon-big">{cfg.icon}</div>
-              <h3>{isBuiltIn ? cfg.label : item.name}</h3>
-              <p>{isBuiltIn ? cfg.desc : item.description || cfg.desc}</p>
-              <span className="status-tag">
-                {isActive ? (
-                  <>
-                    <span className="dot-green" /> {t('dataSource.enabled')}
-                  </>
-                ) : (
-                  t('dataSource.comingSoon')
-                )}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
+            return (
+              <div key={item.id} className={`access-card${isActive ? ' active' : ' grey'}`}>
+                <div className="icon-big">{cfg.icon}</div>
+                <h3>{isBuiltIn ? cfg.label : item.name}</h3>
+                <p>{isBuiltIn ? cfg.desc : item.description || cfg.desc}</p>
+                <span className="status-tag">
+                  {isActive ? (
+                    <>
+                      <span className="dot-green" /> {t('dataSource.enabled')}
+                    </>
+                  ) : (
+                    t('dataSource.comingSoon')
+                  )}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </PageContent>
+    </>
   );
 }

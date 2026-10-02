@@ -1,0 +1,587 @@
+/* ── 数据运营模块样式 ──
+   类名统一 yx-do- 前缀：platform-management 里 DataAccess / ParserManagement 用的是
+   无前缀的通用类名（.access-card / .parser-card），本模块另起命名空间避免撞名。 */
+
+/* PageContent(showCard=false) 是 flex:1 的滚动容器，本容器只需撑满它。
+   shrink 设 0：内容超高时保住自身高度交给外层滚，不被压缩后把卡片裁掉 */
+.yx-do-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1 0 auto;
+}
+
+/* 分区间距的落点：三个分区各自返回 Fragment，卡片之间原本靠 .yx-do-page 的 gap，
+   现在它们被 Tabs 的 pane 包住，而 .ant-tabs-tabpane 不是 flex 容器 —— gap 得在这里补回来。
+   shrink 设 0 的理由同上：pane 在 Tabs 的 content-holder(flex:auto; min-height:0) 里，
+   不给 0 时内容超高会被压扁而不是把外层撑出滚动条 */
+.yx-do-tab-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1 0 auto;
+  gap: 16px;
+}
+
+/* ── 分区卡片 ── */
+/* 允许换行：窄卡（如 2fr:1fr 里的右卡）放不下「知识库下拉 + 分段器」时，
+   整组筛选器落到第二行，而不是把标题挤出去形成横向滚动 */
+.yx-do-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+}
+
+.yx-do-card-title-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.yx-do-card-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--yx-brand-dark);
+  line-height: 1.4;
+}
+
+.yx-do-card-hint {
+  font-size: 12px;
+  color: var(--yx-text-muted);
+  white-space: nowrap;
+}
+
+.yx-do-card-extra {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  /* 换成第二行时仍贴右边，与单行时视觉一致 */
+  margin-left: auto;
+}
+
+/* 与模块内其它筛选器同高同宽，七字库名不会截断 */
+.yx-do-kb-select {
+  width: 140px;
+}
+
+.yx-do-card-desc {
+  margin: -4px 0 12px;
+  font-size: 13px;
+  color: var(--yx-text-muted);
+  line-height: 1.5;
+}
+
+/* ── KPI 卡 ── */
+/* 用 grid 而非 antd Row/Col：gutter 靠「行负外边距 + 列内边距」实现，行会比容器宽 16px，
+   在 PageContent 这个滚动容器里会多出一条横向滚动条。本行卡片要与下方分区卡片左右齐平，
+   没有内边距可用来抵消负边距。断点与 xs/sm/xl 对齐：1 / 2 / 4 列 */
+.yx-do-kpi-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+@media (min-width: 576px) {
+  .yx-do-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1200px) {
+  .yx-do-kpi-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/* 双类名压过全局 .yx-card 的 16px 内边距：四张卡偏高会把下方内容顶出首屏 */
+.yx-do-kpi.yx-do-kpi {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.yx-do-kpi-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  font-size: 16px;
+}
+
+.yx-do-kpi-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.yx-do-kpi-label {
+  font-size: 12px;
+  color: var(--yx-text-secondary);
+  line-height: 1.4;
+}
+
+.yx-do-kpi-value-row {
+  display: flex;
+  align-items: baseline;
+  /* 徽标是 nowrap，这一行必须能换行：窄卡下「218,640 + 近 7 天新增 +12,340」放不下，
+     不换行就会撑破卡片画到外面，压住相邻卡片的图标 */
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  margin-top: 2px;
+}
+
+.yx-do-kpi-value {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--yx-text-primary);
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  /* 数字不参与收缩，换行交给徽标 */
+  flex-shrink: 0;
+}
+
+.yx-do-kpi-delta {
+  font-size: 12px;
+  color: var(--yx-success-text);
+  background: var(--yx-success-bg);
+  border-radius: 4px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+/* ── 资产类型 tag ──
+   双类名提高特异性，避免被运行时注入的 .ant-tag 默认底色盖掉 */
+.yx-do-type-tag.yx-do-type-tag {
+  margin-inline-end: 0;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.yx-do-type-tag.yx-do-type-tag--document {
+  color: #3b82f6;
+  background: #eff6ff;
+}
+
+.yx-do-type-tag.yx-do-type-tag--table {
+  color: #10b981;
+  background: #ecfdf5;
+}
+
+.yx-do-type-tag.yx-do-type-tag--image {
+  color: #8b5cf6;
+  background: #f5f3ff;
+}
+
+.yx-do-type-tag.yx-do-type-tag--structured {
+  color: #0ea5e9;
+  background: #f0f9ff;
+}
+
+.yx-do-type-tag.yx-do-type-tag--video {
+  color: #f97316;
+  background: #fff7ed;
+}
+
+.yx-do-type-tag.yx-do-type-tag--audio {
+  color: #ec4899;
+  background: #fdf2f8;
+}
+
+/* 兜底位：中性灰，不与 6 个业务类抢眼 */
+.yx-do-type-tag.yx-do-type-tag--other {
+  color: #6b7280;
+  background: #f3f4f6;
+}
+
+/* ── 占比条列表 ── */
+.yx-do-proportion {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.yx-do-proportion-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.yx-do-proportion-label {
+  font-size: 13px;
+  color: var(--yx-text-body);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.yx-do-proportion-value {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--yx-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.yx-do-proportion-percent {
+  display: inline-block;
+  min-width: 46px;
+  margin-left: 8px;
+  font-style: normal;
+  font-weight: 400;
+  color: var(--yx-text-muted);
+  text-align: right;
+}
+
+.yx-do-proportion-track {
+  height: 6px;
+  border-radius: 3px;
+  background: #f1f5f9;
+  overflow: hidden;
+}
+
+.yx-do-proportion-bar {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+/* ── 表格内辅助类 ── */
+.yx-do-num {
+  font-variant-numeric: tabular-nums;
+}
+
+.yx-do-muted {
+  color: var(--yx-text-muted);
+}
+
+.yx-do-link {
+  color: var(--yx-accent);
+}
+
+.yx-do-link--disabled {
+  color: var(--yx-text-muted);
+  cursor: not-allowed;
+}
+
+/* ── 数据处理流水漏斗 ──
+   半宽卡下四段只剩 ~90px：字号与内边距都比整宽时收紧一档，否则数字撑破节点 */
+.yx-do-pipeline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.yx-do-pipeline-node {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--yx-bg-page);
+  border-top: 3px solid transparent;
+}
+
+.yx-do-pipeline-value {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--yx-text-primary);
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.yx-do-pipeline-label {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--yx-text-secondary);
+  white-space: nowrap;
+}
+
+.yx-do-pipeline-arrow {
+  flex-shrink: 0;
+  color: var(--yx-text-muted);
+  font-size: 12px;
+}
+
+/* ── 流水汇总指标（转化率 / 任务状态） ── */
+.yx-do-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.yx-do-metric-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.yx-do-metric-label {
+  font-size: 12px;
+  color: var(--yx-text-muted);
+}
+
+.yx-do-metric-items {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+.yx-do-metric-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.yx-do-metric-item i {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--yx-text-muted);
+}
+
+.yx-do-metric-item em {
+  font-style: normal;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--yx-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 异常汇总条 ── */
+.yx-do-anomaly-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  background: var(--yx-danger-bg);
+}
+
+.yx-do-anomaly-total {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.yx-do-anomaly-total-value {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--yx-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.yx-do-anomaly-total-label {
+  font-size: 13px;
+  color: var(--yx-text-secondary);
+}
+
+.yx-do-anomaly-breakdown {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.yx-do-anomaly-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 4px;
+  background: var(--yx-bg-white);
+  font-size: 12px;
+  color: var(--yx-text-secondary);
+  line-height: 22px;
+}
+
+.yx-do-anomaly-chip em {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--yx-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 异常最近一条 ── */
+.yx-do-anomaly-latest {
+  padding: 12px 14px;
+  border: 1px solid var(--yx-border-light);
+  border-radius: 8px;
+}
+
+.yx-do-anomaly-latest-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.yx-do-anomaly-latest-label {
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--yx-danger-bg);
+  font-size: 12px;
+  color: var(--yx-text-secondary);
+  line-height: 20px;
+}
+
+.yx-do-anomaly-latest-head strong {
+  font-size: 13px;
+  color: var(--yx-text-primary);
+  word-break: break-all;
+}
+
+.yx-do-anomaly-latest-stage {
+  padding: 0 8px;
+  border-radius: 4px;
+  background: var(--yx-bg-page);
+  font-size: 12px;
+  color: var(--yx-text-secondary);
+  line-height: 20px;
+}
+
+.yx-do-anomaly-latest-time {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--yx-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.yx-do-anomaly-latest-reason {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--yx-text-secondary);
+  line-height: 1.5;
+}
+
+/* ── 分析对象条（知识资产页） ── */
+.yx-do-scope-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.yx-do-scope-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.yx-do-scope-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--yx-brand-dark);
+}
+
+.yx-do-scope-metrics {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.yx-do-scope-metric {
+  font-size: 13px;
+  color: var(--yx-text-secondary);
+
+  em {
+    margin-left: 8px;
+    font-style: normal;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--yx-text-primary);
+  }
+}
+
+/* ── 两栏 / 三栏布局 ── */
+/* 用 stretch 让同排卡片等高，避免右卡比左卡矮一截 */
+.yx-do-two-col {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 16px;
+  align-items: stretch;
+}
+
+/* 右卡头部一行需要 398px（标题 90 + 间距 16 + 下拉 140 + 间距 8 + 分段器 144），
+   而 1fr 在 1440 下只有 397，扣掉卡片 16px 内边距与 1px 边框后可用 364——筛选组只能换行，
+   两张卡的头部就错开一行。430 = 398 + 32 + 2 刚好卡在临界点，取 440 留一点余量。
+   flex-wrap 保留：更窄视口或更长的英文文案下装不下时，照旧换行而不是挤出横向滚动 */
+.yx-do-two-col--wide-right {
+  grid-template-columns: minmax(0, 2fr) minmax(440px, 1fr);
+}
+
+/* 这一排里左卡（趋势图）内容比右卡矮，被 stretch 拉到同高后底部会空出一截。
+   卡片与正文逐层纵向 flex、正文吃掉余量，图表（TrendAreaChart 的 fill）才能真正长高填满 ——
+   只把正文设成 flex:1 不够：图表自身是固定高度，余量会留在正文内部而不是被图表吸收 */
+.yx-do-two-col--wide-right > .yx-do-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.yx-do-two-col--wide-right > .yx-do-card > .yx-do-card-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.yx-do-three-col {
+  display: grid;
+  grid-template-columns: 3fr 1fr;
+  gap: 16px;
+  align-items: stretch;
+}
+
+/* 两张同规格的表格并排，等宽即可 */
+.yx-do-two-col-even {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: stretch;
+}
+
+@media (max-width: 1200px) {
+  .yx-do-two-col,
+  .yx-do-two-col-even,
+  .yx-do-three-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── 检索分析页 ── */
+.yx-do-rate-label {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--yx-text-muted);
+}
+
+/* 排名：前三名给一点强调，其余保持普通字重 */
+.yx-do-rank {
+  display: inline-block;
+  min-width: 20px;
+  color: var(--yx-text-secondary);
+  font-variant-numeric: tabular-nums;
+
+  &--top {
+    color: var(--yx-warning-text);
+    font-weight: 600;
+  }
+}

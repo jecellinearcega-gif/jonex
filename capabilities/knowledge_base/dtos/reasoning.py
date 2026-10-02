@@ -11,13 +11,11 @@ STAGE_ONTOLOGY_MATCH = "ontology_match"
 STAGE_ROUTE_DECISION = "route_decision"
 STAGE_FACT_LOOKUP = "fact_lookup"
 STAGE_LLM_ANSWER = "llm_answer"
-STAGE_RAG_FALLBACK = "rag_fallback"
 STAGE_FUSION = "fusion"
 STAGE_ARBITRATION = "arbitration"              # [jonex] S1+S7 双向校验裁决（分歧必须可见）
-STAGE_RETRIEVAL_RERANK = "retrieval_rerank"   # LightRAG 检索期重排（召回后、送 LLM 前）
 STAGE_REF_RETRIEVE = "ref_retrieve"            # 本体成功后取 chunk 引用（RAG 检索，不含生成）
-STAGE_RERANK = "rerank"                        # 平台引用期重排（LLM 答完后，多 KB fallback 引用）
 STAGE_OPENKB_QUERY = "openkb_query"            # [jonex] OpenKB Wiki 检索
+STAGE_JONEX_WIKI_QUERY = "jonex_wiki_query"   # [jonex] jonex_wiki 引擎检索（检索/阅读轨迹来自引擎公开 trace）
 STAGE_TIMELINE_GRAPH = "timeline_graph"       # 图查询模板（时间线/枚举/计数意图走结构化图查询）
 STAGE_STRICT_ATTEMPT = "strict_attempt"        # 严格模式·单次尝试
 STAGE_STRICT_VERIFY = "strict_verify"           # 严格模式·最终校验
@@ -49,5 +47,5 @@ class ReasoningStep(BaseModel):
 class ReasoningTrace(BaseModel):
     """完整的推理链轨迹"""
     steps: list[ReasoningStep] = Field(default_factory=list)
-    final_source: str = "rag"                             # ontology | rag | llm-wiki | mixed | none
+    final_source: str = "rag"                             # ontology | rag | llm-wiki | jonex_wiki | mixed | none
     total_ms: Optional[int] = None

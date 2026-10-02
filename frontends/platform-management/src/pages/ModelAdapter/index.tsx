@@ -11,6 +11,7 @@ import {
   BlockOutlined,
   SortDescendingOutlined,
 } from '@ant-design/icons';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 import { listProviders, testProvider, type ModelProviderItem } from '../../api/modelProviders';
 import AdapterFormModal, { type AdapterFormModalHandle } from './AdapterFormModal';
 
@@ -108,124 +109,123 @@ export default function ModelAdapterPage() {
   }
 
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1>{t('modelAdapter.pageTitle')}</h1>
-      </div>
-
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: 20,
-          marginTop: 8,
-        }}
-      >
-        <Input
-          prefix={<SearchOutlined />}
-          placeholder={t('modelAdapter.searchPlaceholder')}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          allowClear
-          style={{ width: 240 }}
-        />
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span style={{ fontSize: 13, color: '#64748b' }}>
-            {t('modelAdapter.totalModels', { count: filtered.length })}
-          </span>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => modalRef.current?.open()}>
-            {t('modelAdapter.addModel')}
-          </Button>
+    <>
+      <PageHeader title={t('modelAdapter.pageTitle')} />
+      <PageContent>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: 20,
+            marginTop: 8,
+          }}
+        >
+          <Input
+            prefix={<SearchOutlined />}
+            placeholder={t('modelAdapter.searchPlaceholder')}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            allowClear
+            style={{ width: 240 }}
+          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span style={{ fontSize: 13, color: '#64748b' }}>
+              {t('modelAdapter.totalModels', { count: filtered.length })}
+            </span>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => modalRef.current?.open()}>
+              {t('modelAdapter.addModel')}
+            </Button>
+          </div>
         </div>
-      </div>
 
-      {filtered.length === 0 ? (
-        <div className="yx-empty-state">
-          <p>{t('modelAdapter.empty')}</p>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => modalRef.current?.open()}>
-            {t('modelAdapter.addModel')}
-          </Button>
-        </div>
-      ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 20 }}>
-          {filtered.map((p, idx) => {
-            const iconCfg = ICON_CONFIG[idx % ICON_CONFIG.length];
-            const modelTypeKey = BUILT_IN_MODEL_TYPE_KEYS[p.id];
-            const modelTypeLabel = modelTypeKey ? t(modelTypeKey) : p.model_type || '-';
-            return (
-              <div
-                key={p.id}
-                style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 24 }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-                  <div
-                    style={{
-                      width: 48,
-                      height: 48,
-                      borderRadius: 12,
-                      background: iconCfg.color,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: 22,
-                      color: '#fff',
-                    }}
-                  >
-                    {iconCfg.icon}
+        {filtered.length === 0 ? (
+          <div className="yx-empty-state">
+            <p>{t('modelAdapter.empty')}</p>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => modalRef.current?.open()}>
+              {t('modelAdapter.addModel')}
+            </Button>
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 20 }}>
+            {filtered.map((p, idx) => {
+              const iconCfg = ICON_CONFIG[idx % ICON_CONFIG.length];
+              const modelTypeKey = BUILT_IN_MODEL_TYPE_KEYS[p.id];
+              const modelTypeLabel = modelTypeKey ? t(modelTypeKey) : p.model_type || '-';
+              return (
+                <div
+                  key={p.id}
+                  style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 24 }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+                    <div
+                      style={{
+                        width: 48,
+                        height: 48,
+                        borderRadius: 12,
+                        background: iconCfg.color,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: 22,
+                        color: '#fff',
+                      }}
+                    >
+                      {iconCfg.icon}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, fontSize: 16 }}>{p.name}</div>
+                      <div style={{ fontSize: 12, color: '#94a3b8' }}>
+                        {PROVIDER_TYPE_LABELS[p.provider_type] || p.provider_type} · {modelTypeLabel}
+                      </div>
+                    </div>
+                    <Tag color={p.status === 'active' ? 'success' : 'default'}>
+                      {p.status === 'active' ? t('modelAdapter.connected') : p.status}
+                    </Tag>
                   </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: 16 }}>{p.name}</div>
-                    <div style={{ fontSize: 12, color: '#94a3b8' }}>
-                      {PROVIDER_TYPE_LABELS[p.provider_type] || p.provider_type} · {modelTypeLabel}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16 }}>
+                    <div style={{ fontSize: 13 }}>
+                      <span style={{ color: '#94a3b8' }}>{t('modelAdapter.latency')}: </span>
+                      {fmtLatency(p.latency_ms)}
+                    </div>
+                    <div style={{ fontSize: 13 }}>
+                      <span style={{ color: '#94a3b8' }}>
+                        {p.token_limit
+                          ? t('modelAdapter.tokenLimit') + ': '
+                          : p.vector_dimension
+                            ? t('modelAdapter.vectorDimension') + ': '
+                            : t('modelAdapter.batchSizeTitle') + ': '}
+                      </span>
+                      {p.token_limit?.toLocaleString() ||
+                        p.vector_dimension ||
+                        ((p.config_json as Record<string, unknown>)?.batch_size as number) ||
+                        '-'}
+                    </div>
+                    <div style={{ fontSize: 13 }}>
+                      <span style={{ color: '#94a3b8' }}>{t('modelAdapter.callCount')}: </span>
+                      {fmtCount(p.call_count)}
+                    </div>
+                    <div style={{ fontSize: 13 }}>
+                      <span style={{ color: '#94a3b8' }}>{t('modelAdapter.successRate')}: </span>
+                      {p.success_rate !== null ? `${p.success_rate}%` : '-'}
                     </div>
                   </div>
-                  <Tag color={p.status === 'active' ? 'success' : 'default'}>
-                    {p.status === 'active' ? t('modelAdapter.connected') : p.status}
-                  </Tag>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16 }}>
-                  <div style={{ fontSize: 13 }}>
-                    <span style={{ color: '#94a3b8' }}>{t('modelAdapter.latency')}: </span>
-                    {fmtLatency(p.latency_ms)}
-                  </div>
-                  <div style={{ fontSize: 13 }}>
-                    <span style={{ color: '#94a3b8' }}>
-                      {p.token_limit
-                        ? t('modelAdapter.tokenLimit') + ': '
-                        : p.vector_dimension
-                          ? t('modelAdapter.vectorDimension') + ': '
-                          : t('modelAdapter.batchSizeTitle') + ': '}
-                    </span>
-                    {p.token_limit?.toLocaleString() ||
-                      p.vector_dimension ||
-                      ((p.config_json as Record<string, unknown>)?.batch_size as number) ||
-                      '-'}
-                  </div>
-                  <div style={{ fontSize: 13 }}>
-                    <span style={{ color: '#94a3b8' }}>{t('modelAdapter.callCount')}: </span>
-                    {fmtCount(p.call_count)}
-                  </div>
-                  <div style={{ fontSize: 13 }}>
-                    <span style={{ color: '#94a3b8' }}>{t('modelAdapter.successRate')}: </span>
-                    {p.success_rate !== null ? `${p.success_rate}%` : '-'}
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <Button type="primary" size="small" icon={<PlayCircleOutlined />} onClick={() => handleTest(p.id)}>
+                      {t('modelAdapter.test')}
+                    </Button>
+                    <Button size="small" icon={<SettingOutlined />} onClick={() => modalRef.current?.openEdit(p)}>
+                      {t('modelAdapter.configure')}
+                    </Button>
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <Button type="primary" size="small" icon={<PlayCircleOutlined />} onClick={() => handleTest(p.id)}>
-                    {t('modelAdapter.test')}
-                  </Button>
-                  <Button size="small" icon={<SettingOutlined />} onClick={() => modalRef.current?.openEdit(p)}>
-                    {t('modelAdapter.configure')}
-                  </Button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+              );
+            })}
+          </div>
+        )}
 
-      <AdapterFormModal ref={modalRef} onSuccess={load} />
-    </div>
+        <AdapterFormModal ref={modalRef} onSuccess={load} />
+      </PageContent>
+    </>
   );
 }

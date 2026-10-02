@@ -1,0 +1,305 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Button, Result, Table, Tag } from 'antd';
+import dayjs from 'dayjs';
+import { useTranslation } from 'react-i18next';
+import {
+  getQuestionTopics,
+  getSearchOverview,
+  getSearchTrend,
+  listHotQuestions,
+  listKbUsage,
+  listServiceUsage,
+} from '@/api/dataOperations';
+import useCurrentSpace from '@/hooks/useCurrentSpace';
+import useAsyncData from '@/hooks/useAsyncData';
+import SectionCard from './components/SectionCard';
+import StatCards, { type StatCardItem } from './components/StatCards';
+import TrendAreaChart from './components/TrendAreaChart';
+import ProportionList from './components/ProportionList';
+import SegmentedFilter from './components/SegmentedFilter';
+import type { DoHotQuestion, DoProportionItem, DoUsageItem } from './types';
+import './index.scss';
+
+type SearchOverview = Awaited<ReturnType<typeof getSearchOverview>>;
+type TrendRange = 7 | 14;
+
+export default function SearchAnalysis() {
+  const { t } = useTranslation();
+  // 切换领域空间 → 检索侧 KPI、趋势、方式分布、两张使用表全部按成员库重算
+  const spaceId = useCurrentSpace();
+
+  const [trendRange, setTrendRange] = useState<TrendRange>(7);
+  const [overview, setOverview] = useState<SearchOverview | null>(null);
+  const [hotQuestions, setHotQuestions] = useState<DoHotQuestion[]>([]);
+  const [topics, setTopics] = useState<DoProportionItem[]>([]);
+  const [kbUsage, setKbUsage] = useState<DoUsageItem[]>([]);
+  const [serviceUsage, setServiceUsage] = useState<DoUsageItem[]>([]);
+  /** 高频提问卡上「数据更新至 X」的那个 X（MM-DD HH:mm），见下方注释 */
+  const [fetchedAt, setFetchedAt] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [ov, hot, tp, kb, svc] = await Promise.all([
+        getSearchOverview(spaceId),
+        listHotQuestions(spaceId),
+        getQuestionTopics(spaceId),
+        listKbUsage(spaceId),
+        listServiceUsage(spaceId),
+      ]);
+      setOverview(ov);
+      setHotQuestions(hot);
+      setTopics(tp);
+      setKbUsage(kb);
+      setServiceUsage(svc);
+      // 「数据更新至」取的是这批数据落地的那一刻：后端没有更新时间字段，几个数字都是查的时候现算的，
+      // 所以数据的新鲜度就等于这次请求完成的时刻 —— 不再拿一个写死的常量假装是更新时间
+      setFetchedAt(dayjs().format('MM-DD HH:mm'));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t('dataOperations.error.loadFailed'));
+    } finally {
+      setLoading(false);
+    }
+  }, [t, spaceId]);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
+
+  const kpiItems: StatCardItem[] = useMemo(
+    () =>
+      (overview?.kpis ?? []).map((kpi) => ({
+        key: kpi.key,
+        label: t(kpi.labelKey),
+        value: kpi.value,
+        accent: kpi.accent,
+        iconKey: kpi.iconKey,
+      })),
+    [overview, t],
+  );
+
+  // 请求趋势的窗口是卡片自己的事：切 7/14 天只重取这一块，KPI 与检索方式还按近 7 天
+  const loadTrend = useCallback(() => getSearchTrend(spaceId, trendRange), [spaceId, trendRange]);
+  const { data: trend, loading: trendLoading } = useAsyncData(loadTrend);
+
+  /** 检索方式的条宽与数字都走参与率，不是占总数比例（同一次检索可命中多条链路） */
+  const modeItems: DoProportionItem[] = useMemo(
+    () => (overview?.modes ?? []).map((mode) => ({ key: mode.key, labelKey: mode.labelKey, count: mode.count })),
+    [overview],
+  );
+  const modeRate = useMemo(
+    () => new Map<string, number>((overview?.modes ?? []).map((mode) => [mode.key, mode.participationRate])),
+    [overview],
+  );
+
+  /**
+   * 高频提问的「占比」按 Top10 内部合计算 —— 死数据里没有全量提问总数，
+   * 接接口后由服务端直接下发比例，这段随之删掉。
+   */
+  const hotQuestionTotal = useMemo(() => hotQuestions.reduce((sum, item) => sum + item.count, 0) || 1, [hotQuestions]);
+
+  const kpiLoading = loading && !overview;
+
+  const hotColumns = [
+    {
+      title: t('dataOperations.column.rank'),
+      dataIndex: 'rank',
+      key: 'rank',
+      width: 70,
+      render: (v: number) => <span className={`yx-do-rank${v <= 3 ? ' yx-do-rank--top' : ''}`}>{v}</span>,
+    },
+    {
+      title: t('dataOperations.column.question'),
+      dataIndex: 'question',
+      key: 'question',
+      render: (v: string) => <strong>{v}</strong>,
+    },
+    {
+      title: t('dataOperations.column.topic'),
+      dataIndex: 'topicKey',
+      key: 'topicKey',
+      width: 130,
+      render: (v: string) => <Tag variant="filled">{t(v)}</Tag>,
+    },
+    {
+      title: t('dataOperations.column.count'),
+      dataIndex: 'count',
+      key: 'count',
+      width: 110,
+      align: 'right' as const,
+      render: (v: number) => <span className="yx-do-num">{v.toLocaleString()}</span>,
+    },
+    {
+      title: t('dataOperations.column.percent'),
+      dataIndex: 'count',
+      key: 'percent',
+      width: 100,
+      align: 'right' as const,
+      render: (v: number) => <span className="yx-do-num">{((v / hotQuestionTotal) * 100).toFixed(1)}%</span>,
+    },
+  ];
+
+  const kbColumns = [
+    {
+      title: t('dataOperations.column.kbTitle'),
+      dataIndex: 'name',
+      key: 'name',
+      render: (v: string) => <strong>{v}</strong>,
+    },
+    {
+      title: t('dataOperations.column.type'),
+      dataIndex: 'typeKey',
+      key: 'typeKey',
+      width: 120,
+      render: (v?: string) => (v ? t(v) : '—'),
+    },
+    {
+      title: t('dataOperations.column.searchCount'),
+      dataIndex: 'count',
+      key: 'count',
+      width: 120,
+      align: 'right' as const,
+      render: (v: number) => <span className="yx-do-num">{v.toLocaleString()}</span>,
+    },
+    {
+      title: t('dataOperations.column.lastUsedAt'),
+      dataIndex: 'lastUsedAt',
+      key: 'lastUsedAt',
+      width: 170,
+    },
+  ];
+
+  const serviceColumns = [
+    {
+      title: t('dataOperations.column.serviceName'),
+      dataIndex: 'name',
+      key: 'name',
+      render: (v: string) => <strong>{v}</strong>,
+    },
+    {
+      title: t('dataOperations.column.searchCount'),
+      dataIndex: 'count',
+      key: 'count',
+      width: 120,
+      align: 'right' as const,
+      render: (v: number) => <span className="yx-do-num">{v.toLocaleString()}</span>,
+    },
+    {
+      title: t('dataOperations.column.lastUsedAt'),
+      dataIndex: 'lastUsedAt',
+      key: 'lastUsedAt',
+      width: 170,
+    },
+  ];
+
+  /** 分页器右侧的「共 N 条」 */
+  const showTotal = (total: number) => t('dataOperations.common.totalItems', { total });
+
+  if (error) {
+    return (
+      <Result
+        status="error"
+        title={t('dataOperations.error.loadFailed')}
+        subTitle={error}
+        extra={
+          <Button type="primary" onClick={() => void loadData()}>
+            {t('dataOperations.common.retry')}
+          </Button>
+        }
+      />
+    );
+  }
+
+  return (
+    <>
+      <StatCards items={kpiItems} loading={kpiLoading} />
+
+      <div className="yx-do-two-col">
+        <SectionCard
+          title={t('dataOperations.section.searchTrendTitle')}
+          extra={
+            <SegmentedFilter
+              value={trendRange}
+              onChange={setTrendRange}
+              options={[
+                { value: 7, label: t('dataOperations.filter.last7d') },
+                { value: 14, label: t('dataOperations.filter.last14d') },
+              ]}
+            />
+          }
+        >
+          <TrendAreaChart
+            data={trend ?? []}
+            loading={trendLoading}
+            color="#0ea5e9"
+            valueName={t('dataOperations.column.count')}
+          />
+        </SectionCard>
+
+        <SectionCard
+          title={t('dataOperations.section.searchModeTitle')}
+          description={t('dataOperations.section.searchModeDesc')}
+        >
+          <ProportionList
+            items={modeItems}
+            loading={loading}
+            percentOf={(item) => modeRate.get(item.key) ?? 0}
+            renderValue={(item) => (
+              <>
+                {item.count.toLocaleString()}
+                <span className="yx-do-rate-label">{t('dataOperations.searchMode.participationRate')}</span>
+              </>
+            )}
+          />
+        </SectionCard>
+      </div>
+
+      <div className="yx-do-three-col">
+        <SectionCard
+          title={t('dataOperations.section.hotQuestionsTitle')}
+          hint={fetchedAt ? t('dataOperations.section.hotQuestionsHint', { time: fetchedAt }) : undefined}
+        >
+          <Table
+            rowKey="rank"
+            size="small"
+            columns={hotColumns}
+            dataSource={hotQuestions}
+            loading={loading}
+            pagination={false}
+          />
+        </SectionCard>
+
+        <SectionCard title={t('dataOperations.section.questionTopicsTitle')}>
+          <ProportionList items={topics} loading={loading} />
+        </SectionCard>
+      </div>
+
+      <div className="yx-do-two-col-even">
+        <SectionCard title={t('dataOperations.section.kbUsageTitle')}>
+          <Table
+            rowKey="id"
+            size="small"
+            columns={kbColumns}
+            dataSource={kbUsage}
+            loading={loading}
+            pagination={{ pageSize: 5, size: 'small', showTotal }}
+          />
+        </SectionCard>
+
+        <SectionCard title={t('dataOperations.section.serviceUsageTitle')}>
+          <Table
+            rowKey="id"
+            size="small"
+            columns={serviceColumns}
+            dataSource={serviceUsage}
+            loading={loading}
+            pagination={{ pageSize: 5, size: 'small', showTotal }}
+          />
+        </SectionCard>
+      </div>
+    </>
+  );
+}

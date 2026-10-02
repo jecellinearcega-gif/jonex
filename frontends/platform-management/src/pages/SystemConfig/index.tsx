@@ -1,12 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Form, Input, Select, Button, message, Card, Spin, Result } from 'antd';
-import {
-  SaveOutlined,
-  UndoOutlined,
-  InfoCircleOutlined,
-  SafetyOutlined,
-} from '@ant-design/icons';
+import { SaveOutlined, UndoOutlined, InfoCircleOutlined, SafetyOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 import { listSystemConfigs, updateSystemConfig } from '../../api/systemConfig';
 
 interface ConfigMap {
@@ -113,116 +109,119 @@ export default function SystemConfig() {
   const gridTop = { ...grid, marginTop: 14 } as const;
 
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1>{t('systemConfig.title')}</h1>
-        <p style={{ color: '#64748b', margin: '4px 0 0', fontSize: 14 }}>{t('systemConfig.description')}</p>
-      </div>
+    <>
+      <PageHeader title={t('systemConfig.title')} />
 
-      <Form form={form} layout="vertical" onValuesChange={(cv) => setChanged((p) => new Set([...p, ...Object.keys(cv)]))}>
-        <Card
-          style={{ borderRadius: 12, border: '1px solid #e2e8f0', marginBottom: 20 }}
-          styles={{ body: { padding: 24 } }}
+      <PageContent showCard={false}>
+        <Form
+          form={form}
+          layout="vertical"
+          onValuesChange={(cv) => setChanged((p) => new Set([...p, ...Object.keys(cv)]))}
         >
-          <h3
-            style={{
-              margin: '0 0 16px',
-              fontSize: 16,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              paddingBottom: 12,
-              borderBottom: '1px solid #e2e8f0',
-            }}
+          <Card
+            style={{ borderRadius: 12, border: '1px solid #e2e8f0', marginBottom: 20 }}
+            styles={{ body: { padding: 24 } }}
           >
-            <InfoCircleOutlined style={{ color: '#3b82f6' }} /> {t('systemConfig.basicSettings')}
-          </h3>
-          <div style={grid}>
-            <Form.Item name="platform_name" label={t('systemConfig.platformName')}>
-              <Input style={fieldStyle('platform_name')} />
-            </Form.Item>
-            <Form.Item name="logo_url" label={t('systemConfig.logoUrl')}>
-              <Input style={fieldStyle('logo_url')} />
-            </Form.Item>
-          </div>
-          <div style={gridTop}>
-            <Form.Item name="default_language" label={t('systemConfig.defaultLanguage')}>
-              <Select
-                style={{ width: '100%', ...(fieldStyle('default_language') || {}) }}
-                options={[
-                  { value: 'zh', label: t('systemConfig.chinese') },
-                  { value: 'en', label: t('systemConfig.english') },
-                ]}
-              />
-            </Form.Item>
-            <Form.Item name="timezone" label={t('systemConfig.timezone')}>
-              <Select
-                style={{ width: '100%', ...(fieldStyle('timezone') || {}) }}
-                options={[
-                  { value: 'shanghai', label: 'Asia/Shanghai (UTC+8)' },
-                  { value: 'utc', label: 'UTC' },
-                ]}
-              />
-            </Form.Item>
-          </div>
-        </Card>
+            <h3
+              style={{
+                margin: '0 0 16px',
+                fontSize: 16,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                paddingBottom: 12,
+                borderBottom: '1px solid #e2e8f0',
+              }}
+            >
+              <InfoCircleOutlined style={{ color: '#3b82f6' }} /> {t('systemConfig.basicSettings')}
+            </h3>
+            <div style={grid}>
+              <Form.Item name="platform_name" label={t('systemConfig.platformName')}>
+                <Input style={fieldStyle('platform_name')} />
+              </Form.Item>
+              <Form.Item name="logo_url" label={t('systemConfig.logoUrl')}>
+                <Input style={fieldStyle('logo_url')} />
+              </Form.Item>
+            </div>
+            <div style={gridTop}>
+              <Form.Item name="default_language" label={t('systemConfig.defaultLanguage')}>
+                <Select
+                  style={{ width: '100%', ...(fieldStyle('default_language') || {}) }}
+                  options={[
+                    { value: 'zh', label: t('systemConfig.chinese') },
+                    { value: 'en', label: t('systemConfig.english') },
+                  ]}
+                />
+              </Form.Item>
+              <Form.Item name="timezone" label={t('systemConfig.timezone')}>
+                <Select
+                  style={{ width: '100%', ...(fieldStyle('timezone') || {}) }}
+                  options={[
+                    { value: 'shanghai', label: 'Asia/Shanghai (UTC+8)' },
+                    { value: 'utc', label: 'UTC' },
+                  ]}
+                />
+              </Form.Item>
+            </div>
+          </Card>
 
-        <Card
-          style={{ borderRadius: 12, border: '1px solid #e2e8f0', marginBottom: 20 }}
-          styles={{ body: { padding: 24 } }}
-        >
-          <h3
-            style={{
-              margin: '0 0 16px',
-              fontSize: 16,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              paddingBottom: 12,
-              borderBottom: '1px solid #e2e8f0',
-            }}
+          <Card
+            style={{ borderRadius: 12, border: '1px solid #e2e8f0', marginBottom: 20 }}
+            styles={{ body: { padding: 24 } }}
           >
-            <SafetyOutlined style={{ color: '#3b82f6' }} /> {t('systemConfig.securitySettings')}
-          </h3>
-          <div style={grid}>
-            <Form.Item name="session_timeout" label={t('systemConfig.sessionTimeout')}>
-              <Input style={fieldStyle('session_timeout')} />
-            </Form.Item>
-            <Form.Item name="password_min_length" label={t('systemConfig.passwordMinLength')}>
-              <Input style={fieldStyle('password_min_length')} />
-            </Form.Item>
-          </div>
-          <div style={gridTop}>
-            <Form.Item name="login_lock_threshold" label={t('systemConfig.loginLockThreshold')}>
-              <Select
-                style={{ width: '100%', ...(fieldStyle('login_lock_threshold') || {}) }}
-                options={[
-                  { value: '5', label: t('systemConfig.lockAfter5') },
-                  { value: '3', label: t('systemConfig.lockAfter3') },
-                  { value: '0', label: t('systemConfig.noLock') },
-                ]}
-              />
-            </Form.Item>
-            <Form.Item name="lock_duration" label={t('systemConfig.lockDuration')}>
-              <Input style={fieldStyle('lock_duration')} />
-            </Form.Item>
-          </div>
-        </Card>
+            <h3
+              style={{
+                margin: '0 0 16px',
+                fontSize: 16,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                paddingBottom: 12,
+                borderBottom: '1px solid #e2e8f0',
+              }}
+            >
+              <SafetyOutlined style={{ color: '#3b82f6' }} /> {t('systemConfig.securitySettings')}
+            </h3>
+            <div style={grid}>
+              <Form.Item name="session_timeout" label={t('systemConfig.sessionTimeout')}>
+                <Input style={fieldStyle('session_timeout')} />
+              </Form.Item>
+              <Form.Item name="password_min_length" label={t('systemConfig.passwordMinLength')}>
+                <Input style={fieldStyle('password_min_length')} />
+              </Form.Item>
+            </div>
+            <div style={gridTop}>
+              <Form.Item name="login_lock_threshold" label={t('systemConfig.loginLockThreshold')}>
+                <Select
+                  style={{ width: '100%', ...(fieldStyle('login_lock_threshold') || {}) }}
+                  options={[
+                    { value: '5', label: t('systemConfig.lockAfter5') },
+                    { value: '3', label: t('systemConfig.lockAfter3') },
+                    { value: '0', label: t('systemConfig.noLock') },
+                  ]}
+                />
+              </Form.Item>
+              <Form.Item name="lock_duration" label={t('systemConfig.lockDuration')}>
+                <Input style={fieldStyle('lock_duration')} />
+              </Form.Item>
+            </div>
+          </Card>
 
-        <div style={{ display: 'flex', gap: 12 }}>
-          <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave}>
-            {t('systemConfig.saveAll')}
-          </Button>
-          <Button icon={<UndoOutlined />} onClick={handleReset}>
-            {t('systemConfig.resetToDefault')}
-          </Button>
-          {changed.size > 0 && (
-            <span style={{ color: '#f59e0b', fontSize: 13, alignSelf: 'center' }}>
-              {t('systemConfig.changedItems', { count: changed.size })}
-            </span>
-          )}
-        </div>
-      </Form>
-    </div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave}>
+              {t('systemConfig.saveAll')}
+            </Button>
+            <Button icon={<UndoOutlined />} onClick={handleReset}>
+              {t('systemConfig.resetToDefault')}
+            </Button>
+            {changed.size > 0 && (
+              <span style={{ color: '#f59e0b', fontSize: 13, alignSelf: 'center' }}>
+                {t('systemConfig.changedItems', { count: changed.size })}
+              </span>
+            )}
+          </div>
+        </Form>
+      </PageContent>
+    </>
   );
 }

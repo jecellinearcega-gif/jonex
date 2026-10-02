@@ -11,7 +11,11 @@ import uuid
 from sqlalchemy import select
 
 from jonex_core.common import get_db_session
-from jonex_core.common.exceptions import JonexException, ResourceConflictError
+from jonex_core.common.exceptions import (
+    JonexException,
+    ResourceConflictError,
+    ServiceUnavailableError,
+)
 from jonex_core.common.i18n import translate
 from jonex_core.common.tenant import require_tenant
 
@@ -413,7 +417,13 @@ class DomainServiceService:
         return True
 
     async def search(self, service_id: str, tenant_id: str, query: str,
-                     actor_user_id: str | None = None) -> dict:
+                     actor_user_id: str | None = None, trace_id: str = "") -> dict:
+        """领域服务检索：对关联的 N 个 KB 各检索一次，合并结果。
+
+        [jonex] 数据运营二期 §3.1：`trace_id` 由 capability 层透传（原先**硬编码
+        `""`**），一次服务检索落下的 N 条 history 因此共享同一个 trace ——
+        否则 N 条 history 的 `request_id` 全为空，事件侧完全关联不上。
+        """
         tenant_id = require_tenant(tenant_id)
         async with get_db_session() as session:
             repo = DomainServiceRepository(session)
@@ -441,24 +451,30 @@ class DomainServiceService:
 
         from ..services.search_service import SearchService
 
+        kb_failed: list[str] = []
+
         async def _search_kb(kb_id: str) -> dict | None:
             try:
                 return await SearchService().search(
                     tenant_id=tenant_id,
-                    user_id="mcp",  # 检索侧归属标记（检索历史），非权限判定——权限过滤在上方 actor_user_id 分支
+                    # [jonex] 归属真实检索人：写死 "mcp" 会让领域服务检索**不记在用户名下**，
+                    # 检索历史查不到，排障时被误判成「用户压根没检索过」。
+                    # actor_user_id 为 None（MCP / 内部链路）时保持 "mcp" 不变。
+                    user_id=actor_user_id or "mcp",
                     request={
                         "knowledge_base_id": kb_id,
                         "query": query,
                         "mode": "hybrid",
                         "top_k": 5,
                     },
-                    trace_id="",
+                    trace_id=trace_id,
                 )
             except (JonexException, httpx.HTTPError, asyncio.TimeoutError) as e:
                 logger.warning(
                     "DomainService search: KB %s search failed for service %s: %s",
                     kb_id, service_id, e,
                 )
+                kb_failed.append(kb_id)
                 return None
 
         tasks = [_search_kb(kb_id) for kb_id in kb_ids]
@@ -494,5 +510,17 @@ class DomainServiceService:
         }
         if answers:
             result_dict["answer"] = "\n\n".join(answers)
+        elif kb_failed and len(kb_failed) == len(kb_ids):
+            # [jonex] 全 KB 失败时**不要把「成功但全空」交出去**：这个响应没有 answer 字段，
+            # 前端只能渲染成「服务暂时不可用」，把可诊断的原因（哪个 KB、哪条管线）全丢掉。
+            # 让失败显式化，排障才有着力点。
+            # ⚠️ 只在**全部** KB 都异常时才报不可用：部分成功、或某库合法空命中，都不是故障。
+            raise ServiceUnavailableError(
+                message=translate(
+                    "msg.search.mix_unavailable",
+                    fallback="知识库检索服务暂时不可用，请稍后重试；若持续出现请联系管理员。",
+                ),
+                details={"service_id": service_id, "kb_failed": kb_failed},
+            )
 
         return result_dict

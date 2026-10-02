@@ -30,6 +30,8 @@
     "clearFilters": "清除筛选",
     "backTo": "返回 {{title}}",
     "copySuccess": "复制成功",
+    "copy": "复制",
+    "copyFailed": "复制失败",
     "saveSuccess": "保存成功",
     "prompt": "提示",
     "noChanges": "无更改",
@@ -53,7 +55,9 @@
     "connect": "连接",
     "disconnect": "断开",
     "searchLabel": "检索",
-    "loadFailed": "加载失败"
+    "loadFailed": "加载失败",
+    "refresh": "刷新",
+    "noPermission": "无权限"
   },
   "auth": {
     "signIn": "登录",
@@ -94,11 +98,6 @@
     "selectPlaceholder": "请选择",
     "confirmDelete": "确定要删除此数据吗？"
   },
-  "language": {
-    "chinese": "中文",
-    "english": "英文",
-    "switchLanguage": "切换语言"
-  },
   "error": {
     "401": "未经授权，请登录。",
     "403": "禁止访问，您没有权限。",
@@ -113,6 +112,7 @@
     "userManagement": "用户管理",
     "rolePermission": "角色权限",
     "taskSchedule": "任务调度",
+    "taskCenter": "任务中心",
     "systemConfig": "系统配置",
     "operationLog": "操作日志",
     "dataAccessMethods": "数据接入方式",
@@ -122,7 +122,8 @@
     "compileSearch": "编译检索",
     "compileGraph": "知识图谱",
     "compileVector": "向量检索",
-    "compileCompile": "编译管理"
+    "compileCompile": "编译管理",
+    "dataOperations": "数据运营"
   },
   "site": {
     "title": ""
@@ -141,11 +142,6 @@
   "users": {
     "roleAdmin": "租户管理员",
     "roleUser": "普通用户"
-  },
-  "tenants": {
-    "planFree": "免费版",
-    "planPro": "专业版",
-    "planEnterprise": "企业版"
   },
   "status": {
     "ongoing": "进行中",
@@ -330,6 +326,85 @@
       }
     }
   },
+  "taskCenter": {
+    "title": "任务中心",
+    "filter": {
+      "keyword": "任务名称",
+      "keywordPlaceholder": "搜索任务名称或编号",
+      "type": "任务类型",
+      "typeAll": "全部类型",
+      "source": "任务来源",
+      "sourceAll": "全部来源",
+      "range": "时间范围"
+    },
+    "type": {
+      "full": "全流程"
+    },
+    "source": {
+      "file": "文件上传",
+      "api": "API 拉取",
+      "apiPush": "入站推送",
+      "storage": "存储同步"
+    },
+    "stage": {
+      "parse": "文档解析",
+      "ontology": "本体编译",
+      "wiki": "Wiki 编译"
+    },
+    "status": {
+      "all": "全部",
+      "pending": "排队中",
+      "running": "处理中",
+      "completed": "已完成",
+      "failed": "已失败"
+    },
+    "subtaskStatus": {
+      "pending": "排队中",
+      "running": "处理中",
+      "success": "已完成",
+      "failed": "已失败",
+      "timeout": "已超时"
+    },
+    "column": {
+      "name": "任务名称",
+      "startedAt": "开始时间",
+      "finishedAt": "结束时间",
+      "duration": "耗时"
+    },
+    "action": {
+      "detail": "查看详情",
+      "stop": "停止",
+      "stopConfirm": "确认停止该任务？",
+      "stopped": "任务已停止",
+      "stopFailed": "停止任务失败",
+      "retry": "重试",
+      "retryConfirm": "确认重试该任务？将从第一步重新运行一遍。",
+      "retried": "任务已重新开始",
+      "retryFailed": "重试任务失败",
+      "subtaskStopConfirm": "确认停止子任务「{{name}}」？",
+      "subtaskStopped": "子任务已停止",
+      "subtaskStopFailed": "停止子任务失败",
+      "subtaskRetryConfirm": "确认重试子任务「{{name}}」？",
+      "subtaskRetried": "子任务已重新开始",
+      "subtaskRetryFailed": "重试子任务失败"
+    },
+    "detail": {
+      "title": "任务详情",
+      "taskId": "任务 ID",
+      "basic": "基本信息",
+      "subtasks": "子任务",
+      "subtaskId": "子任务 ID",
+      "totalDuration": "总耗时",
+      "result": "处理结果"
+    },
+    "result": {
+      "pending": "{{name}}等待执行",
+      "running": "{{name}}处理中",
+      "success": "{{name}}完成",
+      "failed": "{{name}}失败",
+      "timeout": "{{name}}超时"
+    }
+  },
   "parserManagement": {
     "pageTitle": "解析器管理",
     "searchPlaceholder": "搜索解析器...",
@@ -413,7 +488,6 @@
   },
   "rolePermission": {
     "pageTitle": "角色权限",
-    "pageSubtitle": "管理系统角色及其权限配置",
     "newRole": "新建角色",
     "system": " (系统)",
     "allPermissions": "全部权限",
@@ -486,7 +560,19 @@
       "system": {
         "read": "查看系统配置",
         "write": "管理系统配置"
+      },
+      "analytics": {
+        "read": "查看数据运营"
+      },
+      "task_center": {
+        "read": "查看任务中心",
+        "write": "管理任务中心"
       }
+    },
+    "permissionGroups": {
+      "platform": "平台管理",
+      "tenant": "租户管理",
+      "business": "业务功能"
     }
   },
   "dataSource": {
@@ -518,7 +604,6 @@
     "actionUpdate": "更新",
     "actionUpload": "上传",
     "allActions": "全部操作",
-    "allResources": "全部资源",
     "unknownAction": "未知操作",
     "detail": "详情",
     "errorMessageLabel": "失败原因",
@@ -556,7 +641,6 @@
     "changesSavedWithFail": "已保存 {{done}} 项，{{fail}} 项失败",
     "chinese": "简体中文",
     "defaultLanguage": "默认语言",
-    "description": "配置平台基本参数与安全策略",
     "english": "English",
     "lockAfter3": "3 次后锁定",
     "lockAfter5": "5 次后锁定",
@@ -588,9 +672,187 @@
     "requiredTenantId": "请填写租户 ID",
     "saveFailed": "保存失败",
     "searchTenants": "搜索租户...",
+    "searchLimitHint": "当前共 {{total}} 个租户；后端列表暂不支持关键字查询，搜索仅在已加载的前 {{limit}} 个租户中匹配。",
     "tenantId": "租户 ID",
     "title": "租户管理",
     "updated": "已更新",
+    "view": "查看",
+    "statusHint": "停用后该租户的用户将无法登录",
+    "deleteTenant": "删除租户",
+    "deleteConfirmTitle": "确认删除该租户？",
+    "deleteConfirmDesc": "删除后「{{name}}」（{{id}}）将无法访问，该租户下的业务数据不会自动清理，且此操作不可撤销。",
+    "deleted": "租户已删除",
+    "deleteFailed": "删除失败",
+    "deleteSelfTip": "不能删除当前登录用户所属的租户",
+    "noPermission": "需要 {{permission}} 权限",
+    "detail": {
+      "title": "租户详情",
+      "back": "返回",
+      "backToList": "返回租户列表",
+      "notFoundTitle": "未找到该租户",
+      "notFoundDesc": "租户不存在或已被移除，请返回租户管理列表重试。",
+      "comingSoon": "后端接口待接入，该操作暂不可用",
+      "basicTitle": "基本信息",
+      "name": "租户名称",
+      "id": "租户 ID",
+      "status": "租户状态",
+      "remark": "备注",
+      "identityTitle": "企业身份集成",
+      "ssoTitle": "单点登录",
+      "ssoStatus": "单点登录状态",
+      "ssoEnabled": "已启用",
+      "ssoDisabled": "未启用",
+      "rule": "身份标识规则",
+      "provider": "身份提供商",
+      "firstLogin": "首次登录处理",
+      "editConfig": "编辑配置",
+      "externalSubject": "外部用户标识 (sub)",
+      "syncTitle": "用户与组织同步",
+      "syncSource": "数据源名称",
+      "syncStatus": "自动同步状态",
+      "lastSync": "最近同步时间",
+      "conn": "连接状态",
+      "cycle": "同步周期",
+      "nextSync": "下次同步时间",
+      "syncNow": "立即同步",
+      "syncNeedConfig": "请先配置数据源连接",
+      "syncEmpty": "尚未配置主数据源",
+      "recordsTitle": "最近同步记录",
+      "colTime": "同步时间",
+      "colTrigger": "触发方式",
+      "colStatus": "状态",
+      "colChanged": "用户变更",
+      "colFailed": "失败数",
+      "viewRecord": "查看详情",
+      "recordsEmpty": "暂无同步记录"
+    },
+    "syncDrawer": {
+      "title": "用户与组织同步配置",
+      "groupBasic": "基础配置",
+      "groupAdvanced": "高级配置",
+      "advancedHint": "主数据接口及认证凭据",
+      "sourceName": "数据源名称",
+      "autoSync": "自动同步",
+      "autoSyncDesc": "开启后按设定周期执行增量同步",
+      "cycle": "同步周期",
+      "cycleOpt6h": "每 6 小时",
+      "cycleOpt12h": "每 12 小时",
+      "cycleOpt24h": "每 24 小时",
+      "endpoint": "接口地址",
+      "endpointInvalid": "需以 http:// 或 https:// 开头",
+      "testConn": "测试连接",
+      "testOk": "连接正常",
+      "authType": "认证方式",
+      "keepUnchanged": "留空保持原值",
+      "credential": "Token / 认证凭据",
+      "credentialPlaceholder": "请输入认证凭据",
+      "connUnverifiedHint": "配置变更或未验证，请重新测试连接",
+      "syncNeedVerify": "尚未通过连接测试，请先测试连接后再同步",
+      "syncPausedHint": "未通过连接测试，自动同步已暂停",
+      "forceSync": "仍要同步",
+      "save": "保存配置",
+      "syncNowTitle": "立即同步",
+      "syncMode": "同步模式",
+      "modeIncrementalDesc": "仅同步上次成功同步以来的增量变更",
+      "modeFullDesc": "全量拉取企业用户并与本地存量对账",
+      "syncRunning": "同步中…",
+      "syncDone": "同步完成",
+      "syncPartial": "同步完成，存在失败项，请查看记录详情",
+      "syncFailed": "同步失败，请检查主数据源连接与凭据",
+      "testFailed": "连接失败",
+      "testFailedContract": "接口返回的不是标准用户列表（契约不符）。请确认「接口地址」指向实现「Jonex标准拉取 API」的服务，而不是门户首页或控制台页面。",
+      "testFailedWithTarget": "{{message}}（探测目标：{{target}}）",
+      "saveFailed": "保存失败"
+    },
+    "identity": {
+      "statusPending": "待执行",
+      "statusRunning": "同步中",
+      "statusSuccess": "成功",
+      "statusPartialFailed": "部分失败",
+      "statusFailed": "失败",
+      "statusCanceled": "已取消",
+      "connUnconfigured": "未配置",
+      "connVerified": "已验证",
+      "connUnverified": "未验证",
+      "modeIncremental": "增量",
+      "modeFull": "全量",
+      "triggerManual": "手动",
+      "triggerAuto": "自动",
+      "policyAutoCreate": "自动创建Jonex账号",
+      "policySyncedOnly": "仅允许已同步用户登录",
+      "entityUser": "用户",
+      "fieldUsername": "用户名",
+      "fieldDisplayName": "姓名",
+      "fieldEmail": "邮箱",
+      "tenantMismatchTitle": "企业身份集成作用于当前登录租户",
+      "tenantMismatchDesc": "该配置仅对当前登录租户（{{current}}）生效。请先通过顶部租户切换到 {{target}}，再查看或编辑。",
+      "loadFailed": "企业身份集成信息加载失败"
+    },
+    "ssoDrawer": {
+      "title": "单点登录配置",
+      "groupBasic": "基础配置",
+      "groupAdvanced": "高级配置",
+      "advancedHint": "OIDC 连接参数及登录身份字段映射",
+      "enabled": "单点登录",
+      "enabledDesc": "开启后企业用户可通过 Keycloak 登录Jonex",
+      "loginPolicy": "首次登录账号策略",
+      "policyAutoCreateDesc": "首次登录无对应身份时自动创建Jonex账号并绑定",
+      "policySyncedOnlyDesc": "仅允许已同步用户登录，需先配置用户同步，否则企业用户将无法登录",
+      "subLabel": "外部用户标识",
+      "clientSecret": "Client Secret",
+      "clientSecretPlaceholder": "由部署侧注入",
+      "disableConfirmTitle": "确认停用单点登录？",
+      "disableConfirmDesc": "停用后企业用户将无法通过单点登录进入Jonex，现有配置会保留。",
+      "testConn": "测试连接",
+      "testFirst": "请先测试连接再启用",
+      "testOk": "配置校验通过",
+      "testFailed": "配置校验失败",
+      "saveFailed": "保存失败",
+      "lastVerified": "上次测试：{{time}}",
+      "notVerified": "配置变更或未验证，请先测试连接",
+      "colFieldName": "字段名称",
+      "colFieldMapping": "字段映射",
+      "colRule": "规则",
+      "ruleBasic": "基础字段",
+      "ruleFixed": "固定标识",
+      "realmIssuerUrl": "服务地址",
+      "realmIssuerUrlHint": "仅用于连通性检查，不改变登录链路",
+      "issuerUrlRequired": "服务地址不能为空",
+      "unsavedChanges": "有未保存的更改：测试连接只探测已保存的地址",
+      "unsavedConfirmTitle": "有未保存的更改",
+      "unsavedConfirmDesc": "「测试连接」只探测已保存的地址：{{target}}。输入框里的新地址需先保存才会生效。",
+      "unsavedConfirmDescNoTarget": "「测试连接」只探测已保存的地址；输入框里的新地址需先保存才会生效。",
+      "probeTargetHint": "将探测：{{target}} 的 OIDC 发现端点（已保存的地址）",
+      "probeTargetHintFull": "将探测：{{target}}",
+      "probeTargetUnset": "将探测：（尚未配置服务地址）",
+      "testFailedWithTarget": "{{message}}（探测目标为已保存的地址：{{target}}）",
+      "realmId": "Realm",
+      "realmClientId": "Client ID",
+      "realmRedirectUri": "回调地址",
+      "realmStatus": "Realm 状态",
+      "realmEnabled": "启用",
+      "realmDisabled": "已停用",
+      "realmNotOpened": "该租户尚未开通单点登录",
+      "realmLoadFailed": "Realm 信息加载失败",
+      "save": "保存配置"
+    },
+    "recordDrawer": {
+      "title": "同步记录详情",
+      "syncTime": "同步时间",
+      "syncType": "同步类型",
+      "status": "同步状态",
+      "userChange": "用户变更",
+      "added": "新增",
+      "updated": "更新",
+      "disabled": "停用",
+      "enabled": "启用",
+      "deleted": "删除",
+      "failuresTitle": "失败明细（{{count}}）",
+      "failuresEmpty": "本次同步无失败明细",
+      "colEntityType": "实体类型",
+      "colEntityId": "实体标识",
+      "colReason": "失败原因"
+    },
     "builtInTenants": {
       "demo": {
         "name": "Jonex演示租户",
@@ -657,6 +919,194 @@
       "oneMatchDemo": "单租户密码匹配用户 - 演示租户",
       "oneMatchAlpha": "单租户密码匹配用户 - Alpha 租户",
       "tenantHeaderBeta": "指定租户登录测试用户 - Beta 租户"
+    }
+  },
+  "dataOperations": {
+    "tabs": {
+      "assets": "数据资产",
+      "knowledge": "知识资产",
+      "search": "检索分析"
+    },
+    "common": {
+      "totalItems": "共 {{total}} 条",
+      "retry": "重试",
+      "neverReferenced": "从未引用",
+      "neverUsed": "从未使用",
+      "viewDetail": "查看详情",
+      "goToKb": "前往知识库"
+    },
+    "error": {
+      "loadFailed": "数据加载失败，请稍后重试"
+    },
+    "empty": {
+      "noData": "暂无数据"
+    },
+    "assetType": {
+      "document": "文档",
+      "table": "表格",
+      "image": "图片",
+      "structured": "结构化数据",
+      "video": "视频",
+      "audio": "音频",
+      "other": "其他"
+    },
+    "stage": {
+      "parse": "解析",
+      "extract": "抽取",
+      "compile": "编译"
+    },
+    "kpi": {
+      "assetTotal": "数据资产总量",
+      "sourceCount": "数据源数",
+      "citedAssets": "被引用数据资产数",
+      "usageRate": "数据资产使用率",
+      "newIn7d": "近 7 天新增",
+      "ontologyObject": "Ontology 对象实例",
+      "ontologyRelation": "Ontology 关系实例",
+      "wikiEntity": "Wiki 实体",
+      "wikiConcept": "Wiki 概念",
+      "searchRequests": "近 7 天检索请求数",
+      "searchedKb": "近 7 天被检索知识库数",
+      "searchUsers": "近 7 天检索用户数",
+      "avgPerUser": "近 7 天人均检索次数"
+    },
+    "section": {
+      "trendTitle": "数据接入趋势",
+      "compositionTitle": "数据资产构成",
+      "hotAssetsTitle": "高频引用资产 Top10",
+      "hotAssetsHint": "按最终回答引用次数排序",
+      "idleAssetsTitle": "长期未使用资产",
+      "pipelineTitle": "数据处理流水",
+      "pipelineDesc": "解析 → 抽取 → 编译 全链路处理状态",
+      "anomalyTitle": "异常资产",
+      "growthTitle": "知识资产增长趋势",
+      "distTitle": "知识库本体实例分布",
+      "idleKnowledgeTitle": "长期未使用知识",
+      "searchTrendTitle": "检索请求趋势",
+      "searchModeTitle": "检索方式",
+      "hotQuestionsTitle": "高频提问 Top10",
+      "hotQuestionsHint": "数据更新至 {{time}}",
+      "questionTopicsTitle": "提问主题分类",
+      "kbUsageTitle": "知识库使用情况",
+      "serviceUsageTitle": "领域服务使用情况",
+      "hotInstancesTitle": "高频使用本体实例 Top10",
+      "hotWikiInstancesTitle": "高频使用 Wiki 实体 Top10",
+      "distWikiTitle": "知识库 Wiki 实体分布",
+      "searchModeDesc": "同一次检索可同时命中多条链路，故参与率之和大于 100%",
+      "hotInstancesHint": "按近 7 天被引用次数排序"
+    },
+    "filter": {
+      "allKb": "全部知识库",
+      "allSource": "全部数据源",
+      "allService": "全部领域服务",
+      "last7d": "近 7 天",
+      "last30d": "近 30 天",
+      "last90d": "近 90 天",
+      "byType": "数据类型",
+      "bySource": "来源类型",
+      "idle30": "近 30 天未使用",
+      "idle90": "近 90 天未使用",
+      "allStage": "全部阶段",
+      "allStatus": "全部状态",
+      "last14d": "近 14 天"
+    },
+    "column": {
+      "assetName": "资产名称",
+      "type": "类型",
+      "kbName": "所属知识库",
+      "refCount": "引用次数",
+      "lastRefAt": "最近引用时间",
+      "updatedAt": "更新时间",
+      "action": "操作",
+      "taskId": "任务编号",
+      "stage": "处理阶段",
+      "status": "状态",
+      "duration": "耗时",
+      "startedAt": "开始时间",
+      "reason": "异常原因",
+      "occurredAt": "发生时间",
+      "handled": "处置状态",
+      "handledYes": "已处理",
+      "handledNo": "待处理",
+      "instanceName": "实例名称",
+      "objectType": "对象类型",
+      "hitCount": "命中次数",
+      "adoptCount": "采用次数",
+      "lastUsedAt": "最近使用时间",
+      "rank": "排名",
+      "question": "高频提问",
+      "topic": "提问主题",
+      "count": "提问次数",
+      "percent": "占比",
+      "searchCount": "检索次数",
+      "serviceName": "领域服务名称",
+      "ingested": "接入量",
+      "kbTitle": "知识库名称"
+    },
+    "pipeline": {
+      "total": "资产总量",
+      "parsed": "已解析",
+      "extracted": "已抽取",
+      "compiled": "已编译",
+      "conversionTitle": "阶段转化率",
+      "convExtract": "解析→抽取",
+      "convCompile": "抽取→编译",
+      "convTotal": "总转化",
+      "taskStatus": "任务状态",
+      "avgDuration": "平均耗时"
+    },
+    "anomaly": {
+      "failedCount": "条处置失败",
+      "latest": "最近一条",
+      "desc": "处理失败资产需人工排查",
+      "parseFailed": "解析失败",
+      "extractFailed": "抽取失败",
+      "compileFailed": "编译失败",
+      "drawerTitle": "异常资产详情",
+      "highlightHint": "已高亮异常字段",
+      "suggestion": "处置建议",
+      "suggestionText": "请前往对应知识库重新处理该资产，或调整解析配置后重试。",
+      "field": {
+        "assetName": "资产名称",
+        "assetType": "资产类型",
+        "kbName": "所属知识库",
+        "stage": "异常阶段",
+        "reason": "异常原因",
+        "occurredAt": "发生时间",
+        "source": "数据来源",
+        "retryCount": "已重试次数"
+      }
+    },
+    "scope": {
+      "label": "分析对象",
+      "ontology": "本体",
+      "wiki": "Wiki",
+      "activeInstances": "近 7 天活跃实例数",
+      "activityRate": "实例活跃度"
+    },
+    "searchMode": {
+      "ontology": "本体检索",
+      "wiki": "Wiki 检索",
+      "rag": "RAG 检索",
+      "participationRate": "参与率"
+    },
+    "kbType": {
+      "lightrag": "知识库",
+      "openkb": "OpenKB",
+      "jonex_wiki": "Jonex Wiki"
+    },
+    "topic": {
+      "enterpriseCredit": "企业信用",
+      "enterpriseExperience": "企业经验",
+      "productRule": "产品规则",
+      "riskManagement": "风险管理",
+      "other": "其他"
+    },
+    "sourceType": {
+      "upload": "文件上传",
+      "api": "API 拉取",
+      "storage": "对象存储",
+      "apiPush": "入站推送"
     }
   }
 }

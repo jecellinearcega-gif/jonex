@@ -30,6 +30,8 @@
     "clearFilters": "Clear Filters",
     "backTo": "Back to {{title}}",
     "copySuccess": "Copied",
+    "copy": "Copy",
+    "copyFailed": "Copy failed",
     "saveSuccess": "Saved successfully",
     "prompt": "Prompt",
     "noChanges": "No changes",
@@ -53,7 +55,9 @@
     "connect": "Connect",
     "disconnect": "Disconnect",
     "searchLabel": "Search",
-    "loadFailed": "Load failed"
+    "loadFailed": "Load failed",
+    "refresh": "Refresh",
+    "noPermission": "No permission"
   },
   "auth": {
     "signIn": "Sign In",
@@ -94,11 +98,6 @@
     "selectPlaceholder": "Please select",
     "confirmDelete": "Are you sure you want to delete this item?"
   },
-  "language": {
-    "chinese": "Simplified Chinese",
-    "english": "English",
-    "switchLanguage": "Switch Language"
-  },
   "error": {
     "401": "Unauthorized access. Please sign in.",
     "403": "Forbidden. You don't have permission to access this resource.",
@@ -113,6 +112,7 @@
     "userManagement": "Users",
     "rolePermission": "Roles & Permissions",
     "taskSchedule": "Task Schedule",
+    "taskCenter": "Task Center",
     "systemConfig": "System Settings",
     "operationLog": "Audit Logs",
     "dataAccessMethods": "Data Access Methods",
@@ -122,7 +122,8 @@
     "compileSearch": "Compilation Search",
     "compileGraph": "Knowledge Graph",
     "compileVector": "Vector Search",
-    "compileCompile": "Compilation Management"
+    "compileCompile": "Compilation Management",
+    "dataOperations": "Data Operations"
   },
   "site": {
     "title": ""
@@ -141,11 +142,6 @@
   "users": {
     "roleAdmin": "System Administrator",
     "roleUser": "Regular User"
-  },
-  "tenants": {
-    "planFree": "Free",
-    "planPro": "Pro",
-    "planEnterprise": "Enterprise"
   },
   "status": {
     "ongoing": "Ongoing",
@@ -330,6 +326,85 @@
       }
     }
   },
+  "taskCenter": {
+    "title": "Task Center",
+    "filter": {
+      "keyword": "Task name",
+      "keywordPlaceholder": "Search task name or ID",
+      "type": "Task type",
+      "typeAll": "All types",
+      "source": "Source",
+      "sourceAll": "All sources",
+      "range": "Time range"
+    },
+    "type": {
+      "full": "Full pipeline"
+    },
+    "source": {
+      "file": "File upload",
+      "api": "API pull",
+      "apiPush": "Inbound push",
+      "storage": "Storage sync"
+    },
+    "stage": {
+      "parse": "Document parsing",
+      "ontology": "Ontology build",
+      "wiki": "Wiki compile"
+    },
+    "status": {
+      "all": "All",
+      "pending": "Queued",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed"
+    },
+    "subtaskStatus": {
+      "pending": "Queued",
+      "running": "Running",
+      "success": "Completed",
+      "failed": "Failed",
+      "timeout": "Timed out"
+    },
+    "column": {
+      "name": "Task name",
+      "startedAt": "Started at",
+      "finishedAt": "Finished at",
+      "duration": "Duration"
+    },
+    "action": {
+      "detail": "View details",
+      "stop": "Stop",
+      "stopConfirm": "Stop this task?",
+      "stopped": "Task stopped",
+      "stopFailed": "Failed to stop the task",
+      "retry": "Retry",
+      "retryConfirm": "Retry this task? It will run from the start again.",
+      "retried": "Task restarted",
+      "retryFailed": "Failed to retry the task",
+      "subtaskStopConfirm": "Stop subtask \"{{name}}\"?",
+      "subtaskStopped": "Subtask stopped",
+      "subtaskStopFailed": "Failed to stop the subtask",
+      "subtaskRetryConfirm": "Retry subtask \"{{name}}\"?",
+      "subtaskRetried": "Subtask restarted",
+      "subtaskRetryFailed": "Failed to retry the subtask"
+    },
+    "detail": {
+      "title": "Task details",
+      "taskId": "Task ID",
+      "basic": "Basic info",
+      "subtasks": "Subtasks",
+      "subtaskId": "Subtask ID",
+      "totalDuration": "Total duration",
+      "result": "Result"
+    },
+    "result": {
+      "pending": "{{name}} waiting to run",
+      "running": "{{name}} in progress",
+      "success": "{{name}} completed",
+      "failed": "{{name}} failed",
+      "timeout": "{{name}} timed out"
+    }
+  },
   "parserManagement": {
     "pageTitle": "Parser Management",
     "searchPlaceholder": "Search parsers...",
@@ -413,7 +488,6 @@
   },
   "rolePermission": {
     "pageTitle": "Roles & Permissions",
-    "pageSubtitle": "Manage system roles and assign permissions.",
     "newRole": "New Role",
     "system": " (System)",
     "allPermissions": "All Permissions",
@@ -486,7 +560,19 @@
       "system": {
         "read": "View System Configuration",
         "write": "Manage System Configuration"
+      },
+      "analytics": {
+        "read": "View Data Operations"
+      },
+      "task_center": {
+        "read": "View Task Center",
+        "write": "Manage Task Center"
       }
+    },
+    "permissionGroups": {
+      "platform": "Platform Management",
+      "tenant": "Tenant Management",
+      "business": "Business Features"
     }
   },
   "dataSource": {
@@ -518,7 +604,6 @@
     "actionUpdate": "Update",
     "actionUpload": "Upload",
     "allActions": "All Actions",
-    "allResources": "All Resources",
     "unknownAction": "Unknown action",
     "detail": "Details",
     "errorMessageLabel": "Error Message",
@@ -556,7 +641,6 @@
     "changesSavedWithFail": "Saved {{done}}, {{fail}} failed",
     "chinese": "Simplified Chinese",
     "defaultLanguage": "Default Language",
-    "description": "Configure platform-wide parameters and security policies",
     "english": "English",
     "lockAfter3": "After 3 failed attempts",
     "lockAfter5": "After 5 failed attempts",
@@ -588,9 +672,187 @@
     "requiredTenantId": "Please enter a tenant ID",
     "saveFailed": "Save failed",
     "searchTenants": "Search tenants...",
+    "searchLimitHint": "{{total}} tenants in total; the list API does not support keyword search yet, so matching runs over the first {{limit}} loaded tenants only.",
     "tenantId": "Tenant ID",
     "title": "Tenants",
     "updated": "Updated",
+    "view": "View",
+    "statusHint": "Users of this tenant will no longer be able to sign in once disabled",
+    "deleteTenant": "Delete Tenant",
+    "deleteConfirmTitle": "Delete this tenant?",
+    "deleteConfirmDesc": "\"{{name}}\" ({{id}}) will become inaccessible. Its business data is not cleaned up automatically, and this action cannot be undone.",
+    "deleted": "Tenant deleted",
+    "deleteFailed": "Delete failed",
+    "deleteSelfTip": "You cannot delete the tenant you are signed in to",
+    "noPermission": "Requires the {{permission}} permission",
+    "detail": {
+      "title": "Tenant Detail",
+      "back": "Back",
+      "backToList": "Back to Tenants",
+      "notFoundTitle": "Tenant Not Found",
+      "notFoundDesc": "The tenant does not exist or has been removed. Return to the tenant list and try again.",
+      "comingSoon": "Backend API is not wired yet; this action is unavailable",
+      "basicTitle": "Basic Information",
+      "name": "Tenant Name",
+      "id": "Tenant ID",
+      "status": "Tenant Status",
+      "remark": "Remark",
+      "identityTitle": "Enterprise Identity",
+      "ssoTitle": "Single Sign-On",
+      "ssoStatus": "SSO Status",
+      "ssoEnabled": "Enabled",
+      "ssoDisabled": "Disabled",
+      "rule": "Identity Subject Rule",
+      "provider": "Identity Provider",
+      "firstLogin": "First Sign-in",
+      "editConfig": "Edit Config",
+      "externalSubject": "External subject identifier (sub)",
+      "syncTitle": "User & Org Sync",
+      "syncSource": "Data Source",
+      "syncStatus": "Auto Sync",
+      "lastSync": "Last Synced",
+      "conn": "Connection",
+      "cycle": "Sync Cycle",
+      "nextSync": "Next Sync",
+      "syncNow": "Sync Now",
+      "syncNeedConfig": "Configure the data source connection first",
+      "syncEmpty": "No data source configured yet",
+      "recordsTitle": "Recent Sync Records",
+      "colTime": "Sync Time",
+      "colTrigger": "Trigger",
+      "colStatus": "Status",
+      "colChanged": "Users Changed",
+      "colFailed": "Failures",
+      "viewRecord": "View Detail",
+      "recordsEmpty": "No sync records"
+    },
+    "syncDrawer": {
+      "title": "User & Organization Sync",
+      "groupBasic": "Basic",
+      "groupAdvanced": "Advanced",
+      "advancedHint": "Directory API & credentials",
+      "sourceName": "Data source name",
+      "autoSync": "Auto sync",
+      "autoSyncDesc": "Incremental sync runs on the configured schedule when enabled",
+      "cycle": "Sync interval",
+      "cycleOpt6h": "Every 6 hours",
+      "cycleOpt12h": "Every 12 hours",
+      "cycleOpt24h": "Every 24 hours",
+      "endpoint": "API endpoint",
+      "endpointInvalid": "Must start with http:// or https://",
+      "keepUnchanged": "Leave blank to keep current",
+      "testConn": "Test connection",
+      "testOk": "Connection OK",
+      "authType": "Authentication",
+      "credential": "Token / credential",
+      "credentialPlaceholder": "Enter the credential",
+      "connUnverifiedHint": "Configuration changed or unverified — test the connection again",
+      "syncNeedVerify": "Connection has not been verified — test the connection before syncing",
+      "syncPausedHint": "Auto sync is paused — connection has not been verified",
+      "forceSync": "Sync anyway",
+      "save": "Save configuration",
+      "syncNowTitle": "Sync now",
+      "syncMode": "Sync mode",
+      "modeIncrementalDesc": "Sync only changes since the last successful run",
+      "modeFullDesc": "Pull all enterprise users and reconcile them with local accounts",
+      "syncRunning": "Syncing…",
+      "syncDone": "Sync completed",
+      "syncPartial": "Sync completed with failures — check the record detail",
+      "syncFailed": "Sync failed. Check the data source connection and credential",
+      "testFailed": "Connection failed",
+      "testFailedContract": "The endpoint did not return a standard user list (contract mismatch). Make sure the endpoint points to a service that implements the Jonex Pull API, not a portal homepage or console page.",
+      "testFailedWithTarget": "{{message}} (probed target: {{target}})",
+      "saveFailed": "Save failed"
+    },
+    "identity": {
+      "statusPending": "Pending",
+      "statusRunning": "Running",
+      "statusSuccess": "Succeeded",
+      "statusPartialFailed": "Partially failed",
+      "statusFailed": "Failed",
+      "statusCanceled": "Canceled",
+      "connUnconfigured": "Not configured",
+      "connVerified": "Verified",
+      "connUnverified": "Unverified",
+      "modeIncremental": "Incremental",
+      "modeFull": "Full",
+      "triggerManual": "Manual",
+      "triggerAuto": "Automatic",
+      "policyAutoCreate": "Create a Jonex account automatically",
+      "policySyncedOnly": "Only allow synced users to sign in",
+      "entityUser": "User",
+      "fieldUsername": "Username",
+      "fieldDisplayName": "Display name",
+      "fieldEmail": "Email",
+      "tenantMismatchTitle": "Enterprise identity is scoped to the signed-in tenant",
+      "tenantMismatchDesc": "This configuration only applies to the signed-in tenant ({{current}}). Switch to {{target}} from the top bar first, then view or edit it.",
+      "loadFailed": "Failed to load enterprise identity settings"
+    },
+    "ssoDrawer": {
+      "title": "Single Sign-On",
+      "groupBasic": "Basic",
+      "groupAdvanced": "Advanced",
+      "advancedHint": "OIDC connection parameters and login field mapping",
+      "enabled": "Single sign-on",
+      "enabledDesc": "Enterprise users can sign in to Jonex through Keycloak once enabled",
+      "loginPolicy": "First sign-in policy",
+      "policyAutoCreateDesc": "Create and link a Jonex account automatically when no identity matches",
+      "policySyncedOnlyDesc": "Only synced users may sign in — configure user sync first, otherwise enterprise users cannot sign in",
+      "subLabel": "External user identifier",
+      "clientSecret": "Client Secret",
+      "clientSecretPlaceholder": "Injected at deployment",
+      "disableConfirmTitle": "Disable single sign-on?",
+      "disableConfirmDesc": "Enterprise users will no longer be able to sign in via SSO. The existing configuration is kept.",
+      "testConn": "Test connection",
+      "testFirst": "Test the connection before enabling",
+      "testOk": "Configuration verified",
+      "testFailed": "Verification failed",
+      "saveFailed": "Save failed",
+      "lastVerified": "Last tested: {{time}}",
+      "notVerified": "Configuration changed or unverified — test the connection first",
+      "colFieldName": "Field name",
+      "colFieldMapping": "Field mapping",
+      "colRule": "Rule",
+      "ruleBasic": "Basic",
+      "ruleFixed": "Fixed",
+      "realmIssuerUrl": "Issuer URL",
+      "realmIssuerUrlHint": "Used only for connectivity checks; it does not change the login flow.",
+      "issuerUrlRequired": "Issuer URL cannot be empty",
+      "unsavedChanges": "You have unsaved changes: Test connection only probes the saved address",
+      "unsavedConfirmTitle": "You have unsaved changes",
+      "unsavedConfirmDesc": "Test connection only probes the saved address: {{target}}. The address in the input takes effect only after you save it.",
+      "unsavedConfirmDescNoTarget": "Test connection only probes the saved address. The address in the input takes effect only after you save it.",
+      "probeTargetHint": "Will probe the OIDC discovery endpoint at {{target}} (the saved address)",
+      "probeTargetHintFull": "Will probe: {{target}}",
+      "probeTargetUnset": "Will probe: (no issuer URL configured yet)",
+      "testFailedWithTarget": "{{message}} (probed target: the saved address {{target}})",
+      "realmId": "Realm",
+      "realmClientId": "Client ID",
+      "realmRedirectUri": "Redirect URI",
+      "realmStatus": "Realm status",
+      "realmEnabled": "Enabled",
+      "realmDisabled": "Disabled",
+      "realmNotOpened": "Single sign-on is not provisioned for this tenant",
+      "realmLoadFailed": "Failed to load realm information",
+      "save": "Save configuration"
+    },
+    "recordDrawer": {
+      "title": "Sync record detail",
+      "syncTime": "Sync time",
+      "syncType": "Sync type",
+      "status": "Status",
+      "userChange": "User changes",
+      "added": "Added",
+      "updated": "Updated",
+      "disabled": "Disabled",
+      "enabled": "Enabled",
+      "deleted": "Deleted",
+      "failuresTitle": "Failures ({{count}})",
+      "failuresEmpty": "No failures in this run",
+      "colEntityType": "Entity type",
+      "colEntityId": "Entity ID",
+      "colReason": "Reason"
+    },
     "builtInTenants": {
       "demo": {
         "name": "Jonex Demo Tenant",
@@ -657,6 +919,194 @@
       "oneMatchDemo": "Single-Match Test User — Demo Tenant",
       "oneMatchAlpha": "Single-Match Test User — Alpha Tenant",
       "tenantHeaderBeta": "Tenant-Header Test User — Beta Tenant"
+    }
+  },
+  "dataOperations": {
+    "tabs": {
+      "assets": "Data Assets",
+      "knowledge": "Knowledge Assets",
+      "search": "Search Analytics"
+    },
+    "common": {
+      "totalItems": "{{total}} items",
+      "retry": "Retry",
+      "neverReferenced": "Never referenced",
+      "neverUsed": "Never used",
+      "viewDetail": "View details",
+      "goToKb": "Go to knowledge base"
+    },
+    "error": {
+      "loadFailed": "Failed to load data. Please try again later."
+    },
+    "empty": {
+      "noData": "No data"
+    },
+    "assetType": {
+      "document": "Documents",
+      "table": "Tables",
+      "image": "Images",
+      "structured": "Structured Data",
+      "video": "Videos",
+      "audio": "Audio",
+      "other": "Other"
+    },
+    "stage": {
+      "parse": "Parse",
+      "extract": "Extract",
+      "compile": "Compile"
+    },
+    "kpi": {
+      "assetTotal": "Total Data Assets",
+      "sourceCount": "Data Sources",
+      "citedAssets": "Cited Data Assets",
+      "usageRate": "Asset Usage Rate",
+      "newIn7d": "Added in last 7 days",
+      "ontologyObject": "Ontology Object Instances",
+      "ontologyRelation": "Ontology Relation Instances",
+      "wikiEntity": "Wiki Entities",
+      "wikiConcept": "Wiki Concepts",
+      "searchRequests": "Search Requests (7d)",
+      "searchedKb": "Knowledge Bases Searched (7d)",
+      "searchUsers": "Search Users (7d)",
+      "avgPerUser": "Searches per User (7d)"
+    },
+    "section": {
+      "trendTitle": "Data Ingestion Trend",
+      "compositionTitle": "Asset Composition",
+      "hotAssetsTitle": "Top 10 Most-Cited Assets",
+      "hotAssetsHint": "Ranked by citations in final answers",
+      "idleAssetsTitle": "Long-Unused Assets",
+      "pipelineTitle": "Data Processing Pipeline",
+      "pipelineDesc": "Parse → Extract → Compile pipeline status",
+      "anomalyTitle": "Anomalous Assets",
+      "growthTitle": "Knowledge Asset Growth",
+      "distTitle": "Ontology Instances by Knowledge Base",
+      "idleKnowledgeTitle": "Long-Unused Knowledge",
+      "searchTrendTitle": "Search Request Trend",
+      "searchModeTitle": "Search Modes",
+      "hotQuestionsTitle": "Top 10 Frequent Questions",
+      "hotQuestionsHint": "Data updated at {{time}}",
+      "questionTopicsTitle": "Question Topic Breakdown",
+      "kbUsageTitle": "Knowledge Base Usage",
+      "serviceUsageTitle": "Domain Service Usage",
+      "hotInstancesTitle": "Top 10 Most-Used Ontology Instances",
+      "hotWikiInstancesTitle": "Top 10 Most-Used Wiki Entities",
+      "distWikiTitle": "Wiki Entities by Knowledge Base",
+      "searchModeDesc": "A single search can hit multiple pipelines, so participation rates sum above 100%",
+      "hotInstancesHint": "Ranked by citations in the last 7 days"
+    },
+    "filter": {
+      "allKb": "All knowledge bases",
+      "allSource": "All data sources",
+      "allService": "All domain services",
+      "last7d": "Last 7 days",
+      "last30d": "Last 30 days",
+      "last90d": "Last 90 days",
+      "byType": "By type",
+      "bySource": "By source",
+      "idle30": "Unused in 30 days",
+      "idle90": "Unused in 90 days",
+      "allStage": "All stages",
+      "allStatus": "All statuses",
+      "last14d": "Last 14 days"
+    },
+    "column": {
+      "assetName": "Asset Name",
+      "type": "Type",
+      "kbName": "Knowledge Base",
+      "refCount": "Citations",
+      "lastRefAt": "Last Cited",
+      "updatedAt": "Updated",
+      "action": "Actions",
+      "taskId": "Task ID",
+      "stage": "Stage",
+      "status": "Status",
+      "duration": "Duration",
+      "startedAt": "Started",
+      "reason": "Reason",
+      "occurredAt": "Occurred",
+      "handled": "Status",
+      "handledYes": "Resolved",
+      "handledNo": "Pending",
+      "instanceName": "Instance Name",
+      "objectType": "Object Type",
+      "hitCount": "Hits",
+      "adoptCount": "Adoptions",
+      "lastUsedAt": "Last Used",
+      "rank": "Rank",
+      "question": "Question",
+      "topic": "Topic",
+      "count": "Count",
+      "percent": "Share",
+      "searchCount": "Searches",
+      "serviceName": "Domain Service",
+      "ingested": "Ingested",
+      "kbTitle": "Knowledge Base"
+    },
+    "pipeline": {
+      "total": "Total Assets",
+      "parsed": "Parsed",
+      "extracted": "Extracted",
+      "compiled": "Compiled",
+      "conversionTitle": "Stage Conversion",
+      "convExtract": "Parsed → Extracted",
+      "convCompile": "Extracted → Compiled",
+      "convTotal": "Overall",
+      "taskStatus": "Task Status",
+      "avgDuration": "Avg. Duration"
+    },
+    "anomaly": {
+      "failedCount": "failed",
+      "latest": "Latest",
+      "desc": "Failed assets require manual investigation",
+      "parseFailed": "Parse Failures",
+      "extractFailed": "Extraction Failures",
+      "compileFailed": "Compilation Failures",
+      "drawerTitle": "Anomaly Details",
+      "highlightHint": "Anomalous fields highlighted",
+      "suggestion": "Recommended Action",
+      "suggestionText": "Re-process this asset in its knowledge base, or adjust the parser configuration and retry.",
+      "field": {
+        "assetName": "Asset Name",
+        "assetType": "Asset Type",
+        "kbName": "Knowledge Base",
+        "stage": "Failed Stage",
+        "reason": "Reason",
+        "occurredAt": "Occurred At",
+        "source": "Source",
+        "retryCount": "Retries"
+      }
+    },
+    "scope": {
+      "label": "Analysis Target",
+      "ontology": "Ontology",
+      "wiki": "Wiki",
+      "activeInstances": "Active instances (7d)",
+      "activityRate": "Instance activity"
+    },
+    "searchMode": {
+      "ontology": "Ontology Search",
+      "wiki": "Wiki Search",
+      "rag": "RAG Search",
+      "participationRate": "Participation"
+    },
+    "kbType": {
+      "lightrag": "Knowledge Base",
+      "openkb": "OpenKB",
+      "jonex_wiki": "Jonex Wiki"
+    },
+    "topic": {
+      "enterpriseCredit": "Enterprise Credit",
+      "enterpriseExperience": "Enterprise Experience",
+      "productRule": "Product Rules",
+      "riskManagement": "Risk Management",
+      "other": "Other"
+    },
+    "sourceType": {
+      "upload": "File Upload",
+      "api": "API Pull",
+      "storage": "Object Storage",
+      "apiPush": "Inbound Push"
     }
   }
 }

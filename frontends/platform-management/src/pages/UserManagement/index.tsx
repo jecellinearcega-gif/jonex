@@ -3,6 +3,7 @@ import { Input, Button, Table, Tag, Select, Result, Alert } from 'antd';
 import { SearchOutlined, PlusOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { readCachedUser, isPlatformAdmin, type ShellUser } from '@jonex/shell-sdk';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 import { listAllUsers, listUsers, type UserItem } from '../../api/users';
 import { listTenants, getTenantUserCounts, type TenantItem } from '../../api/tenants';
 import { tenantDisplay } from '../../utils/tenantDisplay';
@@ -57,9 +58,7 @@ export default function UserManagement() {
       ]);
       setUsers(ur.items);
       setTruncated(
-        isAdmin
-          ? ur.items.length >= ALL_USERS_BACKEND_CAP
-          : typeof ur.total === 'number' && ur.total > ur.items.length,
+        isAdmin ? ur.items.length >= ALL_USERS_BACKEND_CAP : typeof ur.total === 'number' && ur.total > ur.items.length,
       );
       setTenants(tr.items.map((t) => ({ ...t, userCount: counts[t.id] || 0 })));
     } catch (e: unknown) {
@@ -215,102 +214,101 @@ export default function UserManagement() {
     );
 
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1>{t('userManagement.title')}</h1>
-      </div>
+    <>
+      <PageHeader title={t('userManagement.title')} />
+      <PageContent showCard={false}>
+        {truncated && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={t('userManagement.listTruncated', {
+              loaded: users.length,
+              defaultValue: '用户数超出单次加载上限，当前仅展示前 {{loaded}} 条。搜索与筛选只在已加载数据内生效。',
+            })}
+          />
+        )}
 
-      {truncated && (
-        <Alert
-          type="warning"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message={t('userManagement.listTruncated', {
-            loaded: users.length,
-            defaultValue:
-              '用户数超出单次加载上限，当前仅展示前 {{loaded}} 条。搜索与筛选只在已加载数据内生效。',
-          })}
-        />
-      )}
-
-      <div className="user-layout">
-        <div className="tenant-panel">
-          <div className="tenant-panel-header">{t('userManagement.tenantList')}</div>
-          <div className="tenant-list">
-            {isAdmin && (
-              <div
-                className={`tenant-item${activeTenant === 'all' ? ' active' : ''}`}
-                onClick={() => setActiveTenant('all')}
-              >
-                <span>{t('userManagement.allTenants')}</span>
-                <span className="tenant-count">{users.length}</span>
-              </div>
-            )}
-            {tenants.map((tenant) => (
-              <div
-                key={tenant.id}
-                className={`tenant-item${activeTenant === tenant.id ? ' active' : ''}`}
-                onClick={() => setActiveTenant(tenant.id)}
-              >
-                <span>{tenantDisplay(tenant, t).name}</span>
-                <span className="tenant-count">{tenant.userCount}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="user-main">
-          <div className="yx-card">
-            <div className="yx-toolbar">
-              <div style={{ display: 'flex', gap: 12, alignItems: 'center', flex: 1 }}>
-                <Input
-                  prefix={<SearchOutlined />}
-                  placeholder={t('userManagement.searchUsers')}
-                  style={{ width: 200 }}
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  allowClear
-                />
-                <Select
-                  placeholder={t('userManagement.allRoles')}
-                  style={{ width: 160 }}
-                  value={roleFilter || undefined}
-                  onChange={(v) => setRoleFilter(v || '')}
-                  allowClear
-                  options={Array.from(
-                    new Set(users.flatMap((u) => u.role_names ?? [])),
-                  ).map((n) => ({ label: n, value: n }))}
-                />
-              </div>
-              {canManage && (
-                <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-                  {t('userManagement.createUser')}
-                </Button>
+        <div className="user-layout">
+          <div className="tenant-panel">
+            <div className="tenant-panel-header">{t('userManagement.tenantList')}</div>
+            <div className="tenant-list">
+              {isAdmin && (
+                <div
+                  className={`tenant-item${activeTenant === 'all' ? ' active' : ''}`}
+                  onClick={() => setActiveTenant('all')}
+                >
+                  <span>{t('userManagement.allTenants')}</span>
+                  <span className="tenant-count">{users.length}</span>
+                </div>
               )}
+              {tenants.map((tenant) => (
+                <div
+                  key={tenant.id}
+                  className={`tenant-item${activeTenant === tenant.id ? ' active' : ''}`}
+                  onClick={() => setActiveTenant(tenant.id)}
+                >
+                  <span>{tenantDisplay(tenant, t).name}</span>
+                  <span className="tenant-count">{tenant.userCount}</span>
+                </div>
+              ))}
             </div>
-            <Table
-              columns={columns}
-              dataSource={filtered}
-              loading={loading}
-              rowKey="id"
-              pagination={{
-                total: filtered.length,
-                pageSize: 10,
-                showTotal: (total) => t('common.totalPage', { total }),
-              }}
-              size="middle"
-            />
+          </div>
+
+          <div className="user-main">
+            <div className="yx-card">
+              <div className="yx-toolbar">
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center', flex: 1 }}>
+                  <Input
+                    prefix={<SearchOutlined />}
+                    placeholder={t('userManagement.searchUsers')}
+                    style={{ width: 200 }}
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    allowClear
+                  />
+                  <Select
+                    placeholder={t('userManagement.allRoles')}
+                    style={{ width: 160 }}
+                    value={roleFilter || undefined}
+                    onChange={(v) => setRoleFilter(v || '')}
+                    allowClear
+                    options={Array.from(new Set(users.flatMap((u) => u.role_names ?? []))).map((n) => ({
+                      label: n,
+                      value: n,
+                    }))}
+                  />
+                </div>
+                {canManage && (
+                  <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+                    {t('userManagement.createUser')}
+                  </Button>
+                )}
+              </div>
+              <Table
+                columns={columns}
+                dataSource={filtered}
+                loading={loading}
+                rowKey="id"
+                pagination={{
+                  total: filtered.length,
+                  pageSize: 10,
+                  showTotal: (total) => t('common.totalPage', { total }),
+                }}
+                size="middle"
+              />
+            </div>
           </div>
         </div>
-      </div>
 
-      {canManage && (
-        <>
-          <UserFormModal ref={formModalRef} tenants={tenants} onSaved={load} />
-          <ToggleStatusModal ref={toggleStatusModalRef} getUserDisplayName={displayName} onSaved={load} />
-          <DeleteConfirmModal ref={deleteConfirmModalRef} getUserDisplayName={displayName} onSaved={load} />
-        </>
-      )}
-    </div>
+        {canManage && (
+          <>
+            <UserFormModal ref={formModalRef} tenants={tenants} onSaved={load} />
+            <ToggleStatusModal ref={toggleStatusModalRef} getUserDisplayName={displayName} onSaved={load} />
+            <DeleteConfirmModal ref={deleteConfirmModalRef} getUserDisplayName={displayName} onSaved={load} />
+          </>
+        )}
+      </PageContent>
+    </>
   );
 }

@@ -10,6 +10,7 @@ import {
   FileTextOutlined,
   CloudServerOutlined,
   CodeOutlined,
+  BarChartOutlined,
 } from '@ant-design/icons';
 
 /** 侧边栏菜单项 */
@@ -42,6 +43,7 @@ export const IconMap: Record<string, ComponentType> = {
   FileTextOutlined,
   CloudServerOutlined,
   CodeOutlined,
+  BarChartOutlined,
 };
 
 interface MenuRoute {

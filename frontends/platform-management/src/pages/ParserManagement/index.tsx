@@ -10,6 +10,7 @@ import {
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Input } from 'antd';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 import { listParsers, type ParserItem } from '@/api/parsers';
 import './index.css';
 
@@ -224,75 +225,73 @@ export default function ParserManagement() {
   }, [parsers, search, prototypeParsers, t]);
 
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0b2b5c', margin: 0 }}>
-          {t('parserManagement.pageTitle')}
-        </h1>
-      </div>
-      <div style={{ marginBottom: 20, marginTop: 8 }}>
-        <Input
-          prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
-          placeholder={t('parserManagement.searchPlaceholder')}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{ width: 240 }}
-        />
-      </div>
-
-      {error && (
-        <div className="parser-page-error">
-          <span>{error}</span>
-          <Button onClick={() => void loadParsers()}>{t('common.retry')}</Button>
+    <>
+      <PageHeader title={t('parserManagement.pageTitle')} />
+      <PageContent showCard={false}>
+        <div style={{ marginBottom: 20, marginTop: 8 }}>
+          <Input
+            prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
+            placeholder={t('parserManagement.searchPlaceholder')}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{ width: 240 }}
+          />
         </div>
-      )}
 
-      <div className="parser-grid">
-        {loading ? (
-          <div className="parser-state">{t('parserManagement.loading')}</div>
-        ) : filtered.length === 0 ? (
-          <div className="parser-state">{t('parserManagement.empty')}</div>
-        ) : (
-          filtered.map((parser) => {
-            const isActive = parser.status === 'active';
-            const version = String(parser.config_json?.version || '--');
-            const processCount = formatProcessCount(parser.config_json?.process_count, isActive);
-
-            return (
-              <div key={parser.id} className={`parser-card${isActive ? '' : ' grey'}`}>
-                <div
-                  className="parser-icon"
-                  style={{ color: colorForType(parser.parser_type, isActive, prototypeParsers) }}
-                >
-                  {iconForType(parser.parser_type, prototypeParsers)}
-                </div>
-                {!isActive && <div className="future-tag">{t('parserManagement.comingSoon')}</div>}
-                <h3>
-                  {parser.name}{' '}
-                  <span style={{ fontSize: 12, color: isActive ? '#22c55e' : '#94a3b8', fontWeight: 400 }}>
-                    {isActive ? t('status.enabled') : t('status.disabled')}
-                  </span>
-                </h3>
-                <div className="parser-desc">{parserDesc(parser, prototypeParsers, t)}</div>
-                <div className="parser-meta">
-                  <span>
-                    {t('parserManagement.version')} {version}
-                  </span>
-                  <span>
-                    {t('parserManagement.processCount')} {processCount}
-                  </span>
-                </div>
-                {displayFields(parser, prototypeParsers, t).map((row) => (
-                  <div key={row.label} className="form-row">
-                    <label>{row.label}</label>
-                    <div style={{ fontSize: 13, color: '#334155', padding: '2px 0' }}>{row.value}</div>
-                  </div>
-                ))}
-              </div>
-            );
-          })
+        {error && (
+          <div className="parser-page-error">
+            <span>{error}</span>
+            <Button onClick={() => void loadParsers()}>{t('common.retry')}</Button>
+          </div>
         )}
-      </div>
-    </div>
+
+        <div className="parser-grid">
+          {loading ? (
+            <div className="parser-state">{t('parserManagement.loading')}</div>
+          ) : filtered.length === 0 ? (
+            <div className="parser-state">{t('parserManagement.empty')}</div>
+          ) : (
+            filtered.map((parser) => {
+              const isActive = parser.status === 'active';
+              const version = String(parser.config_json?.version || '--');
+              const processCount = formatProcessCount(parser.config_json?.process_count, isActive);
+
+              return (
+                <div key={parser.id} className={`parser-card${isActive ? '' : ' grey'}`}>
+                  <div
+                    className="parser-icon"
+                    style={{ color: colorForType(parser.parser_type, isActive, prototypeParsers) }}
+                  >
+                    {iconForType(parser.parser_type, prototypeParsers)}
+                  </div>
+                  {!isActive && <div className="future-tag">{t('parserManagement.comingSoon')}</div>}
+                  <h3>
+                    {parser.name}{' '}
+                    <span style={{ fontSize: 12, color: isActive ? '#22c55e' : '#94a3b8', fontWeight: 400 }}>
+                      {isActive ? t('status.enabled') : t('status.disabled')}
+                    </span>
+                  </h3>
+                  <div className="parser-desc">{parserDesc(parser, prototypeParsers, t)}</div>
+                  <div className="parser-meta">
+                    <span>
+                      {t('parserManagement.version')} {version}
+                    </span>
+                    <span>
+                      {t('parserManagement.processCount')} {processCount}
+                    </span>
+                  </div>
+                  {displayFields(parser, prototypeParsers, t).map((row) => (
+                    <div key={row.label} className="form-row">
+                      <label>{row.label}</label>
+                      <div style={{ fontSize: 13, color: '#334155', padding: '2px 0' }}>{row.value}</div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </PageContent>
+    </>
   );
 }

@@ -1,6 +1,7 @@
 import { Card, Empty } from 'antd';
 import { DashboardOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 
 /**
  * 全局系统监控 —— 占位页（研发中）。
@@ -16,22 +17,18 @@ export default function SystemMonitor() {
   const { t } = useTranslation();
 
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1>{t('systemMonitor.title')}</h1>
-        <p style={{ color: '#64748b', margin: '4px 0 0', fontSize: 14 }}>
-          {t('systemMonitor.description')}
-        </p>
-      </div>
+    <>
+      <PageHeader title={t('systemMonitor.title')} style={{ marginBottom: 4 }} />
+      <p style={{ color: '#64748b', margin: '0 0 16px', fontSize: 14 }}>{t('systemMonitor.description')}</p>
 
-      <Card>
-        <Empty
-          image={<DashboardOutlined style={{ fontSize: 56, color: '#cbd5e1' }} />}
-          description={
-            <span style={{ color: '#64748b' }}>{t('systemMonitor.underDevelopment')}</span>
-          }
-        />
-      </Card>
-    </div>
+      <PageContent showCard={false}>
+        <Card>
+          <Empty
+            image={<DashboardOutlined style={{ fontSize: 56, color: '#cbd5e1' }} />}
+            description={<span style={{ color: '#64748b' }}>{t('systemMonitor.underDevelopment')}</span>}
+          />
+        </Card>
+      </PageContent>
+    </>
   );
 }

@@ -11,8 +11,9 @@ import {
   ThunderboltOutlined,
 } from '@ant-design/icons';
 import { colors, radius } from '@jonex/platform-theme/tokens';
-import { MOCK_COMPILE_TASKS, type CompileTask } from '../../data/mock';
+import { MOCK_COMPILE_TASKS } from '../../data/mock';
 import { useTranslation } from 'react-i18next';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 
 export default function KnowledgeCompile() {
   const navigate = useNavigate();
@@ -130,104 +131,104 @@ export default function KnowledgeCompile() {
   ];
 
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1>{t('knowledgeCompile.title')}</h1>
-        <p style={{ color: colors.textSecondary, margin: '4px 0 0', fontSize: 14 }}>
-          {t('knowledgeCompile.description')}
-        </p>
-      </div>
+    <>
+      <PageHeader title={t('knowledgeCompile.title')} style={{ marginBottom: 4 }} />
+      <p style={{ color: colors.textSecondary, margin: '0 0 16px', fontSize: 14 }}>
+        {t('knowledgeCompile.description')}
+      </p>
 
-      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-        {stats.map((s) => (
-          <Col xs={24} sm={12} md={6} key={s.title}>
-            <Card
-              style={{ borderRadius: radius.card, border: `1px solid ${colors.border}` }}
-              styles={{ body: { padding: '20px 24px' } }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <PageContent showCard={false}>
+        <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+          {stats.map((s) => (
+            <Col xs={24} sm={12} md={6} key={s.title}>
+              <Card
+                style={{ borderRadius: radius.card, border: `1px solid ${colors.border}` }}
+                styles={{ body: { padding: '20px 24px' } }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div
+                    style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: 10,
+                      background: s.bg,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: 20,
+                      color: s.color,
+                    }}
+                  >
+                    {s.icon}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: colors.textPrimary }}>{s.value}</div>
+                    <div style={{ fontSize: 12, color: colors.textMuted }}>{s.title}</div>
+                  </div>
+                </div>
+              </Card>
+            </Col>
+          ))}
+        </Row>
+
+        <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+          {subPages.map((p) => (
+            <Col xs={24} sm={12} md={6} key={p.title}>
+              <div
+                onClick={() => navigate(p.path)}
+                style={{
+                  background: colors.white,
+                  border: `1px solid ${colors.border}`,
+                  borderRadius: radius.card,
+                  padding: '18px 20px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 14,
+                  transition: 'all 0.2s',
+                }}
+              >
                 <div
                   style={{
-                    width: 44,
-                    height: 44,
+                    width: 40,
+                    height: 40,
                     borderRadius: 10,
-                    background: s.bg,
+                    background: `${p.color}15`,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    fontSize: 20,
-                    color: s.color,
+                    fontSize: 18,
+                    color: p.color,
                   }}
                 >
-                  {s.icon}
+                  {p.icon}
                 </div>
                 <div>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: colors.textPrimary }}>{s.value}</div>
-                  <div style={{ fontSize: 12, color: colors.textMuted }}>{s.title}</div>
+                  <div style={{ fontSize: 14, fontWeight: 500, color: colors.textPrimary }}>{p.title}</div>
+                  <div style={{ fontSize: 12, color: colors.textMuted }}>{p.desc}</div>
                 </div>
               </div>
-            </Card>
-          </Col>
-        ))}
-      </Row>
+            </Col>
+          ))}
+        </Row>
 
-      <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
-        {subPages.map((p) => (
-          <Col xs={24} sm={12} md={6} key={p.title}>
-            <div
-              onClick={() => navigate(p.path)}
-              style={{
-                background: colors.white,
-                border: `1px solid ${colors.border}`,
-                borderRadius: radius.card,
-                padding: '18px 20px',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 14,
-                transition: 'all 0.2s',
-              }}
-            >
-              <div
-                style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 10,
-                  background: `${p.color}15`,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: 18,
-                  color: p.color,
-                }}
-              >
-                {p.icon}
-              </div>
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 500, color: colors.textPrimary }}>{p.title}</div>
-                <div style={{ fontSize: 12, color: colors.textMuted }}>{p.desc}</div>
-              </div>
-            </div>
-          </Col>
-        ))}
-      </Row>
-
-      <div className="yx-card">
-        <h3
-          style={{
-            margin: '0 0 16px',
-            fontSize: 16,
-            fontWeight: 600,
-            color: colors.textPrimary,
-            paddingBottom: 12,
-            borderBottom: `1px solid ${colors.border}`,
-          }}
-        >
-          <FileTextOutlined style={{ marginRight: 8, color: colors.accent }} />
-          {t('knowledgeCompile.recentTasks')}
-        </h3>
-        <Table columns={columns} dataSource={MOCK_COMPILE_TASKS} rowKey="id" pagination={false} size="middle" />
-      </div>
-    </div>
+        <div className="yx-card">
+          <h3
+            style={{
+              margin: '0 0 16px',
+              fontSize: 16,
+              fontWeight: 600,
+              color: colors.textPrimary,
+              paddingBottom: 12,
+              borderBottom: `1px solid ${colors.border}`,
+            }}
+          >
+            <FileTextOutlined style={{ marginRight: 8, color: colors.accent }} />
+            {t('knowledgeCompile.recentTasks')}
+          </h3>
+          <Table columns={columns} dataSource={MOCK_COMPILE_TASKS} rowKey="id" pagination={false} size="middle" />
+        </div>
+      </PageContent>
+    </>
   );
 }

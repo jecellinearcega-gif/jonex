@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Input, Button, Table, Tag, Select, Space, Spin, Result, DatePicker } from 'antd';
+import { Input, Button, Table, Tag, Select, Space, Result, DatePicker } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import dayjs from 'dayjs';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 import LogDetailModal from './LogDetailModal';
 import {
   listAuditLogs,
@@ -96,7 +97,6 @@ export default function OperationLog() {
   const [action, setAction] = useState<string | undefined>();
   const [dateRange, setDateRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>(null);
   const [detailItem, setDetailItem] = useState<AuditLogItem | null>(null);
-  const [resource, setResource] = useState<string | undefined>();
 
   // ---- 操作类型下拉动态数据 ----
   const [actionOptions, setActionOptions] = useState<AuditActionOption[]>([]);
@@ -125,24 +125,19 @@ export default function OperationLog() {
     };
   }, []);
 
-  // ---- 资源类型下拉动态数据 ----
+  // ---- 资源类型映射 ----
+  // 筛选已下线，但表格「资源」列与详情弹窗仍用它把码值翻成可读名；
+  // 取不到时 getResourceLabel 会退回 resource_name / resource_id，故失败不提示
   const [resourceOptions, setResourceOptions] = useState<AuditResourceType[]>([]);
-  const [resourcesLoading, setResourcesLoading] = useState(true);
-  const [resourcesError, setResourcesError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    setResourcesLoading(true);
-    setResourcesError(false);
     listAuditResourceTypes()
       .then((opts) => {
         if (!cancelled) setResourceOptions(opts);
       })
       .catch(() => {
-        if (!cancelled) setResourcesError(true);
-      })
-      .finally(() => {
-        if (!cancelled) setResourcesLoading(false);
+        /* 映射不可用：getResourceLabel 退回 resource_name / resource_id */
       });
     return () => {
       cancelled = true;
@@ -158,7 +153,6 @@ export default function OperationLog() {
           page: p,
           page_size: ps ?? pageSize,
           action: action || undefined,
-          resource: resource || undefined,
           keyword: kw || keyword || undefined,
           start_time: dateRange?.[0]?.startOf('day').toISOString(),
           end_time: dateRange?.[1]?.endOf('day').toISOString(),
@@ -172,7 +166,7 @@ export default function OperationLog() {
         setLoading(false);
       }
     },
-    [action, resource, dateRange, keyword, pageSize, t],
+    [action, dateRange, keyword, pageSize, t],
   );
 
   useEffect(() => {
@@ -261,88 +255,73 @@ export default function OperationLog() {
     );
 
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1>{t('operationLog.title')}</h1>
-      </div>
-      <div className="yx-card">
-        <Space style={{ marginBottom: 16 }} wrap>
-          <Input.Search
-            prefix={<SearchOutlined />}
-            placeholder={t('operationLog.searchLog')}
-            style={{ width: 180 }}
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-            onSearch={(v) => load(1, undefined, v)}
-            onClear={() => load(1, undefined, '')}
-            allowClear
+    <>
+      <PageHeader title={t('operationLog.title')} />
+      <PageContent showCard={false}>
+        <div className="yx-card">
+          <Space style={{ marginBottom: 16 }} wrap>
+            <Input.Search
+              prefix={<SearchOutlined />}
+              placeholder={t('operationLog.searchLog')}
+              style={{ width: 180 }}
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              onSearch={(v) => load(1, undefined, v)}
+              onClear={() => load(1, undefined, '')}
+              allowClear
+            />
+            <Select
+              placeholder={t('operationLog.allActions')}
+              style={{ width: 130 }}
+              value={action}
+              onChange={(v) => setAction(v)}
+              allowClear
+              loading={actionsLoading}
+              options={actionOptions.map((o) => ({
+                label: getOptionLabel(o, locale, t('operationLog.unknownAction')),
+                value: o.action,
+              }))}
+              notFoundContent={
+                actionsLoading ? t('common.loading') : actionsError ? t('common.loadFailed') : t('common.noData')
+              }
+            />
+            <RangePicker
+              value={dateRange}
+              onChange={(v) => setDateRange(v as [dayjs.Dayjs, dayjs.Dayjs] | null)}
+              allowClear
+              style={{ width: 240 }}
+            />
+            <Button onClick={() => load(1)}>{t('operationLog.refresh')}</Button>
+          </Space>
+          <Table
+            columns={columns}
+            dataSource={logs}
+            rowKey="id"
+            loading={loading}
+            scroll={{ y: 'calc(100vh - 340px)' }}
+            pagination={{
+              current: page,
+              total,
+              pageSize,
+              onChange: (p, ps) => {
+                setPageSize(ps);
+                load(p, ps);
+              },
+              showTotal: (total) => t('common.totalPage', { total }),
+            }}
+            size="small"
           />
-          <Select
-            placeholder={t('operationLog.allActions')}
-            style={{ width: 130 }}
-            value={action}
-            onChange={(v) => setAction(v)}
-            allowClear
-            loading={actionsLoading}
-            options={actionOptions.map((o) => ({
-              label: getOptionLabel(o, locale, t('operationLog.unknownAction')),
-              value: o.action,
-            }))}
-            notFoundContent={
-              actionsLoading ? t('common.loading') : actionsError ? t('common.loadFailed') : t('common.noData')
-            }
-          />
-          <Select
-            placeholder={t('operationLog.allResources')}
-            style={{ width: 130 }}
-            value={resource}
-            onChange={(v) => setResource(v)}
-            allowClear
-            loading={resourcesLoading}
-            options={resourceOptions.map((o) => ({
-              label: locale.startsWith('zh') ? o.label_zh : o.label_en,
-              value: o.resource,
-            }))}
-            notFoundContent={
-              resourcesLoading ? t('common.loading') : resourcesError ? t('common.loadFailed') : t('common.noData')
-            }
-          />
-          <RangePicker
-            value={dateRange}
-            onChange={(v) => setDateRange(v as [dayjs.Dayjs, dayjs.Dayjs] | null)}
-            allowClear
-            style={{ width: 240 }}
-          />
-          <Button onClick={() => load(1)}>{t('operationLog.refresh')}</Button>
-        </Space>
-        <Table
-          columns={columns}
-          dataSource={logs}
-          rowKey="id"
-          loading={loading}
-          scroll={{ y: 'calc(100vh - 340px)' }}
-          pagination={{
-            current: page,
-            total,
-            pageSize,
-            onChange: (p, ps) => {
-              setPageSize(ps);
-              load(p, ps);
-            },
-            showTotal: (total) => t('common.totalPage', { total }),
-          }}
-          size="small"
-        />
-      </div>
+        </div>
 
-      <LogDetailModal
-        open={!!detailItem}
-        detailItem={detailItem}
-        actionOptions={actionOptions}
-        resourceOptions={resourceOptions}
-        locale={locale}
-        onClose={() => setDetailItem(null)}
-      />
-    </div>
+        <LogDetailModal
+          open={!!detailItem}
+          detailItem={detailItem}
+          actionOptions={actionOptions}
+          resourceOptions={resourceOptions}
+          locale={locale}
+          onClose={() => setDetailItem(null)}
+        />
+      </PageContent>
+    </>
   );
 }

@@ -1,9 +1,10 @@
 import React from 'react';
-import { Input, Button, Table, Tag, message, Card } from 'antd';
+import { Input, Button, Table, Tag, message } from 'antd';
 import { SearchOutlined, ThunderboltOutlined, ReloadOutlined } from '@ant-design/icons';
-import { colors, radius } from '@jonex/platform-theme/tokens';
+import { colors } from '@jonex/platform-theme/tokens';
 import { MOCK_COMPILE_TASKS, type CompileTask } from '../../data/mock';
 import { useTranslation } from 'react-i18next';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 
 export default function KnowledgeCompileCompile() {
   const { t } = useTranslation();
@@ -108,35 +109,35 @@ export default function KnowledgeCompileCompile() {
   ];
 
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1>{t('knowledgeCompile.compileTitle')}</h1>
-        <p style={{ color: colors.textSecondary, margin: '4px 0 0', fontSize: 14 }}>
-          {t('knowledgeCompile.compileDesc')}
-        </p>
-      </div>
+    <>
+      <PageHeader title={t('knowledgeCompile.compileTitle')} style={{ marginBottom: 4 }} />
+      <p style={{ color: colors.textSecondary, margin: '0 0 16px', fontSize: 14 }}>
+        {t('knowledgeCompile.compileDesc')}
+      </p>
 
-      <div className="yx-card">
-        <div className="yx-toolbar" style={{ flexWrap: 'wrap' }}>
-          <Input
-            prefix={<SearchOutlined />}
-            placeholder={t('knowledgeCompile.searchTasks')}
-            style={{ width: 240 }}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+      <PageContent showCard={false}>
+        <div className="yx-card">
+          <div className="yx-toolbar" style={{ flexWrap: 'wrap' }}>
+            <Input
+              prefix={<SearchOutlined />}
+              placeholder={t('knowledgeCompile.searchTasks')}
+              style={{ width: 240 }}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <Button type="primary" icon={<ThunderboltOutlined />}>
+              {t('knowledgeCompile.newCompileTask')}
+            </Button>
+          </div>
+          <Table
+            columns={columns}
+            dataSource={filtered}
+            rowKey="id"
+            pagination={{ total: filtered.length, pageSize: 10 }}
+            size="middle"
           />
-          <Button type="primary" icon={<ThunderboltOutlined />}>
-            {t('knowledgeCompile.newCompileTask')}
-          </Button>
         </div>
-        <Table
-          columns={columns}
-          dataSource={filtered}
-          rowKey="id"
-          pagination={{ total: filtered.length, pageSize: 10 }}
-          size="middle"
-        />
-      </div>
-    </div>
+      </PageContent>
+    </>
   );
 }

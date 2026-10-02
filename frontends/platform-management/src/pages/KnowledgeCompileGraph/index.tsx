@@ -3,6 +3,7 @@ import { Card, Row, Col, Tag, Table } from 'antd';
 import { ApartmentOutlined, NodeIndexOutlined, LinkOutlined } from '@ant-design/icons';
 import { colors, radius } from '@jonex/platform-theme/tokens';
 import { useTranslation } from 'react-i18next';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 
 const graphStats = [
   { title: 'knowledgeCompile.totalEntityNodes', value: '17,100', icon: <NodeIndexOutlined />, color: colors.accent },
@@ -39,87 +40,85 @@ export default function KnowledgeCompileGraph() {
   ];
 
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1>{t('knowledgeCompile.graphTitle')}</h1>
-        <p style={{ color: colors.textSecondary, margin: '4px 0 0', fontSize: 14 }}>
-          {t('knowledgeCompile.graphDesc')}
-        </p>
-      </div>
+    <>
+      <PageHeader title={t('knowledgeCompile.graphTitle')} style={{ marginBottom: 4 }} />
+      <p style={{ color: colors.textSecondary, margin: '0 0 16px', fontSize: 14 }}>{t('knowledgeCompile.graphDesc')}</p>
 
-      <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
-        {graphStats.map((s) => (
-          <Col xs={24} sm={8} key={s.title}>
-            <Card
-              style={{ borderRadius: radius.card, border: `1px solid ${colors.border}` }}
-              styles={{ body: { padding: '20px 24px' } }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div
-                  style={{
-                    width: 44,
-                    height: 44,
-                    borderRadius: 10,
-                    background: `${s.color}15`,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: 20,
-                    color: s.color,
-                  }}
-                >
-                  {s.icon}
+      <PageContent showCard={false}>
+        <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+          {graphStats.map((s) => (
+            <Col xs={24} sm={8} key={s.title}>
+              <Card
+                style={{ borderRadius: radius.card, border: `1px solid ${colors.border}` }}
+                styles={{ body: { padding: '20px 24px' } }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div
+                    style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: 10,
+                      background: `${s.color}15`,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: 20,
+                      color: s.color,
+                    }}
+                  >
+                    {s.icon}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: colors.textPrimary }}>{s.value}</div>
+                    <div style={{ fontSize: 12, color: colors.textMuted }}>{t(s.title)}</div>
+                  </div>
                 </div>
-                <div>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: colors.textPrimary }}>{s.value}</div>
-                  <div style={{ fontSize: 12, color: colors.textMuted }}>{t(s.title)}</div>
-                </div>
-              </div>
-            </Card>
-          </Col>
-        ))}
-      </Row>
+              </Card>
+            </Col>
+          ))}
+        </Row>
 
-      <Card
-        style={{ borderRadius: radius.card, border: `1px solid ${colors.border}`, marginBottom: 20 }}
-        styles={{ body: { padding: 24 } }}
-      >
-        <div
-          style={{
-            height: 320,
-            background: colors.overlay,
-            borderRadius: 12,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexDirection: 'column',
-            gap: 12,
-          }}
+        <Card
+          style={{ borderRadius: radius.card, border: `1px solid ${colors.border}`, marginBottom: 20 }}
+          styles={{ body: { padding: 24 } }}
         >
-          <ApartmentOutlined style={{ fontSize: 64, color: colors.textMuted }} />
-          <div style={{ fontSize: 15, color: colors.textSecondary }}>{t('knowledgeCompile.graphPlaceholder')}</div>
-          <div style={{ fontSize: 12, color: colors.textMuted }}>{t('knowledgeCompile.graphPlaceholderDesc')}</div>
-        </div>
-      </Card>
+          <div
+            style={{
+              height: 320,
+              background: colors.overlay,
+              borderRadius: 12,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexDirection: 'column',
+              gap: 12,
+            }}
+          >
+            <ApartmentOutlined style={{ fontSize: 64, color: colors.textMuted }} />
+            <div style={{ fontSize: 15, color: colors.textSecondary }}>{t('knowledgeCompile.graphPlaceholder')}</div>
+            <div style={{ fontSize: 12, color: colors.textMuted }}>{t('knowledgeCompile.graphPlaceholderDesc')}</div>
+          </div>
+        </Card>
 
-      <Card
-        style={{ borderRadius: radius.card, border: `1px solid ${colors.border}` }}
-        styles={{ body: { padding: 24 } }}
-      >
-        <h3
-          style={{
-            margin: '0 0 16px',
-            fontSize: 16,
-            fontWeight: 600,
-            color: colors.textPrimary,
-            paddingBottom: 12,
-            borderBottom: `1px solid ${colors.border}`,
-          }}
+        <Card
+          style={{ borderRadius: radius.card, border: `1px solid ${colors.border}` }}
+          styles={{ body: { padding: 24 } }}
         >
-          {t('knowledgeCompile.entityList')}
-        </h3>
-        <Table columns={columns} dataSource={mockEntities} rowKey="id" pagination={false} size="middle" />
-      </Card>
-    </div>
+          <h3
+            style={{
+              margin: '0 0 16px',
+              fontSize: 16,
+              fontWeight: 600,
+              color: colors.textPrimary,
+              paddingBottom: 12,
+              borderBottom: `1px solid ${colors.border}`,
+            }}
+          >
+            {t('knowledgeCompile.entityList')}
+          </h3>
+          <Table columns={columns} dataSource={mockEntities} rowKey="id" pagination={false} size="middle" />
+        </Card>
+      </PageContent>
+    </>
   );
 }
