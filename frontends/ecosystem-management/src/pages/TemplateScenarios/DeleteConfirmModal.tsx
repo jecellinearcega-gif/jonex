@@ -18,17 +18,13 @@ import {
   getTemplateRelationDisplay,
   getTemplateScenarioDisplay,
 } from '../../utils/builtInTemplateDisplay';
+import { getErrorMessage } from '@jonex/shared-lib';
 
 type DeletingItem =
   | { type: 'scene'; item: TemplateScenario }
   | { type: 'object'; item: TemplateObject }
   | { type: 'relation'; item: TemplateRelation }
   | { type: 'constraint'; item: TemplateConstraint };
-
-function getErrorMessage(error: unknown, fallback: string) {
-  const err = error as { response?: { data?: { message?: string } }; message?: string };
-  return err.response?.data?.message || err.message || fallback;
-}
 
 export interface DeleteConfirmModalHandle {
   open: (item: DeletingItem) => void;

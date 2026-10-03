@@ -69,7 +69,6 @@ export default function VersionDetailModal({ open, version, onClose }: VersionDe
                 border: '1px solid #e8edf3',
                 borderRadius: 8,
                 padding: 14,
-                fontFamily: "'Courier New', monospace",
                 fontSize: 12,
                 color: '#475569',
                 lineHeight: 1.7,

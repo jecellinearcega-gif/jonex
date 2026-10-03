@@ -152,7 +152,6 @@ const VersionModal: React.FC<VersionModalProps> = ({
           rowKey="version"
           loading={loading}
           pagination={false}
-          size="small"
         />
       </Modal>
     </>

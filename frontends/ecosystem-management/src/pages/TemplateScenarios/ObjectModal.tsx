@@ -4,6 +4,7 @@ import { Button, Checkbox, Form, Input, Modal, Select, message } from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { createTemplateObject, updateTemplateObject } from '../../api/templateScenarios';
 import type { TemplateObject } from '../../api/templateScenarios';
+import { getErrorMessage } from '@jonex/shared-lib';
 
 const ATTRIBUTE_TYPE_VALUES = ['字符串', '数值', '日期', '枚举', '布尔', '文本'] as const;
 
@@ -27,11 +28,6 @@ function createDraftId(prefix: string) {
 
 function isPrimaryKey(value: boolean | number | undefined) {
   return value === true || value === 1;
-}
-
-function getErrorMessage(error: unknown, fallback: string) {
-  const err = error as { response?: { data?: { message?: string } }; message?: string };
-  return err.response?.data?.message || err.message || fallback;
 }
 
 export interface ObjectModalHandle {

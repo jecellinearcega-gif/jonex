@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { getItem, setItem } from '@/utils/storage';
+import { getItem, setItem } from '@jonex/shared-lib';
 
 interface GlobalState {
   locale: string;

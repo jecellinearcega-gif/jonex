@@ -9,7 +9,7 @@ import {
   CarryOutOutlined,
   BugOutlined,
 } from '@ant-design/icons';
-import { colors } from '@jonex/platform-theme/tokens';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 import { listAdapters, type AdapterItem } from '../../api/adapters';
 import './index.css';
 
@@ -115,36 +115,34 @@ export default function AdapterManagement() {
   }
 
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: colors.brandDark, margin: 0 }}>
-          {t('ecosystem.adapterList')}
-        </h1>
-      </div>
-      <div className="adapter-grid">
-        {adapters.map((adapter, idx) => {
-          const display = getDisplay(idx);
-          const copy = getAdapterCopy(adapter, t);
-          const badge = getStatusBadge(adapter.status, t);
-          const isGrey = adapter.status !== 'connected';
+    <>
+      <PageHeader title={t('ecosystem.adapterList')} />
+      <PageContent showCard={false}>
+        <div className="adapter-grid">
+          {adapters.map((adapter, idx) => {
+            const display = getDisplay(idx);
+            const copy = getAdapterCopy(adapter, t);
+            const badge = getStatusBadge(adapter.status, t);
+            const isGrey = adapter.status !== 'connected';
 
-          return (
-            <div key={adapter.id} className={`adapter-card${isGrey ? ' grey' : ''}`}>
-              {isGrey && <span className="future-tag">{t('ecosystem.comingSoon')}</span>}
-              <div className="adapter-icon" style={{ background: isGrey ? '#94a3b8' : display.color }}>
-                {display.icon}
+            return (
+              <div key={adapter.id} className={`adapter-card${isGrey ? ' grey' : ''}`}>
+                {isGrey && <span className="future-tag">{t('ecosystem.comingSoon')}</span>}
+                <div className="adapter-icon" style={{ background: isGrey ? '#94a3b8' : display.color }}>
+                  {display.icon}
+                </div>
+                <h3>{copy.name}</h3>
+                <div className="adapter-desc">{copy.description}</div>
+                <div className="adapter-status">
+                  <Tag color={badge.color} style={{ marginBottom: 0 }}>
+                    {badge.label}
+                  </Tag>
+                </div>
               </div>
-              <h3>{copy.name}</h3>
-              <div className="adapter-desc">{copy.description}</div>
-              <div className="adapter-status">
-                <Tag color={badge.color} style={{ marginBottom: 0 }}>
-                  {badge.label}
-                </Tag>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
+            );
+          })}
+        </div>
+      </PageContent>
+    </>
   );
 }

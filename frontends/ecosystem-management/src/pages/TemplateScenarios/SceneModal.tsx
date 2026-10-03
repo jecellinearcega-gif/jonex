@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Form, Input, Modal, Select, message } from 'antd';
 import { createTemplateScenario, updateTemplateScenario } from '../../api/templateScenarios';
 import type { TemplateScenario } from '../../api/templateScenarios';
+import { getErrorMessage } from '@jonex/shared-lib';
 
 type SceneFormValues = {
   name: string;
@@ -19,11 +20,6 @@ interface SceneModalProps {
   domainOptions: Array<{ label: string; value: string }>;
   loadingDomains: boolean;
   onSaved: () => void;
-}
-
-function getErrorMessage(error: unknown, fallback: string) {
-  const err = error as { response?: { data?: { message?: string } }; message?: string };
-  return err.response?.data?.message || err.message || fallback;
 }
 
 const SceneModal = forwardRef<SceneModalHandle, SceneModalProps>(function SceneModal(

@@ -215,7 +215,7 @@ const CreateEditModal: React.FC<CreateEditModalProps> = ({ open, mode, template,
                 userQuestion: '{{user_question}}',
               })
             }
-            style={{ fontFamily: "'Courier New', monospace", lineHeight: 1.6 }}
+            style={{ lineHeight: 1.6 }}
           />
         </Form.Item>
 

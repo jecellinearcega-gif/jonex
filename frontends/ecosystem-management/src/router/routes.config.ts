@@ -1,6 +1,6 @@
 import { redirect } from 'react-router-dom';
 import { isEmbedded } from '@jonex/shell-sdk';
-import loadableComponent from '@/utils/loadable';
+import { ErrorPage, NotFound, loadableComponent } from '@jonex/shared-lib';
 
 const BasicLayout = loadableComponent(() => import('@/components/BasicLayout'));
 const HostedLayout = loadableComponent(() => import('@/components/HostedLayout'));
@@ -14,8 +14,6 @@ const TemplateScenarios = loadableComponent(() => import('@/pages/TemplateScenar
 const TemplateObjects = loadableComponent(() => import('@/pages/TemplateObjects'));
 const TemplateRelations = loadableComponent(() => import('@/pages/TemplateRelations'));
 const PromptTemplates = loadableComponent(() => import('@/pages/PromptTemplates'));
-const ErrorPage = loadableComponent(() => import('@/pages/Error'));
-const NotFound = loadableComponent(() => import('@/pages/NotFound'));
 
 export function getRoutes(mode: 'standalone' | 'hosted' = 'standalone') {
   const inIframe = typeof window !== 'undefined' && window.parent !== window;

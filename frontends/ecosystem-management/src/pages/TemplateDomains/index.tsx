@@ -8,6 +8,7 @@ import { fetchDomains } from '../../api/templateDomains';
 import { getTemplateDomainDisplay, isEnglishLanguage } from '../../utils/builtInTemplateDisplay';
 import DomainFormModal, { type DomainFormModalHandle } from './DomainFormModal';
 import DomainDeleteModal, { type DomainDeleteModalHandle } from './DomainDeleteModal';
+import { formatDateTime, PageContent, PageHeader } from '@jonex/shared-lib';
 import './index.css';
 
 const PAGE_SIZE = 12;
@@ -89,174 +90,167 @@ export default function TemplateDomains() {
     navigate(`/template-scenarios?domain_id=${domain.id}`);
   };
 
-  const formatDate = (dateStr?: string | null) => {
-    if (!dateStr) return '-';
-    return dateStr.replace('T', ' ').substring(0, 16);
-  };
-
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1>{t('templateDomains.pageTitle')}</h1>
-        <p className="yx-page-subtitle">{t('templateDomains.pageSubtitle')}</p>
-      </div>
-
-      <div className="yx-toolbar">
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <Input
-            placeholder={t('templateDomains.searchPlaceholder')}
-            prefix={<SearchOutlined />}
-            value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
-              setPage(1);
-            }}
-            allowClear
-            style={{ width: 260 }}
-          />
-          <Select
-            placeholder={t('status.allStatus')}
-            value={statusFilter || undefined}
-            onChange={(v) => {
-              setStatusFilter(v || '');
-              setPage(1);
-            }}
-            allowClear
-            style={{ width: 130 }}
-            options={[
-              { label: t('status.active'), value: 'active' },
-              { label: t('status.inactive'), value: 'inactive' },
-            ]}
-          />
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <Button icon={<ReloadOutlined />} onClick={loadDomains}>
-            {t('common.refresh')}
-          </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            {t('templateDomains.createDomain')}
-          </Button>
-        </div>
-      </div>
-
-      {/* 加载 / 错误 / 空态 */}
-      {loading && (
-        <div style={{ textAlign: 'center', padding: 80 }}>
-          <Spin size="large" />
-        </div>
-      )}
-      {error && !loading && (
-        <div style={{ textAlign: 'center', padding: 80 }}>
-          <Empty description={error}>
-            <Button type="primary" onClick={loadDomains}>
-              {t('common.retry')}
+    <>
+      <PageHeader title={t('templateDomains.pageTitle')} />
+      <PageContent showCard={false}>
+        <div className="yx-toolbar">
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <Input
+              placeholder={t('templateDomains.searchPlaceholder')}
+              prefix={<SearchOutlined />}
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(1);
+              }}
+              allowClear
+              style={{ width: 260 }}
+            />
+            <Select
+              placeholder={t('status.allStatus')}
+              value={statusFilter || undefined}
+              onChange={(v) => {
+                setStatusFilter(v || '');
+                setPage(1);
+              }}
+              allowClear
+              style={{ width: 130 }}
+              options={[
+                { label: t('status.active'), value: 'active' },
+                { label: t('status.inactive'), value: 'inactive' },
+              ]}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button icon={<ReloadOutlined />} onClick={loadDomains}>
+              {t('common.refresh')}
             </Button>
-          </Empty>
-        </div>
-      )}
-      {!loading && !error && filtered.length === 0 && (
-        <div style={{ textAlign: 'center', padding: 80 }}>
-          <Empty description={t('templateDomains.emptyText')}>
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-              {t('templateDomains.createFirst')}
+              {t('templateDomains.createDomain')}
             </Button>
-          </Empty>
+          </div>
         </div>
-      )}
 
-      {/* 卡片网格 */}
-      {!loading && !error && filtered.length > 0 && (
-        <>
-          <div className="domain-grid">
-            {filtered.map((domain, index) => {
-              const iconDef = getDomainIcon(index);
-              const display = getTemplateDomainDisplay(domain, t, english);
-              const statusLabelMap: Record<string, string> = {
-                active: t('status.active'),
-                inactive: t('status.inactive'),
-                archived: t('status.archived'),
-              };
-              const statusClsMap: Record<string, string> = {
-                active: 'active',
-                inactive: 'inactive',
-                archived: 'inactive',
-              };
-              return (
-                <div key={domain.id} className="domain-card" onClick={() => handleCardClick(domain)}>
-                  <div className="card-icon" style={{ background: iconDef.bg, color: iconDef.color }}>
-                    {iconDef.icon}
-                  </div>
-                  <div className="card-body">
-                    <Tooltip title={display.name}>
-                      <div className="card-title">{display.name}</div>
-                    </Tooltip>
-                    {display.description ? (
-                      <Tooltip title={display.description}>
-                        <div className="card-desc">{display.description}</div>
+        {/* 加载 / 错误 / 空态 */}
+        {loading && (
+          <div style={{ textAlign: 'center', padding: 80 }}>
+            <Spin size="large" />
+          </div>
+        )}
+        {error && !loading && (
+          <div style={{ textAlign: 'center', padding: 80 }}>
+            <Empty description={error}>
+              <Button type="primary" onClick={loadDomains}>
+                {t('common.retry')}
+              </Button>
+            </Empty>
+          </div>
+        )}
+        {!loading && !error && filtered.length === 0 && (
+          <div style={{ textAlign: 'center', padding: 80 }}>
+            <Empty description={t('templateDomains.emptyText')}>
+              <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+                {t('templateDomains.createFirst')}
+              </Button>
+            </Empty>
+          </div>
+        )}
+
+        {/* 卡片网格 */}
+        {!loading && !error && filtered.length > 0 && (
+          <>
+            <div className="domain-grid">
+              {filtered.map((domain, index) => {
+                const iconDef = getDomainIcon(index);
+                const display = getTemplateDomainDisplay(domain, t, english);
+                const statusLabelMap: Record<string, string> = {
+                  active: t('status.active'),
+                  inactive: t('status.inactive'),
+                  archived: t('status.archived'),
+                };
+                const statusClsMap: Record<string, string> = {
+                  active: 'active',
+                  inactive: 'inactive',
+                  archived: 'inactive',
+                };
+                return (
+                  <div key={domain.id} className="domain-card" onClick={() => handleCardClick(domain)}>
+                    <div className="card-icon" style={{ background: iconDef.bg, color: iconDef.color }}>
+                      {iconDef.icon}
+                    </div>
+                    <div className="card-body">
+                      <Tooltip title={display.name}>
+                        <div className="card-title">{display.name}</div>
                       </Tooltip>
-                    ) : (
-                      <div className="card-desc" style={{ color: '#cbd5e1' }}>
-                        {t('templateDomains.noDescription')}
+                      {display.description ? (
+                        <Tooltip title={display.description}>
+                          <div className="card-desc">{display.description}</div>
+                        </Tooltip>
+                      ) : (
+                        <div className="card-desc" style={{ color: '#cbd5e1' }}>
+                          {t('templateDomains.noDescription')}
+                        </div>
+                      )}
+                    </div>
+                    <div className="card-meta">
+                      <span className="card-time">{formatDateTime(domain.created_at)}</span>
+                      <span className={`card-status ${statusClsMap[domain.status] || domain.status}`}>
+                        {statusLabelMap[domain.status] || domain.status}
+                      </span>
+                    </div>
+                    <div className="card-footer">
+                      <span className="card-scenario-count">
+                        {t('templateDomains.scenarioCount', { count: domain.scenario_count ?? 0 })}
+                      </span>
+                      <div className="card-actions">
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<EditOutlined />}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openEdit(domain);
+                          }}
+                        />
+                        <Button
+                          type="text"
+                          size="small"
+                          danger
+                          icon={<DeleteOutlined />}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openDeleteModal(domain);
+                          }}
+                        />
                       </div>
-                    )}
-                  </div>
-                  <div className="card-meta">
-                    <span className="card-time">{formatDate(domain.created_at)}</span>
-                    <span className={`card-status ${statusClsMap[domain.status] || domain.status}`}>
-                      {statusLabelMap[domain.status] || domain.status}
-                    </span>
-                  </div>
-                  <div className="card-footer">
-                    <span className="card-scenario-count">
-                      {t('templateDomains.scenarioCount', { count: domain.scenario_count ?? 0 })}
-                    </span>
-                    <div className="card-actions">
-                      <Button
-                        type="text"
-                        size="small"
-                        icon={<EditOutlined />}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openEdit(domain);
-                        }}
-                      />
-                      <Button
-                        type="text"
-                        size="small"
-                        danger
-                        icon={<DeleteOutlined />}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openDeleteModal(domain);
-                        }}
-                      />
                     </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* 分页 */}
-          {total > PAGE_SIZE && (
-            <div style={{ textAlign: 'center', marginTop: 24 }}>
-              <Pagination
-                current={page}
-                pageSize={PAGE_SIZE}
-                total={total}
-                onChange={(p) => setPage(p)}
-                showSizeChanger={false}
-              />
+                );
+              })}
             </div>
-          )}
-        </>
-      )}
+
+            {/* 分页 */}
+            {total > PAGE_SIZE && (
+              <div style={{ textAlign: 'center', marginTop: 24 }}>
+                <Pagination
+                  current={page}
+                  pageSize={PAGE_SIZE}
+                  total={total}
+                  onChange={(p) => setPage(p)}
+                  showSizeChanger={false}
+                />
+              </div>
+            )}
+          </>
+        )}
+      </PageContent>
 
       {/* 创建/编辑弹窗 */}
       <DomainFormModal ref={formModalRef} onSuccess={loadDomains} />
 
       {/* 删除确认弹窗 */}
       <DomainDeleteModal ref={deleteModalRef} onSuccess={loadDomains} />
-    </div>
+    </>
   );
 }

@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Modal, Form, Input, Tag, Typography, Descriptions, Space, Button, Divider } from 'antd';
 import { testCallService } from '@/api/mcpServices';
 import type { McpServiceItem, TestCallResponse } from '@/api/mcpServices';
-import { safeMessage } from '@/utils/safeMessage';
+import { safeMessage } from '@jonex/shared-lib';
 import './index.css';
 
 /** 测试调用弹窗对外暴露的句柄 */

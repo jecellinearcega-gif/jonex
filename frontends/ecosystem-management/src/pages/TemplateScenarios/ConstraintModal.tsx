@@ -8,11 +8,7 @@ import {
   getTemplateObjectDisplay,
   getTemplateRelationDisplay,
 } from '../../utils/builtInTemplateDisplay';
-
-function getErrorMessage(error: unknown, fallback: string) {
-  const err = error as { response?: { data?: { message?: string } }; message?: string };
-  return err.response?.data?.message || err.message || fallback;
-}
+import { getErrorMessage } from '@jonex/shared-lib';
 
 export interface ConstraintModalHandle {
   openCreate: () => void;

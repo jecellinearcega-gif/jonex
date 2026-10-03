@@ -1,7 +1,3 @@
-.template-scenarios-page {
-  min-width: 0;
-}
-
 .template-scenarios-card {
   padding: 0;
   overflow: hidden;
@@ -52,41 +48,11 @@
   overflow-y: auto;
 }
 
-.template-scenarios-list.ant-menu {
-  background: transparent;
-  border-inline-end: none;
-}
-
-.template-scenarios-list .ant-menu-item {
-  height: auto !important;
-  margin-bottom: 4px !important;
-  margin-inline: 0 !important;
-  padding: 10px 14px !important;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: border-color 0.2s, background 0.2s;
-  width: 100% !important;
-  line-height: normal !important;
-}
-
-.template-scenarios-list .ant-menu-item:hover {
-  border-color: #e2e8f0 !important;
-  background: #f8fafc !important;
-}
-
-.template-scenarios-list .ant-menu-item-selected {
-  border-color: #3b82f6 !important;
-  background: #eff6ff !important;
-}
-
-.template-scenarios-list .ant-menu-item-selected:hover {
-  border-color: #3b82f6 !important;
-  background: #eff6ff !important;
-}
-
 .template-scenarios-item-main {
   min-width: 0;
+  /* 菜单项把 line-height 设成了 itemHeight（等于一行的行高），下面三行若继承，
+     每行都会被撑到 itemHeight 那么高、再被 overflow 裁掉。这里恢复成正常行高。 */
+  line-height: normal;
 }
 
 .template-scenarios-item-name {
@@ -134,9 +100,7 @@
 }
 
 .template-scenarios-list li:hover .template-scenarios-item-actions,
-.template-scenarios-list li.active .template-scenarios-item-actions,
-.ant-menu-item:hover .template-scenarios-item-actions,
-.ant-menu-item-selected .template-scenarios-item-actions {
+.template-scenarios-list .ant-menu-item-selected .template-scenarios-item-actions {
   opacity: 1;
 }
 
@@ -205,17 +169,6 @@
   gap: 14px;
   align-items: center;
   white-space: nowrap;
-}
-
-.template-scenarios-attrs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-/* 仅覆盖 AttrInlineTable 内嵌表格的 margin-inline */
-.attr-inline-table.ant-table-wrapper .ant-table {
-  margin-inline: 0 !important;
 }
 
 .template-scenarios-key-mark {

@@ -2,10 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Alert, Button, Menu, message, Modal, Select, Table, Tag, Typography } from 'antd';
+import { Alert, Button, ConfigProvider, Menu, message, Modal, Select, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
-  ArrowLeftOutlined,
   DeleteOutlined,
   EditOutlined,
   ExportOutlined,
@@ -43,25 +42,33 @@ import {
   getTemplateScenarioDisplay,
   isEnglishLanguage,
 } from '../../utils/builtInTemplateDisplay';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 import SceneModal, { type SceneModalHandle } from './SceneModal';
 import ObjectModal, { type ObjectModalHandle } from './ObjectModal';
 import RelationModal, { type RelationModalHandle } from './RelationModal';
 import ConstraintModal, { type ConstraintModalHandle } from './ConstraintModal';
 import DeleteConfirmModal, { type DeleteConfirmModalHandle } from './DeleteConfirmModal';
 import './index.css';
+import { getErrorMessage } from '@jonex/shared-lib';
 
 const ATTRIBUTE_TYPE_VALUES = ['字符串', '数值', '日期', '枚举', '布尔', '文本'] as const;
 const RELATION_TYPE_VALUES = ['一对一', '一对多', '多对一', '多对多'] as const;
+
+/**
+ * 左栏每一项是三行（名称 / 创建时间 / 所属领域），而 antd inline 菜单项的高度由 token
+ * `itemHeight` 决定（默认 40px）、且 `align-items: center` + `overflow: hidden`，
+ * 内容超出时会从上下两端对称裁掉 —— 露出的是中间那一行「创建时间」，名称反而看不见。
+ * 所以这里按内容实际高度抬高，不要再回去压 `.ant-menu-item` 的 height。
+ */
+const SCENE_ITEM_HEIGHT = 72;
+
+// 提到模块作用域：内联的对象字面量每次渲染都是新引用，antd 会当成主题变更重新算一遍样式
+const SCENE_MENU_THEME = { components: { Menu: { itemHeight: SCENE_ITEM_HEIGHT } } };
 
 function formatTime(value?: string | null) {
   if (!value) return '-';
   const parsed = dayjs(value);
   return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm') : value;
-}
-
-function getErrorMessage(error: unknown, fallback: string) {
-  const err = error as { response?: { data?: { message?: string } }; message?: string };
-  return err.response?.data?.message || err.message || fallback;
 }
 
 export default function TemplateScenarios() {
@@ -275,7 +282,6 @@ export default function TemplateScenarios() {
           <Table
             dataSource={attrs}
             rowKey="id"
-            size="small"
             pagination={false}
             showHeader={false}
             className="attr-inline-table"
@@ -531,326 +537,323 @@ export default function TemplateScenarios() {
   // ── YAML Import/Export handlers ──
 
   const handleExportYaml = useCallback(async () => {
-    if (!selectedSceneId) return
+    if (!selectedSceneId) return;
     try {
-      const result = await exportScenarioOntologyYaml(selectedSceneId)
-      const blob = new Blob([result.yaml_text], { type: 'application/x-yaml' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = result.filename
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
-      message.success(t('templateScenarios.exportSuccess'))
+      const result = await exportScenarioOntologyYaml(selectedSceneId);
+      const blob = new Blob([result.yaml_text], { type: 'application/x-yaml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = result.filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      message.success(t('templateScenarios.exportSuccess'));
     } catch (error) {
-      message.error(getErrorMessage(error, t('templateScenarios.exportFailed')))
+      message.error(getErrorMessage(error, t('templateScenarios.exportFailed')));
     }
-  }, [selectedSceneId, t])
+  }, [selectedSceneId, t]);
 
   const handleImportClick = useCallback(() => {
-    fileInputRef.current?.click()
-  }, [])
+    fileInputRef.current?.click();
+  }, []);
 
   const handleFileSelected = useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0]
+      const file = event.target.files?.[0];
       if (!file || !selectedSceneId) {
-        if (event.target) event.target.value = ''
-        return
+        if (event.target) event.target.value = '';
+        return;
       }
-      selectedFileRef.current = file
-      setImportLoading(true)
+      selectedFileRef.current = file;
+      setImportLoading(true);
       try {
-        const result = await importScenarioOntologyYaml(selectedSceneId, file, true)
-        setImportResult(result)
-        setImportModalVisible(true)
+        const result = await importScenarioOntologyYaml(selectedSceneId, file, true);
+        setImportResult(result);
+        setImportModalVisible(true);
       } catch (error) {
-        message.error(getErrorMessage(error, t('templateScenarios.importFailed')))
+        message.error(getErrorMessage(error, t('templateScenarios.importFailed')));
       } finally {
-        setImportLoading(false)
-        if (event.target) event.target.value = ''
+        setImportLoading(false);
+        if (event.target) event.target.value = '';
       }
     },
     [selectedSceneId, t],
-  )
+  );
 
   const handleConfirmImport = useCallback(async () => {
-    if (!selectedSceneId || !selectedFileRef.current) return
-    setImportLoading(true)
+    if (!selectedSceneId || !selectedFileRef.current) return;
+    setImportLoading(true);
     try {
-      await importScenarioOntologyYaml(selectedSceneId, selectedFileRef.current, false)
-      setImportModalVisible(false)
-      setImportResult(null)
-      selectedFileRef.current = null
-      message.success(t('templateScenarios.importSuccess'))
-      await refreshTemplateDetails(selectedSceneId)
+      await importScenarioOntologyYaml(selectedSceneId, selectedFileRef.current, false);
+      setImportModalVisible(false);
+      setImportResult(null);
+      selectedFileRef.current = null;
+      message.success(t('templateScenarios.importSuccess'));
+      await refreshTemplateDetails(selectedSceneId);
     } catch (error) {
-      message.error(getErrorMessage(error, t('templateScenarios.importFailed')))
+      message.error(getErrorMessage(error, t('templateScenarios.importFailed')));
     } finally {
-      setImportLoading(false)
+      setImportLoading(false);
     }
-  }, [selectedSceneId, refreshTemplateDetails, t])
+  }, [selectedSceneId, refreshTemplateDetails, t]);
 
   const handleCloseImportModal = useCallback(() => {
-    setImportModalVisible(false)
-    setImportResult(null)
-    selectedFileRef.current = null
-  }, [])
+    setImportModalVisible(false);
+    setImportResult(null);
+    selectedFileRef.current = null;
+  }, []);
 
   return (
-    <div className="template-scenarios-page">
-      <div className="yx-page-title">
-        <Button
-          type="link"
-          icon={<ArrowLeftOutlined />}
-          onClick={() => navigate('/template-domains')}
-          style={{ paddingLeft: 0, marginBottom: 4 }}
-        >
-          {t('templateScenarios.backToDomains')}
-        </Button>
-        <h1>{t('templateScenarios.pageTitle')}</h1>
-        <p className="yx-page-subtitle">{t('templateScenarios.pageSubtitle')}</p>
-      </div>
+    <>
+      <PageHeader
+        backTo={() => navigate('/template-domains')}
+        title={t('templateScenarios.pageTitle')}
+        style={{ marginBottom: 4 }}
+      />
+      <p className="yx-page-subtitle" style={{ margin: '0 0 16px' }}>
+        {t('templateScenarios.pageSubtitle')}
+      </p>
 
-      <div className="yx-card template-scenarios-card">
-        <div className="template-scenarios-split">
-          <aside className="template-scenarios-left">
-            <div className="template-scenarios-left-title">
-              <h2>{t('templateScenarios.domainScenes')}</h2>
-              <span>{t('templateScenarios.sceneCount', { count: scenes.length })}</span>
-            </div>
-
-            <Select
-              className="template-scenarios-domain-filter"
-              placeholder={t('templateScenarios.allDomains')}
-              value={domainFilter || undefined}
-              onChange={handleDomainFilterChange}
-              allowClear
-              loading={loadingDomains}
-              options={domainOptions}
-            />
-
-            {loadingScenes ? (
-              <div style={{ textAlign: 'center', padding: '40px 20px', color: '#94a3b8' }}>
-                {t('templateScenarios.loadingScenes')}
+      <PageContent showCard={false} style={{ minWidth: 0 }}>
+        <div className="yx-card template-scenarios-card">
+          <div className="template-scenarios-split">
+            <aside className="template-scenarios-left">
+              <div className="template-scenarios-left-title">
+                <h2>{t('templateScenarios.domainScenes')}</h2>
+                <span>{t('templateScenarios.sceneCount', { count: scenes.length })}</span>
               </div>
-            ) : scenes.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '40px 20px', color: '#94a3b8' }}>
-                {t('templateScenarios.noMatchScene')}
-              </div>
-            ) : (
-              <Menu
-                className="template-scenarios-list"
-                mode="inline"
-                selectedKeys={selectedSceneId ? [selectedSceneId] : []}
-                onSelect={({ key }) => {
-                  setSelectedSceneId(key);
-                  setActiveTab('objects');
-                }}
-                items={scenes.map((scene) => ({
-                  key: scene.id,
-                  label: (
-                    <div
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'flex-start',
-                        width: '100%',
-                      }}
-                    >
-                      <div className="template-scenarios-item-main">
-                        <div className="template-scenarios-item-name">
-                          {getTemplateScenarioDisplay(scene, english, t).name}
-                        </div>
-                        <div className="template-scenarios-item-meta">{formatTime(scene.created_at)}</div>
-                        <Tag className="template-scenarios-domain-tag">{getDomainName(scene.domain_id)}</Tag>
-                      </div>
-                      <div className="template-scenarios-item-actions">
-                        <Button
-                          type="text"
-                          size="small"
-                          icon={<EditOutlined />}
-                          aria-label={t('templateScenarios.ariaLabelEditScene')}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openEditScene(scene, event);
-                          }}
-                        />
-                        <Button
-                          type="text"
-                          danger
-                          size="small"
-                          icon={<DeleteOutlined />}
-                          aria-label={t('templateScenarios.ariaLabelDeleteScene')}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openDeleteScene(scene, event);
-                          }}
-                        />
-                      </div>
-                    </div>
-                  ),
-                }))}
+
+              <Select
+                className="template-scenarios-domain-filter"
+                placeholder={t('templateScenarios.allDomains')}
+                value={domainFilter || undefined}
+                onChange={handleDomainFilterChange}
+                allowClear
+                loading={loadingDomains}
+                options={domainOptions}
               />
-            )}
 
-            <Button
-              className="template-scenarios-create-scene"
-              type="primary"
-              icon={<PlusOutlined />}
-              block
-              onClick={openCreateScene}
-            >
-              {t('templateScenarios.createScene')}
-            </Button>
-          </aside>
-
-          <section className="template-scenarios-right">
-            {!selectedScene ? (
-              <>
-                <div className="template-scenarios-right-header">
-                  <h2>{t('templateScenarios.selectSceneFromLeft')}</h2>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <Button icon={<ExportOutlined />} disabled>
-                      {t('templateScenarios.exportYaml')}
-                    </Button>
-                    <Button icon={<ImportOutlined />} disabled>
-                      {t('templateScenarios.importYaml')}
-                    </Button>
-                    <Button icon={<ReloadOutlined />} onClick={refreshCurrentView} loading={loadingScenes}>
-                      {t('templateScenarios.refresh')}
-                    </Button>
-                  </div>
+              {loadingScenes ? (
+                <div style={{ textAlign: 'center', padding: '40px 20px', color: '#94a3b8' }}>
+                  {t('templateScenarios.loadingScenes')}
                 </div>
-                <div className="yx-empty-state template-scenarios-empty">{t('templateScenarios.selectSceneHint')}</div>
-              </>
-            ) : (
-              <>
-                <div className="template-scenarios-right-header">
-                  <div>
-                    <h2>{getTemplateScenarioDisplay(selectedScene, english, t).name}</h2>
-                    <p className="yx-page-subtitle">
-                      {getTemplateScenarioDisplay(selectedScene, english, t).description ||
-                        t('templateScenarios.noSceneDescription')}
-                    </p>
+              ) : scenes.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '40px 20px', color: '#94a3b8' }}>
+                  {t('templateScenarios.noMatchScene')}
+                </div>
+              ) : (
+                <ConfigProvider theme={SCENE_MENU_THEME}>
+                  <Menu
+                    className="template-scenarios-list"
+                    mode="inline"
+                    selectedKeys={selectedSceneId ? [selectedSceneId] : []}
+                    onSelect={({ key }) => {
+                      setSelectedSceneId(key);
+                      setActiveTab('objects');
+                    }}
+                    items={scenes.map((scene) => ({
+                      key: scene.id,
+                      label: (
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'flex-start',
+                            width: '100%',
+                          }}
+                        >
+                          <div className="template-scenarios-item-main">
+                            <div className="template-scenarios-item-name">
+                              {getTemplateScenarioDisplay(scene, english, t).name}
+                            </div>
+                            <div className="template-scenarios-item-meta">{formatTime(scene.created_at)}</div>
+                            <Tag className="template-scenarios-domain-tag">{getDomainName(scene.domain_id)}</Tag>
+                          </div>
+                          <div className="template-scenarios-item-actions">
+                            <Button
+                              type="text"
+                              size="small"
+                              icon={<EditOutlined />}
+                              aria-label={t('templateScenarios.ariaLabelEditScene')}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openEditScene(scene, event);
+                              }}
+                            />
+                            <Button
+                              type="text"
+                              danger
+                              size="small"
+                              icon={<DeleteOutlined />}
+                              aria-label={t('templateScenarios.ariaLabelDeleteScene')}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openDeleteScene(scene, event);
+                              }}
+                            />
+                          </div>
+                        </div>
+                      ),
+                    }))}
+                  />
+                </ConfigProvider>
+              )}
+
+              <Button
+                className="template-scenarios-create-scene"
+                type="primary"
+                icon={<PlusOutlined />}
+                block
+                onClick={openCreateScene}
+              >
+                {t('templateScenarios.createScene')}
+              </Button>
+            </aside>
+
+            <section className="template-scenarios-right">
+              {!selectedScene ? (
+                <>
+                  <div className="template-scenarios-right-header">
+                    <h2>{t('templateScenarios.selectSceneFromLeft')}</h2>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <Button icon={<ExportOutlined />} disabled>
+                        {t('templateScenarios.exportYaml')}
+                      </Button>
+                      <Button icon={<ImportOutlined />} disabled>
+                        {t('templateScenarios.importYaml')}
+                      </Button>
+                      <Button icon={<ReloadOutlined />} onClick={refreshCurrentView} loading={loadingScenes}>
+                        {t('templateScenarios.refresh')}
+                      </Button>
+                    </div>
                   </div>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                    <Button icon={<ExportOutlined />} onClick={handleExportYaml}>
-                      {t('templateScenarios.exportYaml')}
-                    </Button>
-                    <Button icon={<ImportOutlined />} onClick={handleImportClick} loading={importLoading}>
-                      {t('templateScenarios.importYaml')}
+                  <div className="yx-empty-state template-scenarios-empty">
+                    {t('templateScenarios.selectSceneHint')}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="template-scenarios-right-header">
+                    <div>
+                      <h2>{getTemplateScenarioDisplay(selectedScene, english, t).name}</h2>
+                      <p className="yx-page-subtitle">
+                        {getTemplateScenarioDisplay(selectedScene, english, t).description ||
+                          t('templateScenarios.noSceneDescription')}
+                      </p>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                      <Button icon={<ExportOutlined />} onClick={handleExportYaml}>
+                        {t('templateScenarios.exportYaml')}
+                      </Button>
+                      <Button icon={<ImportOutlined />} onClick={handleImportClick} loading={importLoading}>
+                        {t('templateScenarios.importYaml')}
+                      </Button>
+                      <Button
+                        icon={<ReloadOutlined />}
+                        onClick={refreshCurrentView}
+                        loading={loadingScenes || loadingDetails}
+                      >
+                        {t('templateScenarios.refresh')}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="yx-tabs template-scenarios-tabs">
+                    <Button
+                      type={activeTab === 'objects' ? 'primary' : 'default'}
+                      icon={<ProfileOutlined />}
+                      onClick={() => setActiveTab('objects')}
+                      style={{ borderRadius: 8 }}
+                    >
+                      {t('templateScenarios.objectTemplate')}
                     </Button>
                     <Button
-                      icon={<ReloadOutlined />}
-                      onClick={refreshCurrentView}
-                      loading={loadingScenes || loadingDetails}
+                      type={activeTab === 'relations' ? 'primary' : 'default'}
+                      icon={<ShareAltOutlined />}
+                      onClick={() => setActiveTab('relations')}
+                      style={{ borderRadius: 8 }}
                     >
-                      {t('templateScenarios.refresh')}
+                      {t('templateScenarios.relationTemplate')}
+                    </Button>
+                    <Button
+                      type={activeTab === 'constraints' ? 'primary' : 'default'}
+                      icon={<SafetyOutlined />}
+                      onClick={() => setActiveTab('constraints')}
+                      style={{ borderRadius: 8 }}
+                    >
+                      {t('templateScenarios.constraintTemplate')}
                     </Button>
                   </div>
-                </div>
 
-                <div className="yx-tabs template-scenarios-tabs">
-                  <Button
-                    type={activeTab === 'objects' ? 'primary' : 'default'}
-                    ghost={activeTab !== 'objects'}
-                    icon={<ProfileOutlined />}
-                    onClick={() => setActiveTab('objects')}
-                    style={{ borderRadius: 8 }}
-                  >
-                    {t('templateScenarios.objectTemplate')}
-                  </Button>
-                  <Button
-                    type={activeTab === 'relations' ? 'primary' : 'default'}
-                    ghost={activeTab !== 'relations'}
-                    icon={<ShareAltOutlined />}
-                    onClick={() => setActiveTab('relations')}
-                    style={{ borderRadius: 8 }}
-                  >
-                    {t('templateScenarios.relationTemplate')}
-                  </Button>
-                  <Button
-                    type={activeTab === 'constraints' ? 'primary' : 'default'}
-                    ghost={activeTab !== 'constraints'}
-                    icon={<SafetyOutlined />}
-                    onClick={() => setActiveTab('constraints')}
-                    style={{ borderRadius: 8 }}
-                  >
-                    {t('templateScenarios.constraintTemplate')}
-                  </Button>
-                </div>
+                  <p style={{ color: '#94a3b8', fontSize: 12, marginTop: 8 }}>
+                    {activeTab === 'constraints'
+                      ? t('templateScenarios.constraintNote')
+                      : t('templateScenarios.relationNote')}
+                  </p>
 
-                <p className="template-scenarios-tab-note" style={{ color: '#94a3b8', fontSize: 12, marginTop: 8 }}>
-                  {activeTab === 'constraints'
-                    ? t('templateScenarios.constraintNote')
-                    : t('templateScenarios.relationNote')}
-                </p>
-
-                {activeTab === 'objects' && (
-                  <div>
-                    <div className="template-scenarios-tab-toolbar">
-                      <Button type="primary" icon={<PlusOutlined />} onClick={openCreateObject}>
-                        {t('templateScenarios.createObject')}
-                      </Button>
+                  {activeTab === 'objects' && (
+                    <div>
+                      <div className="template-scenarios-tab-toolbar">
+                        <Button type="primary" icon={<PlusOutlined />} onClick={openCreateObject}>
+                          {t('templateScenarios.createObject')}
+                        </Button>
+                      </div>
+                      <Table
+                        dataSource={objects}
+                        columns={objectColumns}
+                        rowKey="id"
+                        loading={loadingDetails}
+                        pagination={false}
+                        locale={{ emptyText: t('templateScenarios.noObjectTemplates') }}
+                      />
                     </div>
-                    <Table
-                      className="yx-data-table"
-                      dataSource={objects}
-                      columns={objectColumns}
-                      rowKey="id"
-                      loading={loadingDetails}
-                      pagination={false}
-                      locale={{ emptyText: t('templateScenarios.noObjectTemplates') }}
-                    />
-                  </div>
-                )}
-                {activeTab === 'relations' && (
-                  <div>
-                    <div className="template-scenarios-tab-toolbar">
-                      <Button type="primary" icon={<PlusOutlined />} onClick={openCreateRelation}>
-                        {t('templateScenarios.createRelation')}
-                      </Button>
+                  )}
+                  {activeTab === 'relations' && (
+                    <div>
+                      <div className="template-scenarios-tab-toolbar">
+                        <Button type="primary" icon={<PlusOutlined />} onClick={openCreateRelation}>
+                          {t('templateScenarios.createRelation')}
+                        </Button>
+                      </div>
+                      <Table
+                        dataSource={relations}
+                        columns={relationColumns}
+                        rowKey="id"
+                        loading={loadingDetails}
+                        pagination={false}
+                        locale={{ emptyText: t('templateScenarios.noRelationTemplates') }}
+                      />
                     </div>
-                    <Table
-                      className="yx-data-table"
-                      dataSource={relations}
-                      columns={relationColumns}
-                      rowKey="id"
-                      loading={loadingDetails}
-                      pagination={false}
-                      locale={{ emptyText: t('templateScenarios.noRelationTemplates') }}
-                    />
-                  </div>
-                )}
-                {activeTab === 'constraints' && (
-                  <div>
-                    <div className="template-scenarios-tab-toolbar">
-                      <Button
-                        type="primary"
-                        icon={<PlusOutlined />}
-                        onClick={() => constraintModalRef.current?.openCreate()}
-                      >
-                        {t('templateScenarios.createConstraint')}
-                      </Button>
+                  )}
+                  {activeTab === 'constraints' && (
+                    <div>
+                      <div className="template-scenarios-tab-toolbar">
+                        <Button
+                          type="primary"
+                          icon={<PlusOutlined />}
+                          onClick={() => constraintModalRef.current?.openCreate()}
+                        >
+                          {t('templateScenarios.createConstraint')}
+                        </Button>
+                      </div>
+                      <Table
+                        dataSource={constraints}
+                        columns={constraintColumns}
+                        rowKey="id"
+                        loading={loadingDetails}
+                        pagination={false}
+                        locale={{ emptyText: t('templateScenarios.noConstraintTemplates') }}
+                      />
                     </div>
-                    <Table
-                      dataSource={constraints}
-                      columns={constraintColumns}
-                      rowKey="id"
-                      loading={loadingDetails}
-                      pagination={false}
-                      locale={{ emptyText: t('templateScenarios.noConstraintTemplates') }}
-                    />
-                  </div>
-                )}
-              </>
-            )}
-          </section>
+                  )}
+                </>
+              )}
+            </section>
+          </div>
         </div>
-      </div>
+      </PageContent>
 
       <SceneModal
         ref={sceneModalRef}
@@ -917,19 +920,18 @@ export default function TemplateScenarios() {
         {importResult && (
           <>
             {importResult.dry_run && (
-              <Alert
-                message={t('templateScenarios.dryRunNotice')}
-                type="info"
-                showIcon
-                style={{ marginBottom: 16 }}
-              />
+              <Alert message={t('templateScenarios.dryRunNotice')} type="info" showIcon style={{ marginBottom: 16 }} />
             )}
             <Table
               dataSource={[
                 { key: 'entities', category: t('templateScenarios.entities'), ...importResult.summary.entities },
                 { key: 'attributes', category: t('templateScenarios.attributes'), ...importResult.summary.attributes },
                 { key: 'relations', category: t('templateScenarios.relations'), ...importResult.summary.relations },
-                { key: 'constraints', category: t('templateScenarios.constraints'), ...importResult.summary.constraints },
+                {
+                  key: 'constraints',
+                  category: t('templateScenarios.constraints'),
+                  ...importResult.summary.constraints,
+                },
               ]}
               columns={[
                 { title: t('templateScenarios.category'), dataIndex: 'category', key: 'category' },
@@ -939,7 +941,6 @@ export default function TemplateScenarios() {
               ]}
               rowKey="key"
               pagination={false}
-              size="small"
               style={{ marginBottom: 16 }}
             />
             {importResult.warnings.length > 0 && (
@@ -959,6 +960,6 @@ export default function TemplateScenarios() {
           </>
         )}
       </Modal>
-    </div>
+    </>
   );
 }

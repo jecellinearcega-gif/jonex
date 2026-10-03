@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Form, Input, Modal, Select, message } from 'antd';
 import { createTemplateRelation, updateTemplateRelation } from '../../api/templateScenarios';
 import type { TemplateRelation } from '../../api/templateScenarios';
+import { getErrorMessage } from '@jonex/shared-lib';
 
 const RELATION_TYPE_VALUES = ['一对一', '一对多', '多对一', '多对多'] as const;
 
@@ -13,11 +14,6 @@ type RelationFormValues = {
   desc?: string;
   type: string;
 };
-
-function getErrorMessage(error: unknown, fallback: string) {
-  const err = error as { response?: { data?: { message?: string } }; message?: string };
-  return err.response?.data?.message || err.message || fallback;
-}
 
 export interface RelationModalHandle {
   openCreate: () => void;

@@ -15,6 +15,7 @@ import {
 import type { TableProps } from 'antd';
 import { getAuthorizedKeys, getMcpServiceDetail } from '@/api/mcpServices';
 import type { McpServiceItem, AuthorizedKeyItem, ServiceAccessInfo } from '@/api/mcpServices';
+import { formatDateTime } from '@jonex/shared-lib';
 import './index.css';
 
 /** 服务详情抽屉对外暴露的句柄 */
@@ -27,15 +28,6 @@ interface McpServiceDetailDrawerProps {
   /** 点击「前往 MCP Key 管理」时回调（切换到服务访问Key 视图） */
   onGoToKeys?: () => void;
 }
-
-/** 格式化时间：YYYY-MM-DD HH:mm */
-const formatDate = (dateStr?: string | null): string => {
-  if (!dateStr) return '-';
-  const date = new Date(dateStr);
-  if (Number.isNaN(date.getTime())) return '-';
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-};
 
 const McpServiceDetailDrawer = forwardRef<McpServiceDetailDrawerHandle, McpServiceDetailDrawerProps>(
   ({ onGoToKeys }, ref) => {
@@ -123,7 +115,7 @@ const McpServiceDetailDrawer = forwardRef<McpServiceDetailDrawerHandle, McpServi
         key: 'expires_at',
         // TODO: 后端 authorized-keys 暂未返回 expires_at，当前统一按「永久有效」展示，待后端补充后接入
         render: (_: unknown, item: AuthorizedKeyItem) =>
-          item.expires_at ? formatDate(item.expires_at) : t('mcpServiceDirectory.expiryForever'),
+          item.expires_at ? formatDateTime(item.expires_at) : t('mcpServiceDirectory.expiryForever'),
       },
     ];
 
@@ -283,7 +275,6 @@ const McpServiceDetailDrawer = forwardRef<McpServiceDetailDrawerHandle, McpServi
                 rowKey="key_id"
                 columns={keyColumns}
                 dataSource={keys}
-                size="small"
                 bordered
                 pagination={{
                   pageSize: 5,

@@ -514,7 +514,6 @@ export const McpKeyDrawer = forwardRef<McpKeyDrawerHandle, McpKeyDrawerProps>(
             rowKey="id"
             columns={serviceColumns}
             dataSource={services}
-            size="small"
             pagination={false}
             bordered
             locale={{

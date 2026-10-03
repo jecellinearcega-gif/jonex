@@ -1,8 +1,9 @@
-import React, { useState, useMemo } from 'react';
-import { Card, Table, Tag, Input, Select } from 'antd';
-import { SearchOutlined } from '@ant-design/icons';
+import React, { useCallback, useMemo } from 'react';
+import { Card, Tag } from 'antd';
 import { useTranslation } from 'react-i18next';
 import { colors, radius } from '@jonex/platform-theme/tokens';
+import { CommonTable, PageContent, PageHeader } from '@jonex/shared-lib';
+import type { FilterConfig, TableQueryParams } from '@jonex/shared-lib';
 import type { TemplateRelation } from '../../data/mock';
 
 const relationDefs = [
@@ -11,10 +12,15 @@ const relationDefs = [
   { id: 'controls', source: 'company', target: 'company', relationType: '1:N' },
 ];
 
+/** 必须是 type 别名而不是 interface：CommonTable 的 F 要求隐式索引签名 */
+type RelationFilters = {
+  keyword?: string;
+  relation_type?: string;
+};
+
 export default function TemplateRelations() {
   const { t } = useTranslation();
-  const [search, setSearch] = useState('');
-  const [typeFilter, setTypeFilter] = useState<string>('');
+
   const relations = useMemo<TemplateRelation[]>(
     () =>
       relationDefs.map((relation) => ({
@@ -30,80 +36,91 @@ export default function TemplateRelations() {
 
   const relationTypes = useMemo(() => [...new Set(relations.map((r) => r.relationType))], [relations]);
 
-  const filtered = useMemo(() => {
-    return relations.filter((r) => {
-      if (search && !r.name.includes(search) && !r.sourceObject.includes(search) && !r.targetObject.includes(search))
-        return false;
-      if (typeFilter && r.relationType !== typeFilter) return false;
-      return true;
-    });
-  }, [relations, search, typeFilter]);
+  /** 数据是本地 mock，但过滤与切片仍收进 fetch —— CommonTable 只认这一个数据出口 */
+  const fetchRows = useCallback(
+    async ({ page, pageSize, keyword, relation_type }: TableQueryParams<RelationFilters>) => {
+      const q = (keyword ?? '').trim();
+      const rows = relations.filter((r) => {
+        if (q && !r.name.includes(q) && !r.sourceObject.includes(q) && !r.targetObject.includes(q)) return false;
+        if (relation_type && r.relationType !== relation_type) return false;
+        return true;
+      });
+      const start = (page - 1) * pageSize;
+      return { list: rows.slice(start, start + pageSize), total: rows.length };
+    },
+    [relations],
+  );
 
-  const columns = [
-    { title: t('templateRelations.columnName'), dataIndex: 'name', key: 'name', width: 140 },
-    {
-      title: t('templateRelations.columnSource'),
-      dataIndex: 'sourceObject',
-      key: 'sourceObject',
-      width: 120,
-      render: (v: string) => <Tag color="blue">{v}</Tag>,
-    },
-    {
-      title: t('templateRelations.columnTarget'),
-      dataIndex: 'targetObject',
-      key: 'targetObject',
-      width: 120,
-      render: (v: string) => <Tag color="green">{v}</Tag>,
-    },
-    {
-      title: t('templateRelations.columnType'),
-      dataIndex: 'relationType',
-      key: 'relationType',
-      width: 90,
-      align: 'center' as const,
-    },
-    { title: t('templateRelations.columnConstraints'), dataIndex: 'constraints', key: 'constraints', ellipsis: true },
-  ];
+  const filters = useMemo<FilterConfig[]>(
+    () => [
+      {
+        key: 'keyword',
+        label: t('common.search'),
+        type: 'input',
+        placeholder: t('templateRelations.searchPlaceholder'),
+      },
+      {
+        key: 'relation_type',
+        label: t('templateRelations.columnType'),
+        type: 'select',
+        placeholder: t('templateRelations.typeFilterPlaceholder'),
+        options: relationTypes.map((v) => ({ label: v, value: v })),
+      },
+    ],
+    [t, relationTypes],
+  );
+
+  const columns = useMemo(
+    () => [
+      { title: t('templateRelations.columnName'), dataIndex: 'name', key: 'name', width: 140 },
+      {
+        title: t('templateRelations.columnSource'),
+        dataIndex: 'sourceObject',
+        key: 'sourceObject',
+        width: 120,
+        render: (v: string) => <Tag color="blue">{v}</Tag>,
+      },
+      {
+        title: t('templateRelations.columnTarget'),
+        dataIndex: 'targetObject',
+        key: 'targetObject',
+        width: 120,
+        render: (v: string) => <Tag color="green">{v}</Tag>,
+      },
+      {
+        title: t('templateRelations.columnType'),
+        dataIndex: 'relationType',
+        key: 'relationType',
+        width: 90,
+        align: 'center' as const,
+      },
+      {
+        title: t('templateRelations.columnConstraints'),
+        dataIndex: 'constraints',
+        key: 'constraints',
+        ellipsis: true,
+      },
+    ],
+    [t],
+  );
 
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1 style={{ fontSize: 24, fontWeight: 700, color: colors.brandDark, marginBottom: 4 }}>
-          {t('templateRelations.pageTitle')}
-        </h1>
-        <p style={{ color: colors.textMuted, margin: '4px 0 0', fontSize: 14 }}>
-          {t('templateRelations.pageSubtitle')}
-        </p>
-      </div>
+    <>
+      <PageHeader title={t('templateRelations.pageTitle')} style={{ marginBottom: 4 }} />
+      <p style={{ color: colors.textMuted, margin: '0 0 16px', fontSize: 14 }}>
+        {t('templateRelations.pageSubtitle')}
+      </p>
 
-      <div
-        className="yx-toolbar"
-        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}
-      >
-        <div style={{ display: 'flex', gap: 12 }}>
-          <Input
-            className="yx-search-box"
-            placeholder={t('templateRelations.searchPlaceholder')}
-            prefix={<SearchOutlined />}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            allowClear
-            style={{ width: 320 }}
+      <PageContent showCard={false}>
+        <Card style={{ borderRadius: radius.card }}>
+          <CommonTable<TemplateRelation, RelationFilters>
+            rowKey="id"
+            filters={filters}
+            columns={columns}
+            fetch={fetchRows}
           />
-          <Select
-            placeholder={t('templateRelations.typeFilterPlaceholder')}
-            value={typeFilter || undefined}
-            onChange={(v) => setTypeFilter(v || '')}
-            allowClear
-            style={{ width: 160 }}
-            options={relationTypes.map((t) => ({ label: t, value: t }))}
-          />
-        </div>
-      </div>
-
-      <Card style={{ borderRadius: radius.card }}>
-        <Table dataSource={filtered} columns={columns} rowKey="id" pagination={{ pageSize: 10 }} />
-      </Card>
-    </div>
+        </Card>
+      </PageContent>
+    </>
   );
 }

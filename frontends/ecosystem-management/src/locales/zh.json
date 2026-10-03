@@ -1,6 +1,7 @@
 {
   "common": {
     "search": "搜索",
+    "keyword": "关键字",
     "download": "下载",
     "preview": "预览",
     "cancel": "取消",
@@ -62,7 +63,8 @@
     "requestFailed": "请求失败",
     "maturityProduction": "已上线",
     "maturityPilot": "试点中",
-    "maturityPlanning": "规划中"
+    "maturityPlanning": "规划中",
+    "noPermission": "无权限"
   },
   "auth": {
     "signIn": "登录",
@@ -103,11 +105,6 @@
     "selectPlaceholder": "请选择",
     "confirmDelete": "确定要删除此数据吗？"
   },
-  "language": {
-    "chinese": "中文",
-    "english": "英文",
-    "switchLanguage": "切换语言"
-  },
   "error": {
     "401": "未经授权，请登录。",
     "403": "禁止访问，您没有权限。",
@@ -131,7 +128,6 @@
   },
   "promptTemplate": {
     "title": "提示词模板",
-    "description": "管理平台可复用的提示词模板，支持分类筛选、快速复制与统一编排",
     "create": "新建模板",
     "edit": "编辑模板",
     "view": "查看模板",
@@ -419,9 +415,6 @@
     "confirmImport": "确认导入",
     "dryRunNotice": "预览模式：以下为 dry-run 结果，尚未写入数据库",
     "entities": "实体",
-    "relations": "关系",
-    "constraints": "约束",
-    "create": "新增",
     "update": "更新",
     "skip": "跳过",
     "category": "类别",
@@ -485,7 +478,6 @@
   },
   "templateDomains": {
     "pageTitle": "领域模板",
-    "pageSubtitle": "管理领域模板，定义业务领域的分类与模板集合",
     "searchPlaceholder": "搜索领域名称...",
     "createDomain": "创建领域",
     "emptyText": "暂无模板领域",
@@ -744,7 +736,6 @@
   },
   "mcpServiceDirectory": {
     "title": "MCP服务管理",
-    "pageSubtitle": "查看已发布领域知识能力，并管理外部MCP客户端的服务访问Key。",
     "tabCatalog": "服务目录",
     "tabKeys": "Key 管理",
     "searchServicePlaceholder": "搜索领域服务名称、Tool名称",
@@ -766,7 +757,7 @@
     "sourceBuiltin": "平台内置",
     "colResourceScope": "默认资源范围",
     "scopeByKey": "由 Key 授权",
-    "colSpace": "所属领域空间",
+    "colSpace": "领域空间",
     "allSpaces": "全部空间",
     "colStatus": "MCP发布状态",
     "colLastCall": "最近调用时间",

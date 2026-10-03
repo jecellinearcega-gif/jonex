@@ -1,30 +1,23 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  Table,
-  Tag,
-  Typography,
-  Input,
-  Select,
-  Empty,
-  Space,
-  Button,
-  Spin,
-  Result,
-  Modal,
-  Tooltip,
-  message,
-} from 'antd';
-import { PlusOutlined, SearchOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Tag, Typography, Empty, Space, Button, Result, Modal, Tooltip, message } from 'antd';
+import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { listMcpKeys, revokeMcpKey, toggleMcpKey, deleteMcpKey, type McpKeyItem } from '@/api/mcpKeys';
 import type { WriteGrant } from '@/api/mcpKeys';
 import { listKnowledgeBases, type KnowledgeBaseBrief } from '@/api/spaces';
-import { PermButton, usePermission } from '@jonex/shared-lib';
+import { PermButton, usePermission, CommonTable } from '@jonex/shared-lib';
+import type { CommonTableRef, FilterConfig, TableQueryParams } from '@jonex/shared-lib';
 import { McpKeyDrawer, type McpKeyDrawerHandle } from './McpKeyDrawer';
 import { RecreateKeyModal, type RecreateKeyModalHandle } from './RecreateKeyModal';
 import McpKeyDetailDrawer, { type McpKeyDetailDrawerHandle } from './McpKeyDetailDrawer';
 import './index.css';
+
+/** 必须是 type 别名而不是 interface：CommonTable 的 F 要求隐式索引签名 */
+type KeyFilters = {
+  keyword?: string;
+  status?: string;
+};
 
 const defaultFormatDate = (d: string | null): string => {
   if (!d) return '-';
@@ -49,12 +42,10 @@ export default function McpKeysTab() {
   const { t } = useTranslation();
   // 权限（shell 下发）：由共享 hook usePermission 提供，按钮级判断交给 PermButton
   const { permissions: userPermissions } = usePermission();
-  const [keys, setKeys] = useState<McpKeyItem[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [loaded, setLoaded] = useState(false);
+  const tableRef = useRef<CommonTableRef>(null);
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
+  /** 接口返回的全量条数：区分「一个 Key 都没有」与「筛选没命中」 */
+  const [totalCount, setTotalCount] = useState<number | null>(null);
   // 知识库列表（写入范围列名称映射）
   const [kbList, setKbList] = useState<KnowledgeBaseBrief[]>([]);
 
@@ -69,25 +60,57 @@ export default function McpKeysTab() {
     return m;
   }, [kbList]);
 
-  /** 加载 Key 列表 */
-  const loadKeys = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await listMcpKeys();
-      setKeys(result.items || []);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : t('mcpKeyManagement.loadFailed'));
-    } finally {
-      setLoading(false);
-      // 成功/失败都必须结束首屏 Spin：失败时让 error Result（含重试按钮）可达
-      setLoaded(true);
-    }
-  }, [t]);
+  /**
+   * 取数 / 过滤全在这里 —— CommonTable 只认这一个数据出口。
+   * ⚠️ 关键词与状态都从参数取，不要读页面 state：fetch 存在 ref 里，闭包不参与重渲染。
+   * ⚠️ 本页不分页（见下方 pagination={false}），所以一次性返回全部过滤结果、忽略 page/pageSize ——
+   *    若在这里按 pageSize 切片，超出首屏条数的 Key 会永远看不到（没有翻页可到达）。
+   */
+  const fetchRows = useCallback(
+    async ({ keyword, status }: TableQueryParams<KeyFilters>) => {
+      const q = (keyword ?? '').trim().toLocaleLowerCase();
+      try {
+        const result = await listMcpKeys();
+        const all = result.items || [];
+        setTotalCount(all.length);
+        setError(null);
+        const rows = all.filter((k) => {
+          if (q && !`${k.name || ''} ${k.key_prefix || ''}`.toLocaleLowerCase().includes(q)) return false;
+          if (status && deriveStatus(k) !== status) return false;
+          return true;
+        });
+        return { list: rows, total: rows.length };
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : t('mcpKeyManagement.loadFailed'));
+        throw err;
+      }
+    },
+    [t],
+  );
 
-  useEffect(() => {
-    if (!loaded) loadKeys();
-  }, [loaded, loadKeys]);
+  const filters = useMemo<FilterConfig[]>(
+    () => [
+      {
+        key: 'keyword',
+        label: t('common.keyword'),
+        type: 'input',
+        placeholder: t('mcpKeyManagement.searchPlaceholder'),
+      },
+      {
+        key: 'status',
+        label: t('mcpKeyManagement.status'),
+        type: 'select',
+        placeholder: t('mcpKeyManagement.statusAll'),
+        options: [
+          { value: 'active', label: t('mcpKeyManagement.activeStatus') },
+          { value: 'disabled', label: t('mcpKeyManagement.disabledStatus') },
+          { value: 'expired', label: t('mcpKeyManagement.expiredStatus') },
+          { value: 'revoked', label: t('mcpKeyManagement.revokedStatus') },
+        ],
+      },
+    ],
+    [t],
+  );
 
   // 知识库列表（KB id → 名称映射，一次性加载）
   useEffect(() => {
@@ -95,16 +118,6 @@ export default function McpKeysTab() {
       .then(setKbList)
       .catch(() => setKbList([]));
   }, []);
-
-  // 搜索 + 状态筛选（客户端过滤）
-  const filtered = useMemo(() => {
-    const q = search.trim().toLocaleLowerCase();
-    return keys.filter((k) => {
-      if (q && !`${k.name || ''} ${k.key_prefix || ''}`.toLocaleLowerCase().includes(q)) return false;
-      if (statusFilter && deriveStatus(k) !== statusFilter) return false;
-      return true;
-    });
-  }, [keys, search, statusFilter]);
 
   /** 授权能力聚合：可调用 N · 仅查看 N，含写入授权追加「知识写入」（legacy write/* 兜底） */
   const renderCapabilities = (record: McpKeyItem) => {
@@ -153,7 +166,7 @@ export default function McpKeysTab() {
     try {
       await toggleMcpKey(record.id);
       message.success(t('mcpKeyManagement.toggleSuccess'));
-      loadKeys();
+      tableRef.current?.refresh();
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : t('mcpKeyManagement.operationFailed'));
     }
@@ -182,7 +195,7 @@ export default function McpKeysTab() {
         try {
           await revokeMcpKey(record.id);
           message.success(t('mcpKeyManagement.revokeSuccess'));
-          loadKeys();
+          tableRef.current?.refresh();
         } catch (err: unknown) {
           message.error(err instanceof Error ? err.message : t('mcpKeyManagement.operationFailed'));
         }
@@ -202,7 +215,7 @@ export default function McpKeysTab() {
         try {
           await deleteMcpKey(record.id);
           message.success(t('mcpKeyManagement.deleteSuccess'));
-          loadKeys();
+          tableRef.current?.refresh();
         } catch (err: unknown) {
           message.error(err instanceof Error ? err.message : t('mcpKeyManagement.operationFailed'));
         }
@@ -365,15 +378,6 @@ export default function McpKeysTab() {
     },
   ];
 
-  // ── 状态覆盖 ──
-  if (!loaded) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 200 }}>
-        <Spin size="large" />
-      </div>
-    );
-  }
-
   if (error) {
     return (
       <Result
@@ -381,7 +385,8 @@ export default function McpKeysTab() {
         title={t('mcpKeyManagement.loadFailed')}
         subTitle={error}
         extra={
-          <Button type="primary" icon={<ReloadOutlined />} onClick={loadKeys}>
+          // ⚠️ 不能调 tableRef.current.refresh()：错误态下 CommonTable 已卸载、ref 为 null。
+          <Button type="primary" icon={<ReloadOutlined />} onClick={() => setError(null)}>
             {t('common.retry')}
           </Button>
         }
@@ -391,35 +396,34 @@ export default function McpKeysTab() {
 
   return (
     <div>
-      {/* 工具栏：搜索 + 状态筛选 + 刷新 / 创建 */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <Space size={12} wrap>
-          <Input
-            allowClear
-            prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
-            placeholder={t('mcpKeyManagement.searchPlaceholder')}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{ width: 220 }}
-          />
-          <Select
-            value={statusFilter || undefined}
-            onChange={(v) => setStatusFilter(v || '')}
-            placeholder={t('mcpKeyManagement.statusAll')}
-            allowClear
-            style={{ width: 120 }}
-            options={[
-              { value: 'active', label: t('mcpKeyManagement.activeStatus') },
-              { value: 'disabled', label: t('mcpKeyManagement.disabledStatus') },
-              { value: 'expired', label: t('mcpKeyManagement.expiredStatus') },
-              { value: 'revoked', label: t('mcpKeyManagement.revokedStatus') },
-            ]}
-          />
-        </Space>
-        <Space>
-          <Button icon={<ReloadOutlined />} onClick={loadKeys}>
-            {t('common.refresh')}
-          </Button>
+      <CommonTable<McpKeyItem, KeyFilters>
+        ref={tableRef}
+        rowKey="id"
+        filters={filters}
+        columns={columns}
+        fetch={fetchRows}
+        // 迁移前即不分页：一次性取全量、全部铺开（列表长也不加翻页）；列宽合计 1370，容器不足时左右滑动
+        pagination={false}
+        scroll={{ x: 1400 }}
+        // 「一个 Key 都没有」才给创建引导；筛选没命中只给一句提示
+        emptyText={
+          totalCount === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('mcpKeyManagement.emptyText')}>
+              <PermButton
+                type="primary"
+                icon={<PlusOutlined />}
+                permissions={userPermissions}
+                requiredPerm="mcp:key:manage"
+                onClick={() => keyDrawerRef.current?.open()}
+              >
+                {t('mcpKeyManagement.createFirst')}
+              </PermButton>
+            </Empty>
+          ) : (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('mcpKeyManagement.emptyFilteredText')} />
+          )
+        }
+        toolbar={
           <PermButton
             type="primary"
             icon={<PlusOutlined />}
@@ -429,39 +433,12 @@ export default function McpKeysTab() {
           >
             {t('mcpKeyManagement.createBtn')}
           </PermButton>
-        </Space>
-      </div>
-
-      {keys.length === 0 ? (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('mcpKeyManagement.emptyText')}>
-          <PermButton
-            type="primary"
-            icon={<PlusOutlined />}
-            permissions={userPermissions}
-            requiredPerm="mcp:key:manage"
-            onClick={() => keyDrawerRef.current?.open()}
-          >
-            {t('mcpKeyManagement.createFirst')}
-          </PermButton>
-        </Empty>
-      ) : filtered.length === 0 ? (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('mcpKeyManagement.emptyFilteredText')} />
-      ) : (
-        <Table<McpKeyItem>
-          columns={columns}
-          dataSource={filtered}
-          rowKey="id"
-          pagination={false}
-          size="middle"
-          loading={loading}
-          // 列宽合计 1370，容器不足时允许左右滑动查看完整内容
-          scroll={{ x: 1400 }}
-        />
-      )}
+        }
+      />
 
       {/* 创建 / 编辑 / 重新创建 / 详情 */}
-      <McpKeyDrawer ref={keyDrawerRef} onSuccess={loadKeys} />
-      <RecreateKeyModal ref={recreateRef} onSuccess={loadKeys} />
+      <McpKeyDrawer ref={keyDrawerRef} onSuccess={() => tableRef.current?.refresh()} />
+      <RecreateKeyModal ref={recreateRef} onSuccess={() => tableRef.current?.refresh()} />
       <McpKeyDetailDrawer ref={detailRef} kbNameMap={kbNameMap} />
     </div>
   );

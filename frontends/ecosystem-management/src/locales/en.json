@@ -1,6 +1,7 @@
 {
   "common": {
     "search": "Search",
+    "keyword": "Keyword",
     "download": "Download",
     "preview": "Preview",
     "cancel": "Cancel",
@@ -62,7 +63,8 @@
     "requestFailed": "Request failed",
     "maturityProduction": "Production",
     "maturityPilot": "Piloting",
-    "maturityPlanning": "Planning"
+    "maturityPlanning": "Planning",
+    "noPermission": "No permission"
   },
   "auth": {
     "signIn": "Sign In",
@@ -103,11 +105,6 @@
     "selectPlaceholder": "Please select",
     "confirmDelete": "Are you sure you want to delete this item?"
   },
-  "language": {
-    "chinese": "Simplified Chinese",
-    "english": "English",
-    "switchLanguage": "Switch Language"
-  },
   "error": {
     "401": "Unauthorized access. Please sign in.",
     "403": "Forbidden. You don't have permission to access this resource.",
@@ -131,7 +128,6 @@
   },
   "promptTemplate": {
     "title": "Prompt Templates",
-    "description": "Create and manage reusable prompt templates.",
     "create": "New Template",
     "edit": "Edit Template",
     "view": "View Template",
@@ -419,9 +415,6 @@
     "confirmImport": "Confirm Import",
     "dryRunNotice": "Preview mode: showing dry-run results, not yet written to database",
     "entities": "Entities",
-    "relations": "Relations",
-    "constraints": "Constraints",
-    "create": "Added",
     "update": "Update",
     "skip": "Skip",
     "category": "Category",
@@ -485,7 +478,6 @@
   },
   "templateDomains": {
     "pageTitle": "Domain Templates",
-    "pageSubtitle": "Organize reusable scenarios and ontology definitions by business domain.",
     "searchPlaceholder": "Search domains...",
     "createDomain": "Create Domain",
     "emptyText": "No template domains yet",
@@ -744,7 +736,6 @@
   },
   "mcpServiceDirectory": {
     "title": "MCP Service Management",
-    "pageSubtitle": "View published domain knowledge capabilities and manage service access keys for external MCP clients.",
     "tabCatalog": "Catalog",
     "tabKeys": "Key Management",
     "searchServicePlaceholder": "Search domain service or tool name",

@@ -1,91 +1,97 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Table, Tag, Input, Select, Button, Tooltip, Space, Empty, Result } from 'antd';
+import { Button, Empty, Result, Space, Tag, Tooltip } from 'antd';
+import type { TableColumnsType } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
-import type { TableProps } from 'antd';
+import { CommonTable, formatDateTime } from '@jonex/shared-lib';
+import type { FilterConfig, TableQueryParams } from '@jonex/shared-lib';
 import { listMcpServices } from '@/api/mcpServices';
 import { listSpaces } from '@/api/spaces';
 import type { McpServiceItem } from '@/api/mcpServices';
 import McpServiceDetailDrawer, { type McpServiceDetailDrawerHandle } from './McpServiceDetailDrawer';
 import './index.css';
 
-/** 格式化时间：YYYY-MM-DD HH:mm */
-const formatDate = (dateStr?: string | null): string => {
-  if (!dateStr) return '-';
-  const date = new Date(dateStr);
-  if (Number.isNaN(date.getTime())) return '-';
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-};
-
 interface McpServicesTabProps {
   /** 点击「前往 MCP Key 管理」时切换到服务访问Key 视图 */
   onGoToKeys?: () => void;
 }
 
+/** 必须是 type 别名而不是 interface：CommonTable 的 F 要求隐式索引签名 */
+type ServiceFilters = {
+  keyword?: string;
+  space_id?: string;
+};
+
 /** MCP 服务目录 — 服务列表 Tab */
 export default function McpServicesTab({ onGoToKeys }: McpServicesTabProps) {
   const { t } = useTranslation();
-  const [items, setItems] = useState<McpServiceItem[]>([]);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** 接口 HTTP status（403=权限不足时错误态换用权限图标，而非报错图标） */
   const [errorStatus, setErrorStatus] = useState<number | undefined>(undefined);
-
-  // 筛选条件
-  const [search, setSearch] = useState('');
-  // 搜索输入框原始值（防抖后才同步到查询条件 search）
-  const [searchInput, setSearchInput] = useState('');
-  const [spaceId, setSpaceId] = useState('');
+  /** 接口返回的全量条数：区分「本来就没有服务」与「筛选没命中」两种空态 */
+  const [totalCount, setTotalCount] = useState<number | null>(null);
   // 领域空间筛选选项（来源 GET /knowledge-base/spaces 接口，而非列表数据聚合）
   const [spaceOptions, setSpaceOptions] = useState<{ label: string; value: string }[]>([]);
 
   const detailDrawerRef = useRef<McpServiceDetailDrawerHandle>(null);
 
-  const hasFilter = Boolean(search || spaceId);
-
-  /** 客户端筛选：按搜索词（名称 / Tool / 空间名）与领域空间过滤 */
-  const filtered = useMemo(() => {
-    const q = search.trim().toLocaleLowerCase();
-    return items.filter((item) => {
-      if (
-        q &&
-        !`${item.name || ''} ${item.tool || ''} ${item.space_name || ''}`.toLocaleLowerCase().includes(q)
-      ) {
-        return false;
+  /**
+   * 取数 / 过滤 / 切片全在这里 —— CommonTable 只认这一个数据出口。
+   * ⚠️ 关键词与空间都从参数取，不要读页面 state：fetch 存在 ref 里，闭包不参与重渲染。
+   */
+  const fetchRows = useCallback(
+    async ({ page, pageSize, keyword, space_id }: TableQueryParams<ServiceFilters>) => {
+      const q = (keyword ?? '').trim().toLocaleLowerCase();
+      try {
+        const result = await listMcpServices();
+        const all = result.items || [];
+        setTotalCount(all.length);
+        setError(null);
+        setErrorStatus(undefined);
+        const rows = all.filter((item) => {
+          if (
+            q &&
+            !`${item.name || ''} ${item.tool || ''} ${item.space_name || ''}`.toLocaleLowerCase().includes(q)
+          ) {
+            return false;
+          }
+          if (space_id && item.space_id !== space_id) return false;
+          return true;
+        });
+        const start = (page - 1) * pageSize;
+        return { list: rows.slice(start, start + pageSize), total: rows.length };
+      } catch (err: unknown) {
+        // 接口报错：由下面的 Result 分支渲染错误态 + 重试按钮
+        setError(err instanceof Error ? err.message : t('mcpServiceDirectory.loadFailed'));
+        setErrorStatus(
+          typeof (err as { status?: number } | null)?.status === 'number'
+            ? (err as { status?: number }).status
+            : undefined,
+        );
+        throw err;
       }
-      if (spaceId && item.space_id !== spaceId) return false;
-      return true;
-    });
-  }, [items, search, spaceId]);
+    },
+    [t],
+  );
 
-  /** 加载列表（一次拉全量，筛选在客户端完成） */
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await listMcpServices();
-      setItems(result.items);
-    } catch (err: unknown) {
-      // 接口报错：渲染内联 Result 错误态 + 重试按钮（与 McpKeysTab 一致）
-      // 权限不足(403)时错误态换用权限图标而非报错图标
-      setError(err instanceof Error ? err.message : t('mcpServiceDirectory.loadFailed'));
-      setErrorStatus(typeof (err as { status?: number } | null)?.status === 'number' ? (err as { status?: number }).status : undefined);
-      setItems([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  /** 搜索输入防抖：输入停止 300ms 后才同步到查询条件，触发客户端过滤 */
-  useEffect(() => {
-    const timer = setTimeout(() => setSearch(searchInput.trim()), 300);
-    return () => clearTimeout(timer);
-  }, [searchInput]);
+  const filters = useMemo<FilterConfig[]>(
+    () => [
+      {
+        key: 'keyword',
+        label: t('common.keyword'),
+        type: 'input',
+        placeholder: t('mcpServiceDirectory.searchServicePlaceholder'),
+      },
+      {
+        key: 'space_id',
+        label: t('mcpServiceDirectory.colSpace'),
+        type: 'select',
+        placeholder: t('mcpServiceDirectory.allSpaces'),
+        options: spaceOptions,
+      },
+    ],
+    [t, spaceOptions],
+  );
 
   /** 领域空间筛选选项（来源接口 GET /knowledge-base/spaces，失败静默为空） */
   useEffect(() => {
@@ -96,7 +102,7 @@ export default function McpServicesTab({ onGoToKeys }: McpServicesTabProps) {
       });
   }, []);
 
-  const columns: TableProps<McpServiceItem>['columns'] = [
+  const columns: TableColumnsType<McpServiceItem> = [
     {
       title: t('mcpServiceDirectory.colName'),
       dataIndex: 'name',
@@ -191,7 +197,7 @@ export default function McpServicesTab({ onGoToKeys }: McpServicesTabProps) {
       key: 'last_call_at',
       width: 150,
       render: (v: string | null) =>
-        v ? formatDate(v) : <span style={{ color: '#94a3b8' }}>{t('mcpServiceDirectory.neverCalled')}</span>,
+        v ? formatDateTime(v) : <span style={{ color: '#94a3b8' }}>{t('mcpServiceDirectory.neverCalled')}</span>,
     },
     {
       title: t('mcpServiceDirectory.colActions'),
@@ -215,7 +221,9 @@ export default function McpServicesTab({ onGoToKeys }: McpServicesTabProps) {
         title={forbidden ? t('mcpServiceDirectory.forbiddenTitle') : t('mcpServiceDirectory.loadFailed')}
         subTitle={error}
         extra={
-          <Button type="primary" icon={<ReloadOutlined />} onClick={load}>
+          // ⚠️ 这里不能调 tableRef.current.refresh()：错误态下 CommonTable 已被卸载、ref 为 null。
+          // 清掉 error 让它重新挂载，挂载时取数 effect 会自己跑一次。
+          <Button type="primary" icon={<ReloadOutlined />} onClick={() => setError(null)}>
             {t('common.retry')}
           </Button>
         }
@@ -225,51 +233,19 @@ export default function McpServicesTab({ onGoToKeys }: McpServicesTabProps) {
 
   return (
     <div>
-      {/* 筛选工具栏 */}
-      <div
-        className="yx-toolbar"
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          gap: 12,
-          flexWrap: 'wrap',
-          marginBottom: 16,
-        }}
-      >
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          <Input
-            placeholder={t('mcpServiceDirectory.searchServicePlaceholder')}
-            allowClear
-            style={{ width: 280 }}
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-          />
-          <Select
-            placeholder={t('mcpServiceDirectory.allSpaces')}
-            value={spaceId || undefined}
-            onChange={(v) => setSpaceId(v || '')}
-            allowClear
-            style={{ width: 160 }}
-            options={spaceOptions}
-          />
-        </div>
-      </div>
-
-      <Table
+      <CommonTable<McpServiceItem, ServiceFilters>
         rowKey="id"
+        filters={filters}
         columns={columns}
-        dataSource={filtered}
-        pagination={{ pageSize: 10 }}
+        fetch={fetchRows}
         scroll={{ x: 'max-content' }}
-        loading={loading}
-        locale={{
-          emptyText: hasFilter ? (
-            <Empty description={t('mcpServiceDirectory.emptySearchText')} />
-          ) : (
+        emptyText={
+          totalCount === 0 ? (
             <Empty description={t('mcpServiceDirectory.emptyText')} />
-          ),
-        }}
+          ) : (
+            <Empty description={t('mcpServiceDirectory.emptySearchText')} />
+          )
+        }
       />
 
       <McpServiceDetailDrawer ref={detailDrawerRef} onGoToKeys={onGoToKeys} />

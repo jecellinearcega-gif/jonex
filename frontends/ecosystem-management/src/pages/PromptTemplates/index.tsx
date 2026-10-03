@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Input, Select, Spin, Result, message } from 'antd';
 import { PlusOutlined, SearchOutlined, GlobalOutlined, AppstoreOutlined } from '@ant-design/icons';
-import { colors } from '@jonex/platform-theme/tokens';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 import {
   listPromptTemplates,
   createPromptTemplate,
@@ -164,7 +164,11 @@ export default function PromptTemplates() {
       await createPromptTemplate(data as CreatePromptTemplatePayload, domainSpaceId ?? undefined);
       message.success(t('promptTemplate.createSuccess'));
     } else if (editingTemplate) {
-      const updated = await updatePromptTemplate(editingTemplate.id, data as UpdatePromptTemplatePayload, domainSpaceId ?? undefined);
+      const updated = await updatePromptTemplate(
+        editingTemplate.id,
+        data as UpdatePromptTemplatePayload,
+        domainSpaceId ?? undefined,
+      );
       message.success(t('promptTemplate.updateSuccessWithVersion', { version: updated.current_version }));
     }
     await loadData();
@@ -200,123 +204,121 @@ export default function PromptTemplates() {
   }
 
   return (
-    <div className="pt-page">
-      {/* Page header */}
-      <div className="pt-header">
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: colors.brandDark, margin: 0 }}>
-            📋 {t('promptTemplate.title')}
-          </h1>
-          <div style={{ fontSize: 14, color: '#94a3b8', marginTop: 4 }}>{t('promptTemplate.description')}</div>
-        </div>
-        {scope === 'domain' && (
-          <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
-            {t('promptTemplate.create')}
-          </Button>
-        )}
-      </div>
+    <>
+      <PageHeader
+        title={`📋 ${t('promptTemplate.title')}`}
+        extra={
+          scope === 'domain' ? (
+            <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
+              {t('promptTemplate.create')}
+            </Button>
+          ) : undefined
+        }
+      />
 
-      {/* Scope tabs */}
-      <div className="pt-toolbar-card">
-        <div className="pt-scope-tabs">
-          <Button
-            type={scope === 'system' ? 'primary' : 'default'}
-            ghost={scope !== 'system'}
-            icon={<GlobalOutlined />}
-            onClick={() => setScope('system')}
-            style={{ borderRadius: 8, display: 'inline-flex', alignItems: 'center', gap: 4 }}
-          >
-            {t('promptTemplate.systemScope')}
-            <span
-              style={{
-                fontSize: 11,
-                background: scope === 'system' ? 'rgba(255,255,255,0.3)' : '#e2e8f0',
-                color: scope === 'system' ? '#fff' : '#64748b',
-                padding: '1px 8px',
-                borderRadius: 10,
-                minWidth: 20,
-                textAlign: 'center',
-              }}
+      <PageContent showCard={false}>
+        {/* Scope tabs */}
+        <div className="pt-toolbar-card">
+          <div className="pt-scope-tabs">
+            <Button
+              type={scope === 'system' ? 'primary' : 'default'}
+              icon={<GlobalOutlined />}
+              onClick={() => setScope('system')}
+              style={{ borderRadius: 8, display: 'inline-flex', alignItems: 'center', gap: 4 }}
             >
-              {systemCount}
-            </span>
-          </Button>
-          <Button
-            type={scope === 'domain' ? 'primary' : 'default'}
-            ghost={scope !== 'domain'}
-            icon={<AppstoreOutlined />}
-            onClick={() => setScope('domain')}
-            style={{ borderRadius: 8, display: 'inline-flex', alignItems: 'center', gap: 4 }}
-          >
-            {t('promptTemplate.domainScope')}
-            <span
-              style={{
-                fontSize: 11,
-                background: scope === 'domain' ? 'rgba(255,255,255,0.3)' : '#e2e8f0',
-                color: scope === 'domain' ? '#fff' : '#64748b',
-                padding: '1px 8px',
-                borderRadius: 10,
-                minWidth: 20,
-                textAlign: 'center',
-              }}
+              {t('promptTemplate.systemScope')}
+              <span
+                style={{
+                  fontSize: 11,
+                  background: scope === 'system' ? 'rgba(255,255,255,0.3)' : '#e2e8f0',
+                  color: scope === 'system' ? '#fff' : '#64748b',
+                  padding: '1px 8px',
+                  borderRadius: 10,
+                  minWidth: 20,
+                  textAlign: 'center',
+                }}
+              >
+                {systemCount}
+              </span>
+            </Button>
+            <Button
+              type={scope === 'domain' ? 'primary' : 'default'}
+              icon={<AppstoreOutlined />}
+              onClick={() => setScope('domain')}
+              style={{ borderRadius: 8, display: 'inline-flex', alignItems: 'center', gap: 4 }}
             >
-              {domainCount}
-            </span>
-          </Button>
-        </div>
-      </div>
-
-      {/* Search bar */}
-      <div className="pt-toolbar-card">
-        <div className="pt-search-bar">
-          <Input
-            prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
-            placeholder={t('promptTemplate.searchPlaceholder')}
-            value={keywordInput}
-            onChange={(e) => setKeywordInput(e.target.value)}
-            allowClear
-            style={{ width: 320 }}
-          />
-          <Select
-            value={category || 'all'}
-            onChange={(v: string) => setCategory(v === 'all' ? '' : v)}
-            style={{ width: 150 }}
-          >
-            <Select.Option value="all">{t('promptTemplate.allCategories')}</Select.Option>
-            {PROMPT_CATEGORIES.map((cat) => (
-              <Select.Option key={cat} value={cat}>
-                {t(PROMPT_CATEGORY_LABEL_KEYS[cat] || cat)}
-              </Select.Option>
-            ))}
-          </Select>
-          <div style={{ flex: 1 }} />
-          <span style={{ fontSize: 13, color: '#94a3b8' }}>{t('promptTemplate.countText', { count: listTotal })}</span>
-        </div>
-      </div>
-
-      {/* Template grid */}
-      {templates.length === 0 ? (
-        <div className="pt-empty">
-          <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.4 }}>📂</div>
-          <div style={{ color: '#94a3b8' }}>
-            {scope === 'system' ? t('promptTemplate.noSystemTemplates') : t('promptTemplate.noDomainTemplates')}
+              {t('promptTemplate.domainScope')}
+              <span
+                style={{
+                  fontSize: 11,
+                  background: scope === 'domain' ? 'rgba(255,255,255,0.3)' : '#e2e8f0',
+                  color: scope === 'domain' ? '#fff' : '#64748b',
+                  padding: '1px 8px',
+                  borderRadius: 10,
+                  minWidth: 20,
+                  textAlign: 'center',
+                }}
+              >
+                {domainCount}
+              </span>
+            </Button>
           </div>
         </div>
-      ) : (
-        <div className="pt-grid">
-          {templates.map((tpl) => (
-            <PromptCard
-              key={tpl.id}
-              template={tpl}
-              onEdit={handleEdit}
-              onView={handleView}
-              onDelete={handleDeleteClick}
-              onVersion={handleVersion}
-              onCopy={handleCopy}
+
+        {/* Search bar */}
+        <div className="pt-toolbar-card">
+          <div className="pt-search-bar">
+            <Input
+              prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
+              placeholder={t('promptTemplate.searchPlaceholder')}
+              value={keywordInput}
+              onChange={(e) => setKeywordInput(e.target.value)}
+              allowClear
+              style={{ width: 320 }}
             />
-          ))}
+            <Select
+              value={category || 'all'}
+              onChange={(v: string) => setCategory(v === 'all' ? '' : v)}
+              style={{ width: 150 }}
+            >
+              <Select.Option value="all">{t('promptTemplate.allCategories')}</Select.Option>
+              {PROMPT_CATEGORIES.map((cat) => (
+                <Select.Option key={cat} value={cat}>
+                  {t(PROMPT_CATEGORY_LABEL_KEYS[cat] || cat)}
+                </Select.Option>
+              ))}
+            </Select>
+            <div style={{ flex: 1 }} />
+            <span style={{ fontSize: 13, color: '#94a3b8' }}>
+              {t('promptTemplate.countText', { count: listTotal })}
+            </span>
+          </div>
         </div>
-      )}
+
+        {/* Template grid */}
+        {templates.length === 0 ? (
+          <div className="pt-empty">
+            <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.4 }}>📂</div>
+            <div style={{ color: '#94a3b8' }}>
+              {scope === 'system' ? t('promptTemplate.noSystemTemplates') : t('promptTemplate.noDomainTemplates')}
+            </div>
+          </div>
+        ) : (
+          <div className="pt-grid">
+            {templates.map((tpl) => (
+              <PromptCard
+                key={tpl.id}
+                template={tpl}
+                onEdit={handleEdit}
+                onView={handleView}
+                onDelete={handleDeleteClick}
+                onVersion={handleVersion}
+                onCopy={handleCopy}
+              />
+            ))}
+          </div>
+        )}
+      </PageContent>
 
       {/* Create/Edit/View Modal */}
       <CreateEditModal
@@ -350,6 +352,6 @@ export default function PromptTemplates() {
         onClose={() => setDeletingId(null)}
         onDeleted={loadData}
       />
-    </div>
+    </>
   );
 }

@@ -1,7 +1,8 @@
 import { useTranslation } from 'react-i18next';
 import { Card, Tabs } from 'antd';
 import { useSearchParams } from 'react-router-dom';
-import { colors, radius } from '@jonex/platform-theme/tokens';
+import { radius } from '@jonex/platform-theme/tokens';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 import McpServicesTab from './McpServicesTab';
 import McpKeysTab from './McpKeysTab';
 
@@ -31,34 +32,29 @@ export default function McpServiceDirectory() {
   };
 
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1 style={{ fontSize: 24, fontWeight: 700, color: colors.brandDark, marginBottom: 4 }}>
-          {t('mcpServiceDirectory.title')}
-        </h1>
-        <p style={{ color: colors.textMuted, margin: '4px 0 0', fontSize: 14 }}>
-          {t('mcpServiceDirectory.pageSubtitle')}
-        </p>
-      </div>
+    <>
+      <PageHeader title={t('mcpServiceDirectory.title')} />
 
-      <Card style={{ borderRadius: radius.card }}>
-        <Tabs
-          activeKey={activeTab}
-          onChange={handleTabChange}
-          items={[
-            {
-              key: 'catalog',
-              label: t('mcpServiceDirectory.tabCatalog'),
-              children: <McpServicesTab onGoToKeys={() => handleTabChange('keys')} />,
-            },
-            {
-              key: 'keys',
-              label: t('mcpServiceDirectory.tabKeys'),
-              children: <McpKeysTab />,
-            },
-          ]}
-        />
-      </Card>
-    </div>
+      <PageContent showCard={false}>
+        <Card style={{ borderRadius: radius.card }}>
+          <Tabs
+            activeKey={activeTab}
+            onChange={handleTabChange}
+            items={[
+              {
+                key: 'catalog',
+                label: t('mcpServiceDirectory.tabCatalog'),
+                children: <McpServicesTab onGoToKeys={() => handleTabChange('keys')} />,
+              },
+              {
+                key: 'keys',
+                label: t('mcpServiceDirectory.tabKeys'),
+                children: <McpKeysTab />,
+              },
+            ]}
+          />
+        </Card>
+      </PageContent>
+    </>
   );
 }
