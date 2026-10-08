@@ -30,6 +30,8 @@ class Settings:
 
     # OpenKB 健康检查（Phase 11）
     OPENKB_HEALTH_URL: str = os.getenv("OPENKB_HEALTH_URL", "http://openkb:7566/health")
+    # jonex_wiki 健康检查（适配器容器 7567，经 /health 控制 search_jonex_wiki 开关）
+    JONEX_WIKI_HEALTH_URL: str = os.getenv("JONEX_WIKI_HEALTH_URL", "http://jonex-wiki-adapter:7567/health")
 
 
 settings = Settings()

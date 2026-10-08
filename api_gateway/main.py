@@ -29,6 +29,8 @@ from jonex_core.common import (
     InvalidApiKeyError,
     require_tenant,
 )
+from jonex_core.common.tenant import require_test_token_allowed
+from jonex_core.common.security_guards import assert_secure_jwt_secret
 
 config = get_config()
 logger = get_logger("api_gateway")
@@ -54,8 +56,9 @@ async def verify_api_key(request: Request) -> str:
         raise MissingApiKeyError()
 
     # TODO: 从数据库验证 API Key
-    # 临时实现：仅当显式开启 ENABLE_TEST_TOKENS 时接受测试用 API Key
-    if config.ENABLE_TEST_TOKENS and api_key.startswith("jonex_test_"):
+    # 临时实现：测试用 API Key
+    if api_key.startswith("jonex_test_"):
+        require_test_token_allowed()
         return require_tenant(api_key.removeprefix("jonex_test_"))
     else:
         raise InvalidApiKeyError()
@@ -146,7 +149,12 @@ def create_app() -> FastAPI:
         setup_logging(enable_file=True)
         logger.info("API Gateway 本地文件日志已启用")
 
-        # 安全守卫: INTERNAL_API_KEY / GATEWAY_API_KEY 必须已从默认哨兵修改
+        # 安全守卫: JWT_SECRET 必须为真实随机值（无条件校验，不依赖 ENV=prod——
+        # ENV 未显式设置时默认 "dev"，生产实例会静默落进 dev 分支使守卫失效）。
+        # 泄漏 JWT_SECRET 可伪造任意用户 JWT（含管理员）与 ingest key。
+        assert_secure_jwt_secret(config)
+
+        # 安全守卫: INTERNAL_API_KEY 必须已从默认哨兵修改
         _internal_key = config.INTERNAL_API_KEY
         if not _internal_key or _internal_key == "change-me-in-production":
             raise RuntimeError(
@@ -154,13 +162,18 @@ def create_app() -> FastAPI:
                 "请在 .env 或环境变量中设置 INTERNAL_API_KEY 为真实随机 key。"
                 "未配置将导致 /internal/* 端点无认证保护。"
             )
-        _gateway_key = config.GATEWAY_API_KEY
-        if not _gateway_key or _gateway_key == "change-me-in-production":
-            raise RuntimeError(
-                "GATEWAY_API_KEY 未配置或仍为默认哨兵值。"
-                "请在 .env 或环境变量中设置 GATEWAY_API_KEY 为真实随机 key。"
-                "未配置将导致 Gateway 到 Sidecar 的内部调用无认证保护。"
-            )
+
+        # 安全守卫: GATEWAY_API_KEY 在生产必须已从默认哨兵修改
+        # （对齐 INTERNAL_API_KEY 的哨兵模式；dev/test 允许哨兵默认值，Gateway 与
+        # Sidecar 读同一 config 精确比对即可自洽）
+        if config.is_production:
+            _gateway_key = config.GATEWAY_API_KEY
+            if not _gateway_key or _gateway_key == "change-me-in-production":
+                raise RuntimeError(
+                    "GATEWAY_API_KEY 未配置或仍为默认哨兵值。"
+                    "生产环境必须在 .env 或环境变量中设置 GATEWAY_API_KEY 为真实随机 key，"
+                    "否则 Gateway→Sidecar 内部认证可被伪造。"
+                )
 
     # ==================== 路由注册 ====================
     register_routes(app)
@@ -239,10 +252,12 @@ def register_routes(app: FastAPI):
     try:
         from api_gateway.routes import knowledge_base_router, tcadp_router, auth_router, platform_router, ecosystem_router
         from api_gateway.routes import knowledge_base_ingest_router, internal_router
+        from api_gateway.routes import task_center_router
         app.include_router(auth_router, prefix="/api/v1/auth", tags=["认证"])
         app.include_router(platform_router, prefix="/api/v1/platform", tags=["平台管理"])
         app.include_router(knowledge_base_router, prefix="/api/v1/knowledge-base", tags=["知识库"])
         app.include_router(knowledge_base_ingest_router, prefix="/api/v1/knowledge-base", tags=["知识库-入站推送"])
+        app.include_router(task_center_router, prefix="/api/v1/task-center", tags=["任务中心"])
         app.include_router(ecosystem_router, tags=["生态管理"])
         app.include_router(internal_router, prefix="/internal", tags=["内部"])
         app.include_router(tcadp_router)

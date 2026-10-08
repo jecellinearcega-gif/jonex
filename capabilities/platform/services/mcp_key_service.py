@@ -51,7 +51,7 @@ class McpKeyService:
         2. authorization_header 是空字符串 → "test_token"
         3. authorization_header 不以 "Bearer " 开头 → "test_token"
         4. 提取 token = authorization_header[7:]（去掉 "Bearer " 前缀）
-        5. token 以 "jonex_test_" 开头（且 ENABLE_TEST_TOKENS=true）→ "test_token"
+        5. token 以 "jonex_test_" 开头 → "test_token"（测试 token 无法 JWT 解码）
         6. decode_token(token) → payload.get("username")
         7. username 为 None 或空字符串 → "test_token"
         8. decode_token 抛出任何异常 → "test_token"
@@ -69,7 +69,7 @@ class McpKeyService:
         if not token:
             return "test_token"
 
-        if get_config().ENABLE_TEST_TOKENS and token.startswith("jonex_test_"):
+        if token.startswith("jonex_test_"):
             return "test_token"
 
         try:

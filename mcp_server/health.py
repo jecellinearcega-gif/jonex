@@ -67,3 +67,45 @@ async def check_openkb_health(
                     exc_info=True,
                 )
     return False
+
+
+async def check_jonex_wiki_health(
+    jonex_wiki_health_url: str,
+    client: httpx.AsyncClient | None = None,
+) -> bool:
+    """检查 jonex_wiki 适配器健康状态，带 3 次重试 + 2s 退避（对照 check_openkb_health）。"""
+    for attempt in range(_OPENKB_HEALTH_RETRIES):
+        try:
+            if client is not None:
+                resp = await client.get(jonex_wiki_health_url, timeout=5)
+            else:
+                async with httpx.AsyncClient(timeout=5) as health_client:
+                    resp = await health_client.get(jonex_wiki_health_url)
+            if resp.status_code != 200:
+                raise Exception(f"jonex_wiki health check returned {resp.status_code}")
+            logger.info(
+                "jonex_wiki 健康检查通过 (attempt %d/%d): %s",
+                attempt + 1, _OPENKB_HEALTH_RETRIES, jonex_wiki_health_url,
+            )
+            return True
+        except httpx.InvalidURL as e:
+            logger.error(
+                "jonex_wiki 健康检查 URL 配置错误: %s (url=%s)", e, jonex_wiki_health_url,
+                exc_info=True,
+            )
+            return False
+        except Exception as e:
+            if attempt < _OPENKB_HEALTH_RETRIES - 1:
+                logger.warning(
+                    "jonex_wiki 健康检查失败 (attempt %d/%d)，%ds 后重试: %s",
+                    attempt + 1, _OPENKB_HEALTH_RETRIES, _OPENKB_HEALTH_RETRY_DELAY, e,
+                    exc_info=True,
+                )
+                await asyncio.sleep(_OPENKB_HEALTH_RETRY_DELAY)
+            else:
+                logger.warning(
+                    "jonex_wiki 不可用（已重试 %d 次），禁用 search_jonex_wiki: %s",
+                    _OPENKB_HEALTH_RETRIES, e,
+                    exc_info=True,
+                )
+    return False

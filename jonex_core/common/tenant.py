@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from typing import Iterator, Optional
 
+from jonex_core.common.config import get_config
 from jonex_core.common.exceptions import TenantIsolationError, TokenExpiredError
 from jonex_core.common.i18n import translate
 
@@ -41,16 +42,30 @@ def require_tenant(tenant_id: str | None) -> str:
     return normalized
 
 
-def _tenant_from_bearer_token(token: str) -> str:
-    from jonex_core.common.config import get_config
+def require_test_token_allowed() -> None:
+    """测试 token 后门安全守卫：仅开发环境（ENV=dev）放行 ``jonex_test_`` 兜底。
 
-    config = get_config()
-    # 测试 token（jonex_test_{tenant_id}）仅当显式开启 ENABLE_TEST_TOKENS 时接受
-    if config.ENABLE_TEST_TOKENS and token.startswith("jonex_test_"):
+    非 dev（test/uat/prod）一律抛 TokenExpiredError(401)，杜绝无验签的租户上下文注入 /
+    admin 绕过。供 5 处 ``jonex_test_`` 引用点复用（user_auth.get_current_user、
+    sidecar._tenant_from_authorization、sidecar.verify_any_auth、
+    tenant._tenant_from_bearer_token、gateway.verify_api_key），对齐 CR-01 门控语义。
+    """
+    if not get_config().is_development:
+        raise TokenExpiredError(
+            message=translate("err.auth.test_token_disabled", fallback="测试 token 仅开发环境可用")
+        )
+
+
+def _tenant_from_bearer_token(token: str) -> str:
+    if token.startswith("jonex_test_"):
+        require_test_token_allowed()
         return _normalize_tenant_id(token.removeprefix("jonex_test_"))
 
     import jwt
 
+    from jonex_core.common.config import get_config
+
+    config = get_config()
     try:
         payload = jwt.decode(token, config.JWT_SECRET, algorithms=[config.JWT_ALGORITHM])
     except jwt.ExpiredSignatureError as exc:
@@ -70,7 +85,7 @@ def extract_tenant_id(request) -> str:
 
     优先级：
     1. Authorization: Bearer {JWT} 中的 tenant_id
-    2. Authorization: Bearer jonex_test_{tenant_id}（仅 ENABLE_TEST_TOKENS=true 时）
+    2. Authorization: Bearer jonex_test_{tenant_id}
     3. X-Tenant-ID
 
     当 JWT/测试 Token 与 X-Tenant-ID 同时存在时，二者必须一致。
@@ -137,5 +152,6 @@ __all__ = [
     "extract_tenant_id",
     "is_default_tenant",
     "require_tenant",
+    "require_test_token_allowed",
     "tenant_scope",
 ]

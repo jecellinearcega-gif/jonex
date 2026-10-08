@@ -361,7 +361,7 @@ async def confirm_upload(
         "knowledge_base_id": kb_id,
         "storage_key": storage_key,
         "file_name": file_name,
-        "storage_backend": _backend if _backend in ("cos", "s3") else "cos",
+        "storage_backend": _backend if _backend in ("cos", "s3") else "local",
     }
     if doc_id:
         data["doc_id"] = doc_id
@@ -559,6 +559,15 @@ def is_search_llmwiki_enabled() -> bool:
     return SEARCH_LLMWIKI_ENABLED
 
 
+# [jonex] jonex_wiki 检索开关（Feature Flag，默认开启；由 check_jonex_wiki_health 控制）
+SEARCH_JONEX_WIKI_ENABLED = os.getenv("SEARCH_JONEX_WIKI_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+
+
+def is_search_jonex_wiki_enabled() -> bool:
+    """返回 search_jonex_wiki 是否可用（线程安全读取模块级状态）。"""
+    return SEARCH_JONEX_WIKI_ENABLED
+
+
 _VALID_SEARCH_MODES = frozenset({"naive", "local", "global", "hybrid", "mix"})
 # mix → hybrid 别名兼容（与 capabilities/knowledge_base/dtos/search.py 保持一致）
 _SEARCH_MODE_ALIASES = {"mix": "hybrid"}
@@ -672,6 +681,7 @@ async def search_ontology(
     mode: str = "hybrid",
     top_k: int = 5,
     strict_mode: bool = False,
+    with_reasoning: bool = False,
 ) -> dict:
     """本体优先检索——实体匹配→1-hop 邻域→RAG fallback。
 
@@ -687,6 +697,7 @@ async def search_ontology(
         mode: 搜索模式（naive / local / global / hybrid，默认 "hybrid"）
         top_k: 返回结果数（默认 5，1-100）
         strict_mode: 是否启用严格模式多次验证（默认 False）
+        with_reasoning: 是否返回推理链追踪（默认 False）
 
     Returns:
         dict: 搜索结果，含 answer、references、reasoning 字段
@@ -703,25 +714,11 @@ async def search_ontology(
         "mode": mode_norm,
         "top_k": top_k,
         "strict_mode": strict_mode,
+        "with_reasoning": with_reasoning,
     }
     if kb_ids:
         payload["knowledge_base_ids"] = kb_ids
     return await call_gateway("query_with_ontology", auth.tenant_id, auth.key_id, payload)
-
-
-async def search_service(
-    service_id: str,
-    query: str,
-    mode: str = "hybrid",
-    top_k: int = 5,
-) -> dict:
-    """[已废弃] 语义搜索领域服务下的所有知识库。
-
-    自 2026-08-10 起废弃，请使用 search_ontology 替代。
-    此别名仅用于向后兼容，将在后续版本中移除。
-    """
-    logger.warning("search_service is deprecated, use search_ontology instead")
-    return await search_ontology(service_id, query, mode, top_k, strict_mode=False)
 
 
 async def search_deep(
@@ -730,6 +727,7 @@ async def search_deep(
     mode: str = "hybrid",
     top_k: int = 5,
     strict_mode: bool = False,
+    with_reasoning: bool = False,
 ) -> dict:
     """深度查询——多轮分解→子问题查询→归并答案。
 
@@ -746,6 +744,7 @@ async def search_deep(
         mode: 搜索模式（naive / local / global / hybrid，默认 "hybrid"）
         top_k: 返回结果数（默认 5，1-100）
         strict_mode: 是否启用严格模式多次验证（默认 False）
+        with_reasoning: 是否返回推理链追踪（默认 False）
 
     Returns:
         dict: 搜索结果，含 answer、references、reasoning 字段
@@ -762,6 +761,7 @@ async def search_deep(
         "mode": mode_norm,
         "top_k": top_k,
         "strict_mode": strict_mode,
+        "with_reasoning": with_reasoning,
     }
     if kb_ids:
         payload["knowledge_base_ids"] = kb_ids
@@ -773,6 +773,7 @@ async def search_llmwiki(
     query: str,
     mode: str = "hybrid",
     top_k: int = 5,
+    with_reasoning: bool = False,
 ) -> dict:
     """OpenKB Wiki 检索——仅适用于 OpenKB 管线知识库，不适用于 LightRAG 管线。
 
@@ -788,6 +789,7 @@ async def search_llmwiki(
         query: 搜索查询（最多 2000 字符）
         mode: 搜索模式（naive / local / global / hybrid，默认 "hybrid"）
         top_k: 返回结果数（默认 5，1-100）
+        with_reasoning: 是否返回推理链追踪（默认 False）
 
     Returns:
         dict: 搜索结果，含 answer、references、reasoning 字段
@@ -805,6 +807,7 @@ async def search_llmwiki(
         "query": query_norm,
         "mode": mode_norm,
         "top_k": top_k,
+        "with_reasoning": with_reasoning,
     }
     if kb_ids:
         payload["knowledge_base_ids"] = kb_ids
@@ -823,11 +826,70 @@ async def search_llmwiki(
         raise
 
 
+async def search_jonex_wiki(
+    service_id: str,
+    query: str,
+    mode: str = "hybrid",
+    top_k: int = 5,
+    with_reasoning: bool = False,
+) -> dict:
+    """Jonex Wiki 检索——仅适用于 jonex_wiki 管线知识库。
+
+    Action: search_jonex_wiki (fallback: search_mix)
+    Guard: SEARCH_JONEX_WIKI_ENABLED flag + require_mcp_auth("view") + _check_service_scope(auth, service_id, required_permission="call")
+
+    通过 jonex_wiki 编译产物进行 Wiki 风格检索。
+    若管线不匹配（code=-32602），自动 fallback 到 search_mix。
+    不支持 strict_mode（jonex_wiki 编译产物无严格模式语义）。
+
+    Args:
+        service_id: 领域服务 ID
+        query: 搜索查询（最多 2000 字符）
+        mode: 搜索模式（naive / local / global / hybrid，默认 "hybrid"）
+        top_k: 返回结果数（默认 5，1-100）
+        with_reasoning: 是否返回推理链追踪（默认 False）
+
+    Returns:
+        dict: 搜索结果，含 answer、references、reasoning 字段
+
+    Raises:
+        McpToolError(code=-32000): jonex_wiki 检索未开放（feature flag 关闭） / 知识库服务不可用
+        McpAuthError(401): 未认证 / service 不在授权范围
+        McpToolError(code=-32602): 参数校验失败（空值 / 长度超限 / mode 不合法 / top_k 超范围）
+    """
+    if not SEARCH_JONEX_WIKI_ENABLED:
+        raise McpToolError(code=-32000, message="Jonex Wiki 检索暂未开放")
+    query_norm, mode_norm, auth, kb_ids = await _validate_search_params(service_id, query, mode, top_k)
+    payload: dict = {
+        "service_id": service_id,
+        "query": query_norm,
+        "mode": mode_norm,
+        "top_k": top_k,
+        "with_reasoning": with_reasoning,
+    }
+    if kb_ids:
+        payload["knowledge_base_ids"] = kb_ids
+    try:
+        return await call_gateway("search_jonex_wiki", auth.tenant_id, auth.key_id, payload)
+    except McpToolError as e:
+        # 管线不匹配 (-32602，服务含非 jonex_wiki 库) 或 jonex_wiki 运行时不可用 (-32000)
+        # → fallback 到 search_mix 统一入口（按 kb_type 分组扇出，正确处理混合库）
+        if e.code in (-32602, _ERROR_INTERNAL):
+            logger.info(
+                "search_jonex_wiki 不可用（code=%s），自动回退到 search_mix: service_id=%s",
+                e.code,
+                service_id,
+            )
+            return await call_gateway("search_mix", auth.tenant_id, auth.key_id, payload)
+        raise
+
+
 async def search_mix(
     service_id: str,
     query: str,
     mode: str = "hybrid",
     top_k: int = 5,
+    with_reasoning: bool = False,
 ) -> dict:
     """混合管线检索统一入口——同时查询 LightRAG 和 OpenKB 管线知识库。
 
@@ -842,6 +904,7 @@ async def search_mix(
         query: 搜索查询（最多 2000 字符）
         mode: 搜索模式（naive / local / global / hybrid，默认 "hybrid"）
         top_k: 返回结果数（默认 5，1-100）
+        with_reasoning: 是否返回推理链追踪（默认 False）
 
     Returns:
         dict: 搜索结果，含 answer、references、reasoning 字段
@@ -856,6 +919,7 @@ async def search_mix(
         "query": query_norm,
         "mode": mode_norm,
         "top_k": top_k,
+        "with_reasoning": with_reasoning,
     }
     if kb_ids:
         payload["knowledge_base_ids"] = kb_ids
@@ -939,7 +1003,7 @@ __all__ = [
     "list_domain_services",
     "read_source",
     "search_deep",
+    "search_jonex_wiki",
     "search_llmwiki",
     "search_ontology",
-    "search_service",   # deprecated, 向后兼容别名
 ]

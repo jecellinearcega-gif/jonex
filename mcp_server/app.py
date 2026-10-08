@@ -10,7 +10,6 @@ Jonex 平台 - MCP Server
 """
 import contextlib
 import logging
-import os
 
 from starlette.applications import Starlette
 from starlette.routing import Route, Mount
@@ -22,8 +21,9 @@ import httpx
 from auth import McpAuthMiddleware
 from rate_limit import McpRateLimitMiddleware
 from config import settings
+from crypto import assert_secure_jwt_secret
 from db import create_pool, close_pool
-from health import check_openkb_health
+from health import check_openkb_health, check_jonex_wiki_health
 import tools
 
 logger = logging.getLogger("mcp")
@@ -47,53 +47,66 @@ async def list_documents(service_id: str, file_name: str = "") -> dict:
 @mcp.tool()
 async def search_ontology(
     service_id: str, query: str, mode: str = "hybrid", top_k: int = 5, strict_mode: bool = False,
+    with_reasoning: bool = False,
 ) -> dict:
     """语义搜索——检索领域服务下知识库的相关内容，作为通用搜索入口。
     适用于常规问答、文档检索、知识查询。
     搜索模式：naive / local / global / hybrid（默认 hybrid）。
-    支持严格模式（strict_mode=True）多次验证循环确保可靠性。"""
-    return await tools.search_ontology(service_id, query, mode, top_k, strict_mode)
-
-
-@mcp.tool()
-async def search_service(
-    service_id: str, query: str, mode: str = "hybrid", top_k: int = 5,
-) -> dict:
-    """[已废弃] 语义搜索领域服务下的所有知识库。请使用 search_ontology 替代。"""
-    return await tools.search_service(service_id, query, mode, top_k)
+    支持严格模式（strict_mode=True）多次验证循环确保可靠性。
+    支持 with_reasoning 推理链追踪（默认 False），返回逐步推导过程与 chunk 召回信息。"""
+    return await tools.search_ontology(service_id, query, mode, top_k, strict_mode, with_reasoning)
 
 
 @mcp.tool()
 async def search_deep(
     service_id: str, query: str, mode: str = "hybrid", top_k: int = 5, strict_mode: bool = False,
+    with_reasoning: bool = False,
 ) -> dict:
     """[实验性，需配置启用] 深度多轮查询——将复杂问题拆解为子问题逐一检索后汇总归并。
     仅适用于需要多步推理的复杂分析场景，常规搜索请优先使用 search_ontology。
     当前可能因 DEEP_QUERY_ENABLED 未启用而不可用。
     搜索模式：naive / local / global / hybrid（默认 hybrid）。
-    支持严格模式（strict_mode=True）多次验证循环确保可靠性。"""
-    return await tools.search_deep(service_id, query, mode, top_k, strict_mode)
+    支持严格模式（strict_mode=True）多次验证循环确保可靠性。
+    支持 with_reasoning 推理链追踪（默认 False），返回逐步推导过程与 chunk 召回信息。"""
+    return await tools.search_deep(service_id, query, mode, top_k, strict_mode, with_reasoning)
 
 
 @mcp.tool()
 async def search_llmwiki(
     service_id: str, query: str, mode: str = "hybrid", top_k: int = 5,
+    with_reasoning: bool = False,
 ) -> dict:
     """Wiki 知识检索——从 OpenKB 编译的 Wiki 知识库中检索。
     仅适用于 OpenKB 管线知识库，通用搜索请优先使用 search_ontology。
     搜索模式：naive / local / global / hybrid（默认 hybrid）。
-    不支持严格模式（OpenKB 编译产物无严格模式语义）。"""
-    return await tools.search_llmwiki(service_id, query, mode, top_k)
+    不支持严格模式（OpenKB 编译产物无严格模式语义）。
+    支持 with_reasoning 推理链追踪（默认 False），返回 wiki 浏览轨迹。"""
+    return await tools.search_llmwiki(service_id, query, mode, top_k, with_reasoning)
+
+
+@mcp.tool()
+async def search_jonex_wiki(
+    service_id: str, query: str, mode: str = "hybrid", top_k: int = 5,
+    with_reasoning: bool = False,
+) -> dict:
+    """Jonex Wiki 知识检索——从 jonex_wiki 编译的 Wiki 知识库中检索。
+    仅适用于 jonex_wiki 管线知识库，通用搜索请优先使用 search_ontology。
+    搜索模式：naive / local / global / hybrid（默认 hybrid）。
+    不支持严格模式（jonex_wiki 编译产物无严格模式语义）。
+    支持 with_reasoning 推理链追踪（默认 False），返回 wiki 浏览轨迹。"""
+    return await tools.search_jonex_wiki(service_id, query, mode, top_k, with_reasoning)
 
 
 @mcp.tool()
 async def search_mix(
     service_id: str, query: str, mode: str = "hybrid", top_k: int = 5,
+    with_reasoning: bool = False,
 ) -> dict:
     """混合检索——自动识别知识库管线类型（LightRAG / OpenKB）并扇出并行检索。
     适用于包含多种管线知识库的领域服务，通用搜索请优先使用 search_ontology。
-    搜索模式：naive / local / global / hybrid（默认 hybrid）。"""
-    return await tools.search_mix(service_id, query, mode, top_k)
+    搜索模式：naive / local / global / hybrid（默认 hybrid）。
+    支持 with_reasoning 推理链追踪（默认 False），返回逐步推导过程与 chunk 召回信息。"""
+    return await tools.search_mix(service_id, query, mode, top_k, with_reasoning)
 
 
 @mcp.tool()
@@ -164,6 +177,10 @@ async def lifespan(app: Starlette):
     health_ok = await check_openkb_health(settings.OPENKB_HEALTH_URL, client=_client)
     if not health_ok:
         tools.SEARCH_LLMWIKI_ENABLED = False
+    # jonex_wiki 健康检查——控制 SEARCH_JONEX_WIKI_ENABLED 运行时开关
+    jonex_health_ok = await check_jonex_wiki_health(settings.JONEX_WIKI_HEALTH_URL, client=_client)
+    if not jonex_health_ok:
+        tools.SEARCH_JONEX_WIKI_ENABLED = False
     try:
         async with mcp.session_manager.run():
             yield
@@ -207,12 +224,9 @@ app = McpRateLimitMiddleware(
 #   解析 MCP Authorization header → 验证签名 → 注入 McpAuthContext
 app = McpAuthMiddleware(app)
 
-# Startup guard: JWT_SECRET must be set and non-empty
-_jwt_secret = os.getenv("JWT_SECRET", "").strip()
-if not _jwt_secret:
-    raise RuntimeError(
-        "JWT_SECRET 环境变量未配置或为空。"
-        "MCP Key 鉴权依赖 JWT_SECRET 作为 HMAC key，"
-        "未配置将导致所有鉴权可被绕过。"
-        "请在 .env.mcp 或 deploy/.env.mcp 中设置 JWT_SECRET。"
-    )
+# Startup guard: JWT_SECRET 必须非空。
+# 2026-09-22 起「非仓库里的公开默认值」判定已停用（原因：成员环境未配置真实值，
+# 容器无法启动），黑名单常量保留在 crypto.py 以便恢复。本服务是 MCP Key 的校验侧，
+# 盐是公开值即等于 Key 可被离线爆破比对，请确保各环境 MCP_KEY_SECRET 独立配置。
+# 判据与逃生阀统一在 crypto.assert_secure_jwt_secret（零 jonex_core 依赖）。
+assert_secure_jwt_secret()

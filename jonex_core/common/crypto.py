@@ -3,7 +3,16 @@
 """对称加密（凭据可逆存储）+ ingest key 哈希。
 
 - 凭据：Fernet 对称加密，密钥来自 DATA_SOURCE_SECRET_KEY（base64 urlsafe 32B）。
-- ingest key：HMAC-SHA256（JWT_SECRET 作 key），单向，仅存哈希。
+- ingest key / MCP Key：HMAC-SHA256（MCP_KEY_SECRET 作 key，未配置时回退 JWT_SECRET），
+  单向，仅存哈希。
+
+  ⚠️ 两类 key 的 legacy 策略**不同**，不可混用同一套 verify：
+  - **MCP Key**（yxm_*）：明文是 token_urlsafe(32) 高熵随机串 ⇒ 「已知盐 + 未知明文」
+    不可行，故 verify 额外尝试 MCP_KEY_SECRET_LEGACY，使盐可轮换而无需重发。
+  - **ingest key**（yxk_*）：payload 是 base64(tenant|kb|ds|rand) **明文可读** ⇒ 是
+    「已知盐 + 已知明文」，攻击者可自造 payload 并签出合法签名；且 decode_ingest_key
+    只解析不验签、租户由 payload 决定。故 ingest key **只认当前盐、不做 legacy 兜底**，
+    盐轮换时必须重新下发。
 """
 from __future__ import annotations
 
@@ -63,8 +72,11 @@ def hash_ingest_key(plaintext: str) -> str:
 def verify_ingest_key(plaintext: str, stored_hash: str) -> bool:
     if not plaintext or not stored_hash:
         return False
-    # 对整串 key 做 HMAC，和存储的签名比对
-    return hmac.compare_digest(_sign_payload(plaintext), stored_hash)
+    # 只认当前盐，**不做 legacy 兜底**（与 verify_mcp_key 的关键差异）：
+    # ingest key 的 payload 是 base64 明文，盐一旦公开即可自造 payload 伪造签名，
+    # 而 decode_ingest_key 只解析不验签、租户由 payload 决定 ⇒ 兜底等于开放越权写入。
+    # 代价是盐轮换后存量 ingest key 必须重新下发（数量少，可接受）。
+    return hmac.compare_digest(_hmac_hex(_current_hash_secret(), plaintext), stored_hash)
 
 
 def decode_ingest_key(plaintext: str) -> dict | None:
@@ -125,18 +137,59 @@ def verify_mcp_key(plaintext: str, stored_hash: str) -> bool:
     """
     if not plaintext or not stored_hash:
         return False
-    return hmac.compare_digest(hash_mcp_key(plaintext), stored_hash)
+    return _verify_payload(plaintext, stored_hash)
+
+
+# ── MCP Key / ingest key 的 HMAC 盐（与 JWT 签名根解耦） ──
+# 这两类 key 的存储值都是 HMAC-SHA256(盐, 明文)，盐原为 JWT_SECRET ⇒ 一旦轮换 JWT_SECRET，
+# 存量 key 的哈希全部失配、必须重发。为此把盐独立出来：
+#   MCP_KEY_SECRET        —— 当前盐；未配置时回退 JWT_SECRET（兼容既有部署与测试）
+#   MCP_KEY_SECRET_LEGACY —— 旧盐，仅在 verify 时兜底；存量 key 无需重发
+# 保留旧盐不构成伪造风险：这些 key 的明文是高熵随机串（token_urlsafe(32)），
+# 攻击面是「已知盐 + 未知明文」的预映像攻击，不可行——与 JWT 签名的
+# 「已知盐 + 已知明文」可任意伪造不同。
+MCP_KEY_SECRET_ENV = "MCP_KEY_SECRET"
+MCP_KEY_SECRET_LEGACY_ENV = "MCP_KEY_SECRET_LEGACY"
+
+
+def _current_hash_secret() -> bytes:
+    """当前 HMAC 盐：优先 MCP_KEY_SECRET，未配置回退 JWT_SECRET（兼容旧部署）。"""
+    secret = os.getenv(MCP_KEY_SECRET_ENV, "").strip() or os.getenv("JWT_SECRET", "").strip()
+    if not secret:
+        raise RuntimeError(
+            f"{MCP_KEY_SECRET_ENV} 与 JWT_SECRET 环境变量均未配置或为空，无法安全计算哈希。"
+            f"请设置 {MCP_KEY_SECRET_ENV} 环境变量（推荐）或 JWT_SECRET。"
+        )
+    return secret.encode()
+
+
+def _legacy_hash_secret() -> bytes | None:
+    """旧盐，仅用于 verify 兜底；未配置返回 None。"""
+    secret = os.getenv(MCP_KEY_SECRET_LEGACY_ENV, "").strip()
+    return secret.encode() if secret else None
+
+
+def _hmac_hex(secret: bytes, data: str) -> str:
+    return hmac.new(secret, data.encode(), hashlib.sha256).hexdigest()
 
 
 def _sign_payload(data: str) -> str:
     """HMAC-SHA256 签名（与 mcp_server/crypto.py 算法一致，修改前需同步）。"""
-    secret = os.getenv("JWT_SECRET", "").encode()
-    if not secret:
-        raise RuntimeError(
-            "JWT_SECRET 环境变量未配置或为空，无法安全计算哈希。"
-            "请设置 JWT_SECRET 环境变量。"
-        )
-    return hmac.new(secret, data.encode(), hashlib.sha256).hexdigest()
+    return _hmac_hex(_current_hash_secret(), data)
+
+
+def _verify_payload(data: str, stored_hash: str) -> bool:
+    """校验签名：先试当前盐，未命中再试 legacy 盐（盐轮换的平滑过渡）。
+
+    ⚠️ **仅可用于 MCP Key**（明文高熵不可猜）。ingest key 必须走单盐比对，
+    见 verify_ingest_key 的说明——否则 legacy 盐一旦是公开值即可被伪造。
+    """
+    if not stored_hash:
+        return False
+    if hmac.compare_digest(_hmac_hex(_current_hash_secret(), data), stored_hash):
+        return True
+    legacy = _legacy_hash_secret()
+    return legacy is not None and hmac.compare_digest(_hmac_hex(legacy, data), stored_hash)
 
 
 # ── 文档原文查看短时 token（音视频/PDF/图片直连播放用） ──

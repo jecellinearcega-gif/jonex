@@ -22,7 +22,7 @@ from typing import Optional
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from crypto import hash_mcp_key
+from crypto import candidate_hashes
 from db import get_pool
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,9 @@ async def find_by_key_hash(key_hash: str) -> dict | None:
     使用参数化查询 $1，状态过滤（revoked_at/disabled_at/expires_at/is_deleted）
     通过 WHERE 子句隐式完成，只放行 active 状态的 Key。
     allowed_kb_ids / write_grants 为 JSONB，asyncpg 自动反序列化为 list。
+
+    调用方应遍历 ``crypto.candidate_hashes()`` 的结果逐个查询，以放行盐轮换
+    之前签发的存量 Key（legacy 兜底）；只查当前盐会让存量 Key 全部 401。
 
     Args:
         key_hash: MCP Key 的 HMAC-SHA256 hash（64 字符 hex）
@@ -178,8 +181,8 @@ class McpAuthMiddleware:
     2. 放行 /health 白名单
     3. 提取 Bearer token（兼容 X-MCP-Key header）
     4. 格式校验（yxm_ 前缀 + 长度检查）
-    5. hash
-    6. 单查 mcp_keys（统一 Key）
+    5. 计算候选哈希（当前盐优先，MCP_KEY_SECRET_LEGACY 兜底）
+    6. 按候选哈希逐个单查 mcp_keys（统一 Key），任一命中即可
     7. 状态过滤（revoked/disabled/expired/deleted，SQL WHERE 隐式完成）
     8. tenant 状态校验
     9. 预载 service_permissions + 组装 ctx
@@ -212,10 +215,15 @@ class McpAuthMiddleware:
             # Steps 3-10: 鉴权主流程
             raw_key = self._extract_bearer_token(scope)  # Step 3
             self._validate_key_format(raw_key)            # Step 4
-            key_hash = hash_mcp_key(raw_key)               # Step 5
 
-            # Step 6-7: 单查 mcp_keys（统一 Key，含 write_grants）
-            record = await find_by_key_hash(key_hash)
+            # Step 5-7: 逐个候选哈希查 mcp_keys（当前盐优先，LEGACY 兜底），任一命中即可。
+            # 鉴权是「按 key_hash 查表」而非「取出哈希再比对」，双盐兜底必须落在查询侧——
+            # 只调 verify_mcp_key() 兜不住存量 Key（它没有生产调用点）。
+            record = None
+            for key_hash in candidate_hashes(raw_key):     # Step 5
+                record = await find_by_key_hash(key_hash)  # Step 6
+                if record is not None:
+                    break
             if record is None:
                 raise McpAuthError(401, "认证失败")
 

@@ -17,7 +17,7 @@ from fastapi import Depends, Header
 from jonex_core.common.config import get_config
 from jonex_core.common.exceptions import TokenExpiredError, PermissionDeniedError
 from jonex_core.common.i18n import translate
-from jonex_core.common.tenant import require_tenant
+from jonex_core.common.tenant import require_tenant, require_test_token_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,10 @@ class UserAuth:
         return bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=self.bcrypt_rounds)).decode()
 
     def verify_password(self, password: str, password_hash: str) -> bool:
+        # 影子用户 password_hash 可为 None：本地登录统一返回 False → InvalidCredentialsError，
+        # 不抛 AttributeError 冒泡 500，也不泄露账号存在性。
+        if not password_hash:
+            return False
         return bcrypt.checkpw(password.encode(), password_hash.encode())
 
     def _create_token(
@@ -95,12 +99,29 @@ class UserAuth:
             payload = jwt.decode(token, self.secret, algorithms=[self.algorithm])
             if payload.get("type") not in ("user", "refresh"):
                 raise TokenExpiredError()  # Token 类型不合法（非 user/refresh）
+            self._validate_claims(payload)
             return payload
         except jwt.ExpiredSignatureError:
             raise TokenExpiredError()  # Token 签名已过期
         except jwt.PyJWTError as e:
             logger.warning(f"JWT 验签失败: {e}")
             raise TokenExpiredError()  # Token 格式无效或签名校验失败
+
+    @staticmethod
+    def _validate_claims(payload: dict) -> None:
+        """校验本地 HS256 token 必需 claim 的存在性与类型。
+
+        缺 ``sub`` / ``tenant_id`` / ``username`` / ``role``，或 ``sub`` 非整数 →
+        抛 :class:`TokenExpiredError`(401)，禁止裸 ``KeyError``/``ValueError`` 泄漏为 500。
+        调用方（get_current_user / me / sidecar 租户解析）据此安全地 ``int(payload["sub"])``。
+        """
+        try:
+            int(payload["sub"])
+        except (KeyError, TypeError, ValueError):
+            raise TokenExpiredError(message="token 缺少合法的 sub claim")
+        for field in ("tenant_id", "username", "role"):
+            if payload.get(field) is None:
+                raise TokenExpiredError(message=f"token 缺少 {field} claim")
 
 
     def create_login_ticket_plaintext(self) -> str:
@@ -133,11 +154,16 @@ async def get_current_user(authorization: str = Header(...)) -> dict:
     本地调试/演示用测试 token ``jonex_test_{tenant_id}`` 无法 JWT 解码，
     此处特判映射为 admin 用户兜底（与 Sidecar ``_tenant_from_authorization`` 一致），
     否则本地调试所有 admin 端点一律 401。
+
+    安全守卫：测试 token 后门的门控已收敛到公共守卫 ``require_test_token_allowed()``
+    （tenant 模块），仅开发环境（ENV=dev）放行，test/uat/prod 一律拒绝，
+    杜绝无验签 admin 绕过（对齐 api_gateway GATEWAY_API_KEY 生产哨兵守卫模式）。
     """
     if not authorization.startswith("Bearer "):
         raise TokenExpiredError(message=translate("err.auth.missing_bearer_token", fallback="缺少 Bearer token"))
     token = authorization[7:]
     if token.startswith("jonex_test_"):
+        require_test_token_allowed()
         return {
             "user_id": 0,
             "tenant_id": require_tenant(token.removeprefix("jonex_test_")),

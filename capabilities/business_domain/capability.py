@@ -12,6 +12,7 @@ from jonex_core.capability.models import (
 )
 from jonex_core.common.exceptions import TenantIsolationError, JonexException, PermissionDeniedError
 from jonex_core.common.i18n import translate
+from jonex_core.common.security_guards import assert_secure_jwt_secret
 from jonex_core.common.tenant import require_tenant
 
 from capabilities.business_domain.services import (
@@ -100,6 +101,12 @@ class BusinessDomainCapability(BaseCapability):
         self._publish = TemplatePublishService()
         self._dispatch = self._build_dispatch()
         super().__init__()
+
+    async def initialize(self) -> None:
+        # 安全守卫：JWT_SECRET 必须为真实随机值（无条件）。本服务校验用户 JWT，
+        # 使用公开默认值即可被伪造管理员 token。
+        assert_secure_jwt_secret()
+        await super().initialize()
 
     def register_routes(self, app):
         """注册业务领域 REST API 路由"""
