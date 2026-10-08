@@ -7,7 +7,7 @@ import re
 import datetime
 from datetime import timezone
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, TypeVar, Union, final
+from typing import Any, Awaitable, Callable, Optional, TypeVar, Union, final
 import numpy as np
 import configparser
 import ssl
@@ -2497,13 +2497,16 @@ class PGKVStorage(BaseKVStorage):
 
     # ── [jonex] 按 doc= 锚点列出 chunks ──────────────────────────
     async def get_chunks_by_doc_id(
-        self, doc_id: str, *, limit: int = 500,
+        self, doc_id: str, *, limit: Optional[int] = None,
     ) -> list[dict[str, Any]]:
         """List chunks whose file_path contains ``doc=<doc_id>`` anchor.
 
         Each chunk carries the full file_source string (with time_start/time_end
         encoded as tstart=/tend=), enabling downstream parsing into timeline
         location metadata for video/audio documents.
+
+        [jonex] limit 默认 None = 不设上限（原硬编码 500 会截断超长文档的
+        chunk 读回，本体抽取 Stage4 拿不到完整输入，§5.6 代价②）。
         """
         if not doc_id:
             return []
@@ -2539,7 +2542,7 @@ class PGKVStorage(BaseKVStorage):
                 "create_time": create_time,
                 "update_time": create_time if update_time == 0 else update_time,
             })
-            if len(out) >= limit:
+            if limit is not None and len(out) >= limit:
                 break
         return out
 

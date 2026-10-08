@@ -25,14 +25,20 @@ logger = logging.getLogger("llm_gateway")
 # 预留：按 model 名细化到多上游的映射表
 MODEL_ROUTE_OVERRIDES: dict[str, str] = {}
 
-# [jonex] 上游模型名别名映射：某些客户端（如 LiteLLM）会做内部模型别名转换，
-# 导致发往 LLM Gateway 的 model 名与上游实际注册的 model 名不一致。
-# 此表将入站 model 名映射为上游兼容名称后转发。
-# 示例：OpenKB 的 LiteLLM 把 deepseek-v4-flash-202605→gpt-5.4，
-# 但腾讯 TokenHub 只认 deepseek-v4-flash-202605。
-MODEL_ALIAS_MAP: dict[str, str] = {
-    "gpt-5.4": "deepseek-v4-flash-202605",
-}
+# [jonex] 这里原先有一张 MODEL_ALIAS_MAP（`{"gpt-5.4": <环境变量名>}`）+
+# `_apply_model_alias()`，作用是把入站的 `gpt-5.4` 静默改写成部署里的模型名
+# ——垫的是「OpenKB 用 LiteLLM，会把模型名转成 gpt-5.4」那段历史。
+#
+# 2026-10-08 按决定**整体删除**：模型名应当在 KB 自己的 config.yaml 里显式可见、
+# 可审计，而不是由网关在转发前偷偷换掉。隐藏改写还有个副作用——排查「模型名对不上」
+# 得同时想到 openkb 层、网关别名表、上游渠道表三层，而日志只显示"映射成功"。
+#
+# 现在改由 openkb 侧在初始化 KB 时就把**环境变量解析出的模型名**写进 config.yaml
+# （见 jonex_core/capability/atomic/openkb/openkb_adapter.py 的三处 initialize_kb）。
+# 网关只做一件事：把入站 model 原样转发，认识不认识由上游渠道表决定。
+#
+# ⚠️ 存量 KB 的 config.yaml 里若仍写着 gpt-5.4，去掉别名后会直接撞上游
+# "No available channel" —— 需要把这些 KB 的 model 改写成当前部署的模型名。
 
 
 def _upstream_path(request_path: str) -> str:
@@ -76,17 +82,6 @@ def upstream_headers(upstream_key: str, request: Request) -> dict[str, str]:
         headers["User-Agent"] = ua
 
     return headers
-
-
-def _apply_model_alias(body: dict) -> None:
-    """将入站 model 名按 MODEL_ALIAS_MAP 映射为上游兼容名称。"""
-    if not isinstance(body, dict):
-        return
-    model = body.get("model")
-    if model and model in MODEL_ALIAS_MAP:
-        new_model = MODEL_ALIAS_MAP[model]
-        logger.info("模型别名映射 | %s → %s", model, new_model)
-        body["model"] = new_model
 
 
 def _maybe_disable_thinking(path: str, body: dict, ctx: MeteringContext) -> None:
@@ -187,7 +182,6 @@ async def proxy_nonstream(
     host, key = resolve_upstream(request.url.path, body)
     cfg = get_config()
 
-    _apply_model_alias(body)
     _maybe_disable_thinking(request.url.path, body, ctx)
     url = f"{host}{_upstream_path(request.url.path)}"
     logger.info("转发上游(非流式) | req_id=%s url=%s model=%s", ctx.request_id, url, body.get("model"))
@@ -297,7 +291,6 @@ async def proxy_stream(
     host, key = resolve_upstream(request.url.path, body)
     cfg = get_config()
 
-    _apply_model_alias(body)
     _maybe_disable_thinking(request.url.path, body, ctx)
     # dict 合并 stream_options，仅补 include_usage 不覆盖（循环外只做一次）
     body["stream_options"] = {
@@ -488,26 +481,58 @@ async def proxy_rerank(
     t0 = time.monotonic()
 
     if binding == "cohere":
-        results: list[dict] = []
-        for bi, batch in enumerate(batches):
-            url = f"{host}/rerank"
-            payload = {"model": model, "query": query, "documents": batch}
-            if top_n is not None:
-                payload["top_n"] = top_n
-            try:
-                async with httpx.AsyncClient(timeout=cfg.LLMGW_RERANK_TIMEOUT) as cli:
-                    resp = await cli.post(
-                        url, json=payload,
-                        headers={"Authorization": f"Bearer {key}"},
-                    )
-                batch_results = resp.json().get("results", [])
-                for r in batch_results:
+        # [jonex] 分批**并发**（2026-09-24）。原先这里是串行 `for` 逐批 await，
+        # 而 `LLMGW_RERANK_CONCURRENCY` 只在 ollama-generate 分支被消费 ——
+        # cohere 绑定下并发配置形同虚设。实测代价随批数线性放大：单批 ≈155ms，
+        # 45 条 = 4 批 = 621ms、115 条 = 10 批 ≈ 1.55s，而池/证据校验动辄上百条。
+        #
+        # ⚠️ **批数超过并发上限时按轮次串行**，不是「一轮出完」：默认
+        # `LLMGW_RERANK_CONCURRENCY=4` 时，115 条 = 10 批要跑 3 轮（≈465ms），
+        # 45 条那 4 批才恰好一轮。别拿 4 批的例子外推到所有规模。
+        #
+        # ⚠️ 并发**不改分数**：上游对每个 (query, document) 独立打分，本函数只做
+        # 分批转发 + `index` 全局重编号，**无归一化、无跨批聚合**。故批次怎么并行，
+        # 同一篇文档拿到的 `relevance_score` 都一样——这是改动安全性的全部依据。
+        #
+        # ⚠️ **取舍：失败不再短路**。原串行版首批异常就 return、后续批次不发；
+        # 现在 `gather` 会把全部批次发出去再逐个判。在「上游过载导致超时」这个
+        # 最常见的失败场景下，这会让瞬时并发更高、**加剧过载**。换来的是正常路径
+        # 的墙钟从 O(批数) 降到 O(批数/并发)。若实测发现上游被打爆，把
+        # `LLMGW_RERANK_CONCURRENCY` 调小即可（唯一旋钮）。
+        sem = asyncio.Semaphore(max(1, cfg.LLMGW_RERANK_CONCURRENCY))
+        base_headers = {"Authorization": f"Bearer {key}"}
+
+        async def _one_batch(bi: int, batch: list) -> list[dict]:
+            async with sem:
+                payload: dict = {"model": model, "query": query, "documents": batch}
+                if top_n is not None:
+                    payload["top_n"] = top_n
+                resp = await cli.post(
+                    f"{host}/rerank", json=payload, headers=base_headers,
+                )
+                out = resp.json().get("results", [])
+                for r in out:
                     r["index"] = bi * max_docs + r.get("index", 0)
-                results.extend(batch_results)
-            except Exception as e:
+                return out
+
+        async with httpx.AsyncClient(timeout=cfg.LLMGW_RERANK_TIMEOUT) as cli:
+            batch_results = await asyncio.gather(
+                *[_one_batch(bi, b) for bi, b in enumerate(batches)],
+                return_exceptions=True,
+            )
+        results = []
+        for res in batch_results:
+            # ⚠️ 取消信号**不是**「上游失败」——`BaseException` 会连
+            # `CancelledError` 一起接住，兜成 502 会让调用方以为只是上游抖动、
+            # 继续往下走，而正确行为是让取消传播出去。
+            if isinstance(res, asyncio.CancelledError):
+                raise res
+            if isinstance(res, BaseException):
                 latency_ms = int((time.monotonic() - t0) * 1000)
-                logger.exception("rerank 上游异常(cohere) | req_id=%s err=%s", ctx.request_id, e)
-                return ({"error": {"message": f"rerank upstream failed: {e}"}}, 502, latency_ms)
+                logger.exception(
+                    "rerank 上游异常(cohere) | req_id=%s err=%s", ctx.request_id, res)
+                return ({"error": {"message": f"rerank upstream failed: {res}"}}, 502, latency_ms)
+            results.extend(res)
         latency_ms = int((time.monotonic() - t0) * 1000)
         if top_n:
             results = sorted(results, key=lambda r: r["relevance_score"], reverse=True)[:top_n]

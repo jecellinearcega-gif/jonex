@@ -32,6 +32,7 @@ from jonex_core.capability.models import (
 from jonex_core.common.exceptions import CapabilityInvokeError
 from jonex_core.common.logger import get_logger
 from jonex_core.common.i18n import translate
+from jonex_core.common.model_config import resolve_llm_model
 from jonex_core.common.tenant import require_tenant
 
 logger = get_logger("capability.atomic.rag.lightrag_v2")
@@ -156,7 +157,7 @@ class LightRAGAdapterV2(BaseRAGCapability):
         if llm_func is None:
             # Fallback: use _metered_llm with env vars (LLM_BINDING_HOST / LLM_MODEL)
             llm_host = os.getenv("LLM_BINDING_HOST", "")
-            llm_model = os.getenv("LLM_MODEL", "deepseek-v4-flash-202605")
+            llm_model = resolve_llm_model("LLM_MODEL")
             if llm_host:
                 llm_func = mf._metered_llm(llm_model)
                 logger.info(f"LLM (HTTP mode): {llm_model} @ {llm_host}")
@@ -356,7 +357,7 @@ class LightRAGAdapterV2(BaseRAGCapability):
         # execution_mode / prompt_ids。
         # [jonex] 键集与 LocalRAGClient.insert 的 _extra（client.py）逐一对应，
         # 新加透传参数时两处需同步。
-        for k in ("document_id", "storage_backend", "storage_key", "execution_mode", "prompt_ids"):
+        for k in ("document_id", "storage_backend", "storage_key", "execution_mode", "prompt_ids", "kb_type"):
             if kwargs.get(k) is not None:
                 payload[k] = kwargs[k]
         return self._unwrap(await self._dispatch("insert", payload, tenant_id), "insert")

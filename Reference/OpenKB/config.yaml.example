@@ -1,4 +1,7 @@
-model: gpt-5.4                   # LLM model (any LiteLLM-supported provider)
+# [jonex] 显式写 model 时它是最高权重（原样保留，哪怕写的是旧值）。
+# 不写 model 键时回落到环境变量：OPENKB_LLM_MODEL → DEFAULT_LLM_MODEL；
+# 两者都为空则报错，不再默认 gpt-5.4。
+model: deepseek-v4-flash-202605    # LLM model (any LiteLLM-supported provider)
 language: en                     # Wiki output language
 pageindex_threshold: 20          # PDF pages threshold for PageIndex
 

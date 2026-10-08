@@ -11,7 +11,7 @@ from typing import Any
 
 from pageindex import IndexConfig, PageIndexClient
 
-from openkb.config import resolve_concurrency, resolve_effective_config
+from openkb.config import resolve_concurrency, resolve_effective_config, resolve_llm_model
 from openkb.tree_renderer import render_summary_md
 
 logger = logging.getLogger(__name__)
@@ -190,7 +190,7 @@ def index_long_document(pdf_path: Path, kb_dir: Path, doc_name: str | None = Non
     openkb_dir = kb_dir / ".openkb"
     config = resolve_effective_config(kb_dir)[0]
 
-    model: str = config.get("model", "gpt-5.4")
+    model: str = resolve_llm_model(config)
     pageindex_api_key = os.environ.get("PAGEINDEX_API_KEY", "")
 
     index_config = _build_index_config(config)

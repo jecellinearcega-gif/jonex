@@ -2140,23 +2140,98 @@ async def background_delete_documents(
 
                 # 从存储查询每个受影响实体/关系的当前剩余 chunk（已反映全部删除）
                 entities_to_rebuild: dict = {}
+                ghost_entities: list[str] = []  # [jonex] P4.5
                 for name in all_affected_entity_names:
                     stored = await rag.entity_chunks.get_by_id(name)
                     if stored and isinstance(stored, dict):
-                        chunk_ids = stored.get("chunk_ids", [])
-                        if chunk_ids:
-                            entities_to_rebuild[name] = [c for c in chunk_ids if c]
+                        chunk_ids = [c for c in stored.get("chunk_ids", []) if c]
+                        if not chunk_ids:
+                            continue
+                        # [jonex] P4.5 修复：entity_chunks 中的剩余 chunk 引用可能是
+                        # 幽灵引用（chunk 已随本次批量删除消失，但实体因 full_entities
+                        # 清单缺失未进入待删集合）。此时 rebuild 无数据可重建
+                        # （"No cached extraction results found"），节点将永久残留。
+                        # 先校验 chunk 是否真实存在：全部缺失 → 转为删除。
+                        chunk_records = await rag.text_chunks.get_by_ids(chunk_ids)
+                        valid_ids = [
+                            cid
+                            for cid, rec in zip(chunk_ids, chunk_records)
+                            if rec
+                        ]
+                        if valid_ids:
+                            entities_to_rebuild[name] = valid_ids
+                        else:
+                            ghost_entities.append(name)
 
                 relationships_to_rebuild: dict = {}
+                ghost_relations: list[tuple] = []  # [jonex] P4.5
                 from lightrag.utils import make_relation_chunk_key  # [jonex] R2 fix
                 for key in all_affected_relation_keys:
                     # [jonex] R2 fix：relation_chunks 的存储键是 make_relation_chunk_key(src,tgt)
                     # 返回的字符串（GRAPH_FIELD_SEP.join(sorted((src,tgt)))），不能直接用元组。
                     stored = await rag.relation_chunks.get_by_id(make_relation_chunk_key(*key))
                     if stored and isinstance(stored, dict):
-                        chunk_ids = stored.get("chunk_ids", [])
-                        if chunk_ids:
-                            relationships_to_rebuild[key] = [c for c in chunk_ids if c]
+                        chunk_ids = [c for c in stored.get("chunk_ids", []) if c]
+                        if not chunk_ids:
+                            continue
+                        chunk_records = await rag.text_chunks.get_by_ids(chunk_ids)
+                        valid_ids = [
+                            cid
+                            for cid, rec in zip(chunk_ids, chunk_records)
+                            if rec
+                        ]
+                        if valid_ids:
+                            relationships_to_rebuild[key] = valid_ids
+                        else:
+                            ghost_relations.append(key)
+
+                # [jonex] P4.5：rebuild 前清理幽灵实体/关系（chunk 归属已全部消失），
+                # 同步删除图节点/边、实体/关系向量与 chunk-tracking 记录。
+                if ghost_entities or ghost_relations:
+                    try:
+                        if ghost_entities:
+                            await rag.chunk_entity_relation_graph.remove_nodes(
+                                ghost_entities
+                            )
+                            await rag.entities_vdb.delete(
+                                [
+                                    compute_mdhash_id(e, prefix="ent-")
+                                    for e in ghost_entities
+                                ]
+                            )
+                            await rag.entity_chunks.delete(ghost_entities)
+                            logger.warning(
+                                "[jonex][P4.5] ghost entities removed: %s",
+                                ghost_entities[:10],
+                            )
+                        if ghost_relations:
+                            await rag.chunk_entity_relation_graph.remove_edges(
+                                ghost_relations
+                            )
+                            rel_ids = []
+                            for src, tgt in ghost_relations:
+                                rel_ids.extend(
+                                    [
+                                        compute_mdhash_id(src + tgt, prefix="rel-"),
+                                        compute_mdhash_id(tgt + src, prefix="rel-"),
+                                    ]
+                                )
+                            await rag.relationships_vdb.delete(rel_ids)
+                            await rag.relation_chunks.delete(
+                                [
+                                    make_relation_chunk_key(src, tgt)
+                                    for src, tgt in ghost_relations
+                                ]
+                            )
+                            logger.warning(
+                                "[jonex][P4.5] ghost relations removed: %s",
+                                ghost_relations[:10],
+                            )
+                    except Exception as ghost_err:
+                        logger.error(
+                            "[jonex][P4.5] ghost cleanup failed: %s", ghost_err,
+                        )
+                        logger.error(traceback.format_exc())
 
                 if entities_to_rebuild or relationships_to_rebuild:
                     await rebuild_knowledge_from_chunks(

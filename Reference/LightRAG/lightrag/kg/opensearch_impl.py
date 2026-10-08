@@ -15,7 +15,7 @@ import ssl as ssl_module
 import time
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Union, final
+from typing import Any, AsyncIterator, Optional, Union, final
 import numpy as np
 import configparser
 
@@ -446,9 +446,13 @@ class OpenSearchKVStorage(BaseKVStorage):
 
     # ── [jonex] 按 doc= 锚点列出 chunks ──────────────────────────
     async def get_chunks_by_doc_id(
-        self, doc_id: str, *, limit: int = 500,
+        self, doc_id: str, *, limit: Optional[int] = None,
     ) -> list[dict[str, Any]]:
-        """List chunks whose file_path contains ``doc=<doc_id>`` anchor."""
+        """List chunks whose file_path contains ``doc=<doc_id>`` anchor.
+
+        [jonex] limit 默认 None = 不设上限（原硬编码 500 会截断超长文档，
+        §5.6 代价②）；OpenSearch max_result_window 上限 10000 兜底。
+        """
         if not doc_id or not self._index_ready:
             return []
         pattern = f"doc={doc_id}"
@@ -457,7 +461,7 @@ class OpenSearchKVStorage(BaseKVStorage):
                 index=self._index_name,
                 body={
                     "query": {"match_phrase": {"file_path": pattern}},
-                    "size": limit,
+                    "size": limit if limit is not None else 10000,
                     "sort": [{"chunk_order_index": "asc"}],
                 },
             )

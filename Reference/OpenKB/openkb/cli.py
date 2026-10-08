@@ -51,7 +51,10 @@ from dotenv import load_dotenv
 from openkb.agent.compiler import DEFAULT_COMPILE_CONCURRENCY, compile_long_doc
 from openkb.config import (
     DEFAULT_CONFIG,
+    ModelNotConfiguredError,
+    env_llm_model,
     resolve_effective_config,
+    resolve_llm_model,
     save_config,
     load_global_config,
     register_kb,
@@ -187,7 +190,7 @@ def _setup_llm_key(kb_dir: Path | None = None) -> None:
         # wrong provider. resolve_effective_config handles a missing config.yaml
         # internally, so no config_path.exists() gate is needed.
         config = resolve_effective_config(kb_dir)[0]
-        model = config.get("model", DEFAULT_CONFIG["model"])
+        model = resolve_llm_model(config)
         provider = _extract_provider(str(model))
         extra_headers, timeout, litellm_settings = resolve_per_request_overrides(config)
         parallel_tool_calls, parallel_tool_calls_explicit = resolve_parallel_tool_calls(config)
@@ -480,7 +483,7 @@ def _add_single_file_locked(
     # process-wide state; only the CLI path needs the legacy global setup.
     if bundle is None:
         _setup_llm_key(kb_dir)
-    model: str = config.get("model", DEFAULT_CONFIG["model"])
+    model: str = resolve_llm_model(config)
 
     staging_dir = _staging_dir_for(kb_dir, file_path) if stage else None
 
@@ -718,7 +721,7 @@ def import_from_pageindex_cloud(doc_id: str, kb_dir: Path) -> Literal["added", "
     openkb_dir = kb_dir / ".openkb"
     config = resolve_effective_config(kb_dir)[0]
     _setup_llm_key(kb_dir)
-    model: str = config.get("model", DEFAULT_CONFIG["model"])
+    model: str = resolve_llm_model(config)
 
     path_key = f"pageindex-cloud:{doc_id}"
     synthetic_hash = hashlib.sha256(path_key.encode("utf-8")).hexdigest()
@@ -998,16 +1001,28 @@ def init(model, language):
     click.echo("  DeepSeek:  deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro")
     click.echo("  Others:    see https://docs.litellm.ai/docs/providers")
     click.echo()
+    # [jonex] 不再用 DEFAULT_CONFIG["model"]（原 gpt-5.4）兜底：交互式 init 的默认
+    # 值改为环境变量 OPENKB_LLM_MODEL（⚠ 刻意不回落 DEFAULT_LLM_MODEL —— 那是
+    # openai SDK 的裸名口径，喂给 LiteLLM 会被剥掉前缀，见 config.OPENKB_MODEL_ENV_VAR），
+    # 皆无则报错，绝不静默写成 gpt-5.4。走 env_llm_model() 而不是手读 os.environ ——
+    # 同一条链只留一份实现，否则补兜底时容易只改一处。
+    _env_model = env_llm_model()
     if model is None and _stdin_is_tty():
         model = _coerce_model(
             click.prompt(
-                f"Model (enter for default {DEFAULT_CONFIG['model']})",
-                default=DEFAULT_CONFIG["model"],
+                f"Model (enter for {_env_model})" if _env_model else "Model (required)",
+                default=_env_model,
                 show_default=False,
             )
         )
     if not model:
-        model = DEFAULT_CONFIG["model"]
+        model = _env_model
+    if not model:
+        raise ModelNotConfiguredError(
+            "未配置 LLM model：请通过 --model 参数或环境变量 "
+            "OPENKB_LLM_MODEL 指定（⚠ 须为 provider/上游服务ID 形态；"
+            "刻意不回落 DEFAULT_LLM_MODEL，那是 openai SDK 的裸名口径）"
+        )
     api_key = click.prompt(
         "LLM API Key (saved to .env, enter to skip)",
         default="",
@@ -1238,7 +1253,7 @@ def query(ctx, question, save, raw):
 
     config = resolve_effective_config(kb_dir)[0]
     _setup_llm_key(kb_dir)
-    model: str = config.get("model", DEFAULT_CONFIG["model"])
+    model: str = resolve_llm_model(config)
 
     stream = _stream_to_tty()
     try:
@@ -1295,7 +1310,7 @@ def _cleanup_pageindex(
 
     _setup_llm_key(kb_dir)
     config = resolve_effective_config(kb_dir)[0]
-    model = config.get("model", DEFAULT_CONFIG.get("model", "gpt-5.4"))
+    model = resolve_llm_model(config)
     client = PageIndexClient(model=model, storage_path=str(openkb_dir))
     col = client.collection()
 
@@ -1968,7 +1983,7 @@ def recompile(ctx, doc_name, all_docs, dry_run, yes, refresh_schema):
 
     _setup_llm_key(kb_dir)
     config = resolve_effective_config(kb_dir)[0]
-    model: str = config.get("model", DEFAULT_CONFIG["model"])
+    model: str = resolve_llm_model(config)
     max_concurrency = resolve_concurrency(config) or DEFAULT_COMPILE_CONCURRENCY
 
     # Import lazily and reference via the module so tests can patch
@@ -2168,7 +2183,7 @@ async def iter_recompile(
         if bundle is None:
             _setup_llm_key(kb_dir)
         config = resolve_effective_config(kb_dir)[0]
-        model: str = config.get("model", DEFAULT_CONFIG["model"])
+        model: str = resolve_llm_model(config)
 
         from openkb.agent import compiler
 
@@ -2392,7 +2407,7 @@ def chat(ctx, resume, list_sessions_flag, delete_id, no_color, raw):
             return
         session = load_session(kb_dir, resolved)
     else:
-        model: str = config.get("model", DEFAULT_CONFIG["model"])
+        model: str = resolve_llm_model(config)
         language: str = config.get("language", "en")
         session = ChatSession.new(kb_dir, model, language)
 
@@ -2458,7 +2473,7 @@ async def run_lint(kb_dir: Path) -> Path | None:
 
         config = resolve_effective_config(kb_dir)[0]
         _setup_llm_key(kb_dir)
-        model: str = config.get("model", DEFAULT_CONFIG["model"])
+        model: str = resolve_llm_model(config)
 
         click.echo("Running structural lint...")
         structural_report = run_structural_lint(kb_dir)
@@ -2914,7 +2929,7 @@ def skill_new(ctx, name, intent, yes_flag):
         click.echo(f"[ERROR] {exc}", err=True)
         ctx.exit(1)
     config = resolve_effective_config(kb_dir)[0]
-    model = config.get("model", DEFAULT_CONFIG["model"])
+    model = resolve_llm_model(config)
 
     # Overwrite handling (CLI-specific). Done AFTER key/config so a
     # missing key doesn't wipe the user's existing skill output.
@@ -3238,7 +3253,7 @@ def skill_eval(ctx, name, save_flag, eval_set_path, count):
         click.echo(f"[ERROR] {exc}", err=True)
         ctx.exit(1)
     config = resolve_effective_config(kb_dir)[0]
-    model = config.get("model", DEFAULT_CONFIG["model"])
+    model = resolve_llm_model(config)
 
     eval_set: list[EvalPrompt] | None = None
     if eval_set_path:
@@ -3403,7 +3418,7 @@ def deck_new(ctx, name, intent, yes_flag, critique_flag, skill_name):
         click.echo(f"[ERROR] {exc}", err=True)
         ctx.exit(1)
     config = resolve_effective_config(kb_dir)[0]
-    model = config.get("model", DEFAULT_CONFIG["model"])
+    model = resolve_llm_model(config)
 
     # Overwrite handling — inline because openkb.skill.workspace.save_iteration
     # is hard-wired to skill paths (uses skill_dir / skill_workspace_dir from
@@ -3561,7 +3576,10 @@ def initialize_kb(
     # Seed config.yaml: an explicit model wins; otherwise inherit the
     # operator's project-root config.yaml (model/language/optional blocks)
     # so a KB created via the REST UI matches the deployed setup instead of
-    # the hardcoded DEFAULT_CONFIG (gpt-5.4 / en). Defaults are the last resort.
+    # the hardcoded DEFAULT_CONFIG. [jonex] 最后兜底不再是 gpt-5.4：
+    # resolve_llm_model({}) 走环境变量 OPENKB_LLM_MODEL（⚠ 不回落
+    # DEFAULT_LLM_MODEL，形态不兼容，见 config.OPENKB_MODEL_ENV_VAR），
+    # 皆无则抛错——init 入口也要 fail-fast。
     template_config = Path.cwd() / "config.yaml"
     if model is not None:
         config = {
@@ -3574,7 +3592,7 @@ def initialize_kb(
         shutil.copy2(template_config, openkb_dir / "config.yaml")
     else:
         config = {
-            "model": DEFAULT_CONFIG["model"],
+            "model": resolve_llm_model({}),
             "language": DEFAULT_CONFIG["language"],
             "pageindex_threshold": DEFAULT_CONFIG["pageindex_threshold"],
         }
@@ -3754,7 +3772,7 @@ async def run_lint_report(
     config = resolve_effective_config(kb_dir)[0]
     if bundle is None:
         _setup_llm_key(kb_dir)
-    model: str = config.get("model", DEFAULT_CONFIG["model"])
+    model: str = resolve_llm_model(config)
     run_config = build_run_config_from_bundle(model, bundle)
 
     if echo:

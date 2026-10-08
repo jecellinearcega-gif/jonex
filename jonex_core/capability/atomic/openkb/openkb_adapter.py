@@ -1,6 +1,7 @@
-# [jonex] Jonex新增文件 — OpenKB Atomic Capability 实现
+# [jonex] 新增文件 — OpenKB Atomic Capability 实现
 import asyncio
 import json
+import logging
 import os
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -13,6 +14,12 @@ from jonex_core.capability.models import (
     CapabilityMetadata,
     CapabilityType,
 )
+
+# ⚠️ 这个 logger 不能删：`_handle_apply_schema` 检测到 wiki/AGENTS.md 被外部覆盖时
+# 要用它告警，紧随其后才是自愈写入 `atomic_write_text(...)`。它一旦缺失，那次调用
+# 会在告警处抛 NameError，**自愈永远执行不到**（磁盘停在脏值、接口返回 500），
+# 而且日志里看不出任何线索。历史上真的这么坏过一次。
+logger = logging.getLogger(__name__)
 
 OPENKB_CAPABILITY_ID = "atomic.openkb.v1"
 
@@ -119,6 +126,7 @@ class OpenkbCapability(BaseCapability):
 
         # [jonex] 注入 metering context（per-request，不污染全局）
         from openkb.jonex_metering import set_jonex_context
+        from openkb.config import ModelNotConfiguredError
 
         set_jonex_context(
             tenant_id=request.tenant_id,
@@ -152,13 +160,42 @@ class OpenkbCapability(BaseCapability):
             )
         except _OpenKBError as exc:
             # [jonex] 稳定 error_code 透传给 knowledge_base
+            # 业务错误是预期内的：warning + error_code 足够归因，不打堆栈（避免刷屏）。
+            logger.warning(
+                "[jonex] openkb 业务错误 | action=%s tenant=%s kb_id=%s request_id=%s "
+                "error_code=%s http_code=%s detail=%s",
+                action, request.tenant_id, kb_id, request.request_id,
+                exc.error_code, exc.http_code, exc,
+            )
             return CapabilityResponse.error(
                 request_id=request.request_id,
                 code=exc.http_code,
                 message=str(exc),
                 details={"error_code": exc.error_code},
             )
+        except ModelNotConfiguredError as exc:
+            # [jonex] model 未配置（config.yaml 无 model 且 OPENKB_LLM_MODEL 未设）
+            # ——init/compile/query 三入口统一 fail-fast，不再回落 gpt-5.4。
+            # ⚠ 也不回落 DEFAULT_LLM_MODEL：那是 openai SDK 的裸名口径，openkb 的
+            #   模型名原样交给 LiteLLM 会被剥掉 provider/ 前缀（见 openkb.config）。
+            logger.warning(
+                "[jonex] openkb model 未配置 | action=%s tenant=%s kb_id=%s "
+                "request_id=%s detail=%s",
+                action, request.tenant_id, kb_id, request.request_id, exc,
+            )
+            return CapabilityResponse.error(
+                request_id=request.request_id,
+                code=400,
+                message=str(exc),
+                details={"error_code": "MODEL_NOT_CONFIGURED"},
+            )
         except FileExistsError as exc:
+            # 409 属正常竞态（并发 init 同名 KB），info 即可。
+            logger.info(
+                "[jonex] openkb 资源已存在 | action=%s tenant=%s kb_id=%s "
+                "request_id=%s detail=%s",
+                action, request.tenant_id, kb_id, request.request_id, exc,
+            )
             return CapabilityResponse.error(
                 request_id=request.request_id,
                 code=409,
@@ -166,6 +203,13 @@ class OpenkbCapability(BaseCapability):
                 details={"error_code": "KB_ALREADY_EXISTS"},
             )
         except Exception as exc:
+            # 未预期异常：必须带堆栈。这里返回的是「失败信封」而非抛出，
+            # registry 的 logger.exception 分支走不到 —— 不在这里记就等于没有日志。
+            logger.exception(
+                "[jonex] openkb 未预期异常 | action=%s tenant=%s kb_id=%s "
+                "request_id=%s detail=%s",
+                action, request.tenant_id, kb_id, request.request_id, exc,
+            )
             return CapabilityResponse.error(
                 request_id=request.request_id,
                 code=500,
@@ -211,12 +255,15 @@ class OpenkbCapability(BaseCapability):
     async def _handle_init(self, kb_dir, kb_name, data):
         import os
         from openkb.cli import initialize_kb
-        from openkb.config import load_config, save_config
+        from openkb.config import env_llm_model, load_config, save_config
 
         # [jonex] 幂等 init：已初始化则跳过 initialize_kb，避免 FileExistsError
         created = not (kb_dir / ".openkb").is_dir()
         if created:
-            initialize_kb(kb_dir, model=data.get("model") or os.getenv("OPENKB_LLM_MODEL"))
+            # 请求显式给了 model 就用它；否则写下**环境变量解析出的**模型名
+            # （OPENKB_LLM_MODEL，provider/上游服务ID 形态），让 KB 的 config.yaml
+            # 显式记下部署实际在用的模型 —— 网关侧的模型别名改写已删除，不再有兜底。
+            initialize_kb(kb_dir, model=data.get("model") or env_llm_model())
 
         config_path = kb_dir / ".openkb" / "config.yaml"
         if lang := os.getenv("OPENKB_LANGUAGE"):
@@ -231,13 +278,13 @@ class OpenkbCapability(BaseCapability):
 
         与 _handle_init 同口径：已初始化则跳过 initialize_kb，避免 FileExistsError。
         """
-        import os
-
         from openkb.cli import initialize_kb
+        from openkb.config import env_llm_model
 
         created = not (kb_dir / ".openkb").is_dir()
         if created:
-            initialize_kb(kb_dir, model=os.getenv("OPENKB_LLM_MODEL"))
+            # 同 _handle_init：写环境变量解析出的模型名，而不是留空等网关改写。
+            initialize_kb(kb_dir, model=env_llm_model())
         return created
 
     async def _handle_apply_schema(self, kb_dir, kb_name, data):
@@ -314,7 +361,7 @@ class OpenkbCapability(BaseCapability):
         from uuid import uuid4
 
         from openkb.cli import initialize_kb
-        from openkb.config import load_config, save_config
+        from openkb.config import env_llm_model, load_config, save_config
 
         document_id = data["document_id"]
         parsed_markdown_path = Path(data["parsed_markdown_path"])
@@ -329,7 +376,8 @@ class OpenkbCapability(BaseCapability):
                 pass
 
         if not (kb_dir / ".openkb").is_dir():
-            initialize_kb(kb_dir, model=os.getenv("OPENKB_LLM_MODEL"))
+            # 同 _handle_init：写环境变量解析出的模型名。
+            initialize_kb(kb_dir, model=env_llm_model())
 
         # [jonex] 确保 language 与 OPENKB_LANGUAGE 一致（compile 路径也可能首次 init）
         config_path = kb_dir / ".openkb" / "config.yaml"
@@ -407,6 +455,14 @@ class OpenkbCapability(BaseCapability):
                 self._update_task(kb_dir, task_id, status="completed",
                                   warnings=result.get("warnings", []))
             except Exception as exc:  # noqa: BLE001
+                # 编译跑在 asyncio.to_thread 里、提交请求早就返回 200 了，
+                # 所以这个失败在日志里原本**完全不可见**（只能靠翻任务 JSON）。
+                # 必须先记日志再落盘：_update_task 若也出问题，至少还有堆栈。
+                logger.exception(
+                    "[jonex] openkb 后台编译失败 | kb=%s task_id=%s document_id=%s "
+                    "detail=%s",
+                    kb_name, task_id, data.get("document_id"), exc,
+                )
                 self._update_task(kb_dir, task_id, status="failed",
                                   error=str(exc)[:1000])
 
@@ -497,11 +553,16 @@ class OpenkbCapability(BaseCapability):
 
     async def _handle_query(self, kb_dir, kb_name, data):
         from openkb.agent.query import build_run_config_from_bundle, run_query
-        from openkb.config import resolve_effective_config
+        from openkb.config import resolve_effective_config, resolve_llm_model, ModelNotConfiguredError
 
         config = resolve_effective_config(kb_dir)[0]
         bundle = self._build_metering_bundle(kb_dir)
-        model = self._litellm_model(config["model"])
+        # [jonex] config.yaml 显式 model 最高权重 → OPENKB_LLM_MODEL 兜底 → 未配则抛错。
+        # 不再回落 gpt-5.4（query 原先只读 config["model"]，config 无 model 时静默用 gpt-5.4）。
+        try:
+            model = self._litellm_model(resolve_llm_model(config))
+        except ModelNotConfiguredError as exc:
+            raise _OpenKBError(str(exc), error_code="QUERY_FAILED", http_code=500)
         run_config = build_run_config_from_bundle(model, bundle)
         # [jonex] 调用方（knowledge_base）按 with_reasoning 决定是否要轨迹。
         want_trace = bool(data.get("return_trace"))
@@ -710,8 +771,17 @@ class OpenkbCapability(BaseCapability):
 
         与原生 list_contents / _handle_list 无关（那是 OpenKB get_kb_list 透传）。
         document_id 可选：给则文档级过滤，缺省 KB 级（兼容既有消费者）。
+
+        ``view="counts"``：只返回三类页数（编译资产 tab 的统计卡与 tab 计数），
+        不构造/不返回页面条目。计数口径与页面树完全一致——同一个
+        ``_iter_wiki_pages(need_body=False)``，所以数字与实际条目数不会漂移。
         """
         document_id = str(data.get("document_id") or "").strip()
+        if str(data.get("view") or "") == "counts":
+            counts = {"summaries": 0, "concepts": 0, "entities": 0}
+            for p in self._iter_wiki_pages(kb_dir, need_body=False):
+                counts[p["section"]] += 1
+            return {**counts, "document_id": ""}
         pages = self._iter_wiki_pages(kb_dir, need_body=False)
         if not document_id:
             # KB 级：按 section 分组返回全量
@@ -877,7 +947,7 @@ class OpenkbCapability(BaseCapability):
         from openkb.locks import kb_ingest_lock, atomic_write_text
         from openkb.state import HashRegistry
         from openkb.converter import _registry_path
-        from openkb.config import resolve_effective_config, resolve_concurrency
+        from openkb.config import resolve_effective_config, resolve_concurrency, resolve_llm_model, ModelNotConfiguredError
         from openkb.agent.compiler import compile_short_doc, DEFAULT_COMPILE_CONCURRENCY
 
         warnings: list[str] = []
@@ -891,9 +961,11 @@ class OpenkbCapability(BaseCapability):
                 assets_dir = None
 
         config = resolve_effective_config(kb_dir)[0]
-        model = self._litellm_model(config.get("model") or os.getenv("OPENKB_LLM_MODEL"))
-        if not model:
-            raise _OpenKBError("KB 未配置 LLM model", error_code="COMPILE_FAILED", http_code=500)
+        # [jonex] config.yaml 显式 model 最高权重 → OPENKB_LLM_MODEL 兜底 → 未配则抛错。
+        try:
+            model = self._litellm_model(resolve_llm_model(config))
+        except ModelNotConfiguredError as exc:
+            raise _OpenKBError(str(exc), error_code="COMPILE_FAILED", http_code=500)
 
         markdown_text = md_path.read_text(encoding="utf-8")
         openkb_dir = kb_dir / ".openkb"

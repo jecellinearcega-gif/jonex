@@ -43,9 +43,9 @@ from openkb.cli import (
     save_exploration,
 )
 from openkb.config import (
-    DEFAULT_CONFIG,
     register_kb_alias,
     resolve_effective_config,
+    resolve_llm_model,
     resolve_kb_alias,
 )
 from openkb.log import append_log
@@ -401,7 +401,7 @@ def _load_or_create_session(kb_dir: Path, session_id: str | None) -> ChatSession
             ) from exc
 
     config = resolve_effective_config(kb_dir)[0]
-    model = config.get("model", DEFAULT_CONFIG["model"])
+    model = resolve_llm_model(config)
     language = config.get("language", "en")
     return ChatSession.new(kb_dir, model, language)
 
@@ -614,7 +614,7 @@ async def _iter_deck(
         yield {"event": "error", "code": 400, "message": err}
         return
     config = resolve_effective_config(kb_dir)[0]
-    model = config.get("model", DEFAULT_CONFIG["model"])
+    model = resolve_llm_model(config)
     gen = Generator(
         target_type="deck",
         name=request.name,
@@ -676,7 +676,7 @@ async def _iter_skill(
         yield {"event": "error", "code": 400, "message": err}
         return
     config = resolve_effective_config(kb_dir)[0]
-    model = config.get("model", DEFAULT_CONFIG["model"])
+    model = resolve_llm_model(config)
     gen = Generator(
         target_type="skill",
         name=request.name,

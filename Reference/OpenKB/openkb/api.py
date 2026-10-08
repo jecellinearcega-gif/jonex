@@ -104,10 +104,10 @@ from openkb.cli import (
     run_remove_for_api,
 )
 from openkb.config import (
-    DEFAULT_CONFIG,
     resolve_credential_bundle,
     resolve_effective_config,
     resolve_init_kb_dir,
+    resolve_llm_model,
     validate_kb_name,
 )
 from openkb.log import append_log
@@ -277,7 +277,7 @@ def create_app() -> FastAPI:
         kb_dir = _resolve_kb(request.kb)
         bundle = resolve_credential_bundle(kb_dir)
         config = resolve_effective_config(kb_dir)[0]
-        model = config.get("model", DEFAULT_CONFIG["model"])
+        model = resolve_llm_model(config)
         run_config = build_run_config_from_bundle(model, bundle)
 
         if request.stream:

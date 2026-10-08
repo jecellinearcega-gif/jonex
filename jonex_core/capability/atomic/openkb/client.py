@@ -1,4 +1,4 @@
-# [jonex] Jonex新增文件 — OpenKB 客户端
+# [jonex] 新增文件 — OpenKB 客户端
 import logging
 from abc import ABC, abstractmethod
 
@@ -43,7 +43,7 @@ class OpenKBClient(ABC):
 
     @abstractmethod
     async def list_wiki_contents(self, kb_name: str, tenant_id: str, kb_id: str,
-                                 document_id: str = "") -> dict: ...
+                                 document_id: str = "", view: str = "") -> dict: ...
 
     @abstractmethod
     async def get_compile_status(self, kb_name: str, task_id: str, tenant_id: str, kb_id: str) -> dict: ...
@@ -158,14 +158,19 @@ class RemoteOpenKBClient(OpenKBClient):
         return await self._invoke("read_page", {"kb": kb_name, "path": path},
                                   tenant_id, kb_id)
 
-    async def list_wiki_contents(self, kb_name, tenant_id, kb_id, document_id: str = ""):
+    async def list_wiki_contents(self, kb_name, tenant_id, kb_id, document_id: str = "",
+                                 view: str = ""):
         """列出 Wiki 页面树（新 action；document_id 可选：给则文档级过滤）。
 
         与 list_contents（OpenKB 原生 get_kb_list 透传）是两个 action——
         Wiki 页面树不替换原生 list 语义。
+
+        [jonex] view="counts"：只要三类页数，不返回页面条目。
         """
-        return await self._invoke("list_wiki_contents", {"kb": kb_name, "document_id": document_id},
-                                  tenant_id, kb_id)
+        payload: dict = {"kb": kb_name, "document_id": document_id}
+        if view:
+            payload["view"] = view
+        return await self._invoke("list_wiki_contents", payload, tenant_id, kb_id)
 
     async def get_compile_status(self, kb_name, task_id, tenant_id, kb_id):
         """查询单个编译任务状态（排障/手工验证用）。"""
@@ -214,7 +219,11 @@ class MockOpenKBClient(OpenKBClient):
     async def list_graph(self, *a, **kw): return {"entities": [], "relationships": [], "entities_count": 0, "relationships_count": 0}
     async def list_contents(self, *a, **kw): return {"documents": [], "summaries": [], "concepts": [], "entities": []}
     async def read_page(self, *a, **kw): return {"path": "", "content": ""}
-    async def list_wiki_contents(self, *a, **kw): return {"summaries": [], "concepts": [], "entities": [], "document_id": ""}
+    async def list_wiki_contents(self, *a, view: str = "", **kw):
+        # [jonex] counts 视图与条目视图的返回形状不同，桩按 view 分流
+        if view == "counts":
+            return {"summaries": 0, "concepts": 0, "entities": 0, "document_id": ""}
+        return {"summaries": [], "concepts": [], "entities": [], "document_id": ""}
     async def get_compile_status(self, *a, **kw): return {"status": "completed"}
     async def list_compile_tasks(self, *a, **kw): return {"tasks": []}
     async def recompile(self, *a, **kw): return {"results": []}

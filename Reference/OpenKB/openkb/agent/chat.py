@@ -570,10 +570,10 @@ async def _handle_slash_skill(arg: str, kb_dir: Path, style: Style) -> None:
         return
 
     # Load model from KB config
-    from openkb.config import DEFAULT_CONFIG, resolve_effective_config
+    from openkb.config import resolve_effective_config, resolve_llm_model
 
     config = resolve_effective_config(kb_dir)[0]
-    model = config.get("model", DEFAULT_CONFIG["model"])
+    model = resolve_llm_model(config)
 
     from openkb.skill.generator import Generator
 
@@ -701,10 +701,10 @@ async def _handle_slash_deck(arg: str, kb_dir: Path, style: Style) -> None:
         return
 
     # Load model from KB config
-    from openkb.config import DEFAULT_CONFIG, resolve_effective_config
+    from openkb.config import resolve_effective_config, resolve_llm_model
 
     config = resolve_effective_config(kb_dir)[0]
-    model = config.get("model", DEFAULT_CONFIG["model"])
+    model = resolve_llm_model(config)
 
     from openkb.deck.creator import DEFAULT_DECK_SKILL
     from openkb.skill.generator import Generator
@@ -867,10 +867,10 @@ async def _handle_slash_critique(arg: str, kb_dir: Path, style: Style) -> None:
         SkillNotFoundError,
         run_skill,
     )
-    from openkb.config import DEFAULT_CONFIG, resolve_effective_config
+    from openkb.config import resolve_effective_config, resolve_llm_model
 
     config = resolve_effective_config(kb_dir)[0]
-    model = config.get("model", DEFAULT_CONFIG["model"])
+    model = resolve_llm_model(config)
 
     # Path passed to the skill is relative to kb_dir (the agent's cwd
     # conceptually). The skill's read_file/write_file tools operate

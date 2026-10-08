@@ -63,13 +63,26 @@ COPY --from=frontend-builder /app/lightrag/api/webui ./lightrag/api/webui
 RUN --mount=type=cache,target=/root/.local/share/uv \
     uv sync --frozen --no-dev --extra api --extra offline
 
-# tiktoken 离线缓存（cache mount 复用已下载的分词文件，cp 到实际路径供 COPY 到最终阶段）
-RUN --mount=type=cache,target=/app/tiktoken_cache \
-    mkdir -p /app/tiktoken_cache \
-    && uv run lightrag-download-cache --cache-dir /app/tiktoken_cache \
-    || case $? in 2) ;; *) exit $? ;; esac \
-    && mkdir -p /app/data/tiktoken \
-    && cp -r /app/tiktoken_cache/. /app/data/tiktoken/
+# tiktoken 离线词表——用工程内 vendored 文件，构建期不联网。
+#
+# 原写法是构建期下载 + timeout 90s 兜底，2026-09-16 实测其失效：lightrag-download-cache
+# 默认下 8 个模型，实测单个就要 68~90s，timeout 在 [1/8] 即掐断，而 `|| true` 让构建
+# 照常报成功，产物镜像里 /app/data/tiktoken 是**空目录**。后果是静默的：上一版镜像里
+# 那两份表就此丢失，之后每次容器重建都在运行期重下（实测启动多花 21s）。故弃用下载。
+#
+# 只带 o200k_base（文件 fb374d41...）：lightrag 全线默认 gpt-4o-mini
+# （lightrag.py:326 / rerank.py:26 / ollama_api.py:162），且 api/config.py 无环境变量
+# 可改该模型，不存在需要 cl100k_base 的代码路径。与 atomic-rag 共用同一份文件。
+#
+# 文件名 = 源 URL 的 sha1（tiktoken 的缓存查找键，不可改）；内容 sha256 = tiktoken
+# 内置 expected_hash，下方构建期即校验，损坏则拒绝出镜像。详见
+# deploy/resources/tiktoken/README.md。
+COPY deploy/resources/tiktoken/ /app/data/tiktoken/
+RUN echo "446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d  /app/data/tiktoken/fb374d419588a4632f3f557e76b4b70aebbca790" \
+      | sha256sum -c - \
+    || { echo "[ERROR] vendored tiktoken 词表缺失或损坏（sha256 校验失败）。" >&2; \
+         echo "[ERROR] 请参照 deploy/resources/tiktoken/README.md 重新获取后重试。" >&2; \
+         exit 1; }
 
 # ── 运行阶段 ──
 # .venv 已从 builder 完整复制，无需再次 uv sync

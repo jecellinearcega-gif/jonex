@@ -6,7 +6,7 @@ import numpy as np
 import configparser
 import asyncio
 
-from typing import Any, Union, final
+from typing import Any, Optional, Union, final
 
 from ..base import (
     BaseGraphStorage,
@@ -181,9 +181,13 @@ class MongoKVStorage(BaseKVStorage):
 
     # ── [jonex] 按 doc= 锚点列出 chunks ──────────────────────────
     async def get_chunks_by_doc_id(
-        self, doc_id: str, *, limit: int = 500,
+        self, doc_id: str, *, limit: Optional[int] = None,
     ) -> list[dict[str, Any]]:
-        """List chunks whose file_path contains ``doc=<doc_id>`` anchor."""
+        """List chunks whose file_path contains ``doc=<doc_id>`` anchor.
+
+        [jonex] limit 默认 None = 不设上限（原硬编码 500 会截断超长文档，
+        §5.6 代价②）。
+        """
         if not doc_id:
             return []
         pattern = f"doc={doc_id}"
@@ -194,7 +198,7 @@ class MongoKVStorage(BaseKVStorage):
             doc.setdefault("update_time", 0)
             doc["chunk_id"] = str(doc["_id"])
             out.append(doc)
-            if len(out) >= limit:
+            if limit is not None and len(out) >= limit:
                 break
         out.sort(key=lambda c: c.get("chunk_order_index") or 0)
         return out

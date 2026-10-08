@@ -53,6 +53,7 @@ from lightrag.constants import (
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
     DEFAULT_MAX_FILE_PATHS,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
+    GRAPH_FIELD_SEP,  # [jonex] ainsert_custom_kg source_id 多段翻译
 )
 from lightrag.utils import get_env_value
 
@@ -2404,6 +2405,15 @@ class LightRAG:
     async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
     ) -> list:
+        # [jonex] SKIP_ENTITY_EXTRACTION：本体抽取已迁移到独立抽取器
+        # （docs/ontology/ontology-native-extraction-execution-plan.md §6.4），
+        # 置 true 时跳过逐 chunk LLM 实体/关系抽取——chunk 切分、embedding、
+        # chunk 存储、doc_status 状态机照旧（它们在 process_document 其他环节）。
+        # 代码默认 true（P4.5 已上线验证）：漏配即回到双份抽取，逐 chunk 自抽
+        # 会把 LightRAG 队列堵死；默认关闭自抽是故障安全侧。
+        # 回退旧自抽 = 显式置 SKIP_ENTITY_EXTRACTION=false + 重启 lightrag。
+        if get_env_value("SKIP_ENTITY_EXTRACTION", True, bool):
+            return []
         try:
             chunk_results = await extract_entities(
                 chunk,
@@ -2502,6 +2512,22 @@ class LightRAG:
                     self.text_chunks.upsert(all_chunks_data),
                 )
 
+            def _translate_source_id(source_chunk_id: str) -> str:
+                """[jonex] chunk→chunk_id 翻译：map 命中照常翻译；miss 回退原值。
+
+                独立抽取回写路径（§5.7）chunks 传空 → map 为空，source_id
+                即 GET /documents/chunks 读回的权威 chunk_id，直接透传——
+                否则图实体与 chunk 存储的关联全部落 UNKNOWN，查询回溯
+                静默失效、无告警。多来源 chunk 用 GRAPH_FIELD_SEP 拼接，
+                逐段翻译再重拼（与自抽路径 source_id 聚合同构）。
+                """
+                if not source_chunk_id or source_chunk_id == "UNKNOWN":
+                    return source_chunk_id
+                return GRAPH_FIELD_SEP.join(
+                    chunk_to_source_map.get(part, part)
+                    for part in source_chunk_id.split(GRAPH_FIELD_SEP)
+                )
+
             # Keep the last declaration for each entity_name so batch backends
             # preserve the old serial upsert semantics deterministically.
             deduped_entities: dict[str, dict[str, Any]] = {}
@@ -2518,7 +2544,7 @@ class LightRAG:
                 entity_type = entity_data.get("entity_type", "UNKNOWN")
                 description = entity_data.get("description", "No description provided")
                 source_chunk_id = entity_data.get("source_id", "UNKNOWN")
-                source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
+                source_id = _translate_source_id(source_chunk_id)
                 file_path = entity_data.get("file_path", "custom_kg")
 
                 if source_id == "UNKNOWN":
@@ -2574,7 +2600,7 @@ class LightRAG:
                 src_id = relationship_data["src_id"]
                 tgt_id = relationship_data["tgt_id"]
                 source_chunk_id = relationship_data.get("source_id", "UNKNOWN")
-                source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
+                source_id = _translate_source_id(source_chunk_id)
                 file_path = relationship_data.get("file_path", "custom_kg")
 
                 if source_id == "UNKNOWN":
@@ -2677,12 +2703,146 @@ class LightRAG:
             if legacy_rel_ids_to_delete:
                 await self.relationships_vdb.delete(legacy_rel_ids_to_delete)
 
+            # [jonex] P0-2（§5.9 方案 a）：SKIP_ENTITY_EXTRACTION 后
+            # merge_nodes_and_edges 不再运行，full_entities/full_relations
+            # 唯一写入点失活 → adelete_by_doc_id 找不到待删节点、幽灵实体
+            # 累积。此处按 doc key 聚合补写，删除语义恢复（entity_chunks/
+            # relation_chunks 级精确剥离缺位为已知残留，方法内记日志）。
+            if all_entities_data or all_relationships_data:
+                await self._backfill_full_storages(
+                    all_entities_data, all_relationships_data,
+                )
+
         except Exception as e:
             logger.error(f"Error in ainsert_custom_kg: {e}")
             raise
         finally:
             if update_storage:
                 await self._insert_done()
+
+    async def _backfill_full_storages(
+        self,
+        all_entities_data: list[dict[str, Any]],
+        all_relationships_data: list[dict[str, Any]],
+    ) -> None:
+        """[jonex] 补写 full_entities/full_relations（§5.9 方案 a）。
+
+        从实体/关系的 source_id（§5.6 权威 chunk_id）反查 text_chunks
+        中该 chunk 的 full_doc_id（LightRAG 侧 doc key），按每个 doc id
+        聚合 upsert——结构（entity_names/relation_pairs + count）与
+        merge_nodes_and_edges Phase 3 一致，adelete_by_doc_id 零改动。
+        chunk 记录缺失 full_doc_id 时跳过该条并记 warning（已知残留）。
+        """
+        chunk_ids: list[str] = []
+        for dp in all_entities_data + all_relationships_data:
+            for part in (dp.get("source_id") or "").split(GRAPH_FIELD_SEP):
+                if part and part != "UNKNOWN" and part not in chunk_ids:
+                    chunk_ids.append(part)
+        if not chunk_ids:
+            logger.warning("custom-kg full_* 补写：无可用 source_id，跳过")
+            return
+
+        records = await asyncio.gather(
+            *[self.text_chunks.get_by_id(cid) for cid in chunk_ids]
+        )
+        doc_by_chunk: dict[str, str] = {}
+        missing = 0
+        for cid, rec in zip(chunk_ids, records):
+            full_doc_id = (rec or {}).get("full_doc_id") if rec else None
+            if full_doc_id:
+                doc_by_chunk[cid] = full_doc_id
+            else:
+                missing += 1
+        if missing:
+            logger.warning(
+                "custom-kg full_* 补写：%d/%d chunk 记录缺失或查不到（删除清理将遗漏其关联节点）",
+                missing, len(chunk_ids),
+            )
+
+        def _docs_of(dp: dict[str, Any]) -> list[str]:
+            """[jonex] P4.5 修复：返回 source_id 所有段对应的 doc id（去重保序）。
+
+            实体/关系的 source_id 可能跨多个 doc 的 chunk（<SEP> 分隔），
+            此前只取第一段反查 doc，其余 doc 的 full_entities/full_relations
+            清单缺失该节点 → 删除这些 doc 时报 0 affected，节点成为幽灵
+            残留（见删除链路排查）。归属全部相关 doc 后，删除最后一个
+            归属 doc 时 remaining_sources 为空，实体进入待删集合。
+            """
+            docs: list[str] = []
+            for part in (dp.get("source_id") or "").split(GRAPH_FIELD_SEP):
+                if not part:
+                    continue
+                doc_id = doc_by_chunk.get(part)
+                if doc_id and doc_id not in docs:
+                    docs.append(doc_id)
+            return docs
+
+        # 保持插入序（dict 键序）的聚合
+        entity_names_by_doc: dict[str, list[str]] = {}
+        seen_names: dict[str, set[str]] = {}
+        for dp in all_entities_data:
+            doc_ids = _docs_of(dp)
+            if not doc_ids:
+                continue
+            name = dp["entity_name"]
+            for doc_id in doc_ids:
+                names = entity_names_by_doc.setdefault(doc_id, [])
+                seen = seen_names.setdefault(doc_id, set())
+                if name not in seen:
+                    seen.add(name)
+                    names.append(name)
+
+        relation_pairs_by_doc: dict[str, list[list[str]]] = {}
+        seen_pairs: dict[str, set[tuple[str, str]]] = {}
+        for dp in all_relationships_data:
+            doc_ids = _docs_of(dp)
+            if not doc_ids:
+                continue
+            pair = tuple(sorted((dp["src_id"], dp["tgt_id"])))
+            for doc_id in doc_ids:
+                pairs = relation_pairs_by_doc.setdefault(doc_id, [])
+                seen = seen_pairs.setdefault(doc_id, set())
+                if pair not in seen:
+                    seen.add(pair)
+                    pairs.append(list(pair))
+
+        # [jonex] P4 修复：合并式而非覆盖式补写。SKIP_ENTITY_EXTRACTION=false
+        # 的窗口期（P4 已上线、P4.5 未关自抽）自抽 merge Phase 3 先写了
+        # full_entities[doc_id]，若此处整键覆盖，自抽实体从清单消失 →
+        # adelete_by_doc_id 找不到待删节点 → 删除后幽灵实体残留。
+        # 先读已有清单再合并去重，两路（自抽 + custom-kg）实体删除都能覆盖。
+        for doc_id, names in entity_names_by_doc.items():
+            existing = await self.full_entities.get_by_id(doc_id)
+            if existing and isinstance(existing, dict):
+                merged = list(existing.get("entity_names") or [])
+                seen_names = set(merged)
+                for name in names:
+                    if name not in seen_names:
+                        seen_names.add(name)
+                        merged.append(name)
+            else:
+                merged = names
+            await self.full_entities.upsert(
+                {doc_id: {"entity_names": merged, "count": len(merged)}}
+            )
+        for doc_id, pairs in relation_pairs_by_doc.items():
+            existing = await self.full_relations.get_by_id(doc_id)
+            if existing and isinstance(existing, dict):
+                merged_pairs = [list(p) for p in (existing.get("relation_pairs") or [])]
+                seen_pairs = {tuple(p) for p in merged_pairs}
+                for pair in pairs:
+                    if tuple(pair) not in seen_pairs:
+                        seen_pairs.add(tuple(pair))
+                        merged_pairs.append(pair)
+            else:
+                merged_pairs = pairs
+            await self.full_relations.upsert(
+                {doc_id: {"relation_pairs": merged_pairs, "count": len(merged_pairs)}}
+            )
+        logger.info(
+            "custom-kg full_* 补写完成：%d 个 doc（实体）/ %d 个 doc（关系）",
+            len(entity_names_by_doc), len(relation_pairs_by_doc),
+        )
 
     def query(
         self,

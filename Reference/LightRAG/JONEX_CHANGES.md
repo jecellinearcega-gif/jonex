@@ -8,7 +8,7 @@
 - 单行改动：行尾加 `# [jonex]`。
 - 代码块改动：块首加 `# ── [jonex] <说明> ───`，块尾可加 `# ── [jonex] end ───`。
 - 新增参数/字段：行尾 `# [jonex]`，参数名统一加前缀 `_jonex_` 或 `X-Jonex-`（HTTP 头）。
-- 新增整文件：文件头注释标明 `# [jonex] Jonex新增文件`。
+- 新增整文件：文件头注释标明 `# [jonex] 新增文件`。
 
 ## 二、改动分类
 
@@ -110,6 +110,7 @@ kb={knowledge_base_id}|doc={document_id}|tenant={tenant_id}|file={file_path}|chu
 | `lightrag/api/routers/query_routes.py` | `[jonex] 结构化查询` 端点 | 自定义结构化查询路由 |
 | `lightrag/api/routers/document_routes.py` | `[jonex] 自定义 KG 端点` | 自定义知识图谱写入端点 |
 | `lightrag/lightrag.py` | 入库 pipeline 单文件处理循环（`apipeline_process_enqueue_documents` 内，`Extracting stage`→`merge_nodes_and_edges`→`_insert_done`） | 单次推 chunk 各阶段耗时埋点：用 `time.perf_counter()` 分别测 extract / merge / persist，结尾打一条 `[jonex] chunk_timing` 日志（见下） |
+| `lightrag/operate.py` | `extract_keywords_only` + 新增 `_keyword_singleflight` | 关键词抽取**进程内 single-flight**：按 `args_hash` 合并并发，N 个 KB 同时冷启只抽一次 LLM（见下） |
 
 ### chunk_timing 耗时埋点说明（feature）
 
@@ -137,6 +138,45 @@ kb={knowledge_base_id}|doc={document_id}|tenant={tenant_id}|file={file_path}|chu
 - 纯增量埋点，不改控制流/异常传播；三段变量都在成功路径上顺序赋值，到汇总日志时必已定义。
 - 受 `MAX_PARALLEL_INSERT` 并发影响：多文件并行时 extract 段墙钟会因事件循环/上游限流抢占略偏大；要绝对精确需测 `_process_extract_entities` 内部，本次不做（粒度足够定位 extract vs merge vs persist）。
 - 改完需重建镜像：`make rebuild-service SERVICE=lightrag`（或 `docker compose build lightrag` 后重启）。
+
+### 关键词抽取进程内 single-flight（feature，2026-09-20）
+
+**问题**：`extract_keywords_only` 的缓存 key（`args_hash`）只含
+`(mode, text, language)`——**不含 workspace**，即 LightRAG 本意就认为抽取结果与
+KB 无关；而 `hashing_kv` 是 per-workspace 的 PGKVStorage 实例
+（`RAG_WORKSPACE_ISOLATION=true`）。于是同一 query 在 N 个 KB 上并发时，N 个
+workspace 同时 miss、各抽一次 LLM。实测 5 KB = 5 次调用、单次 3~9s
+（`deepseek-v4-flash` 带 reasoning 258~765 tokens），是单查询耗时的最大头。
+
+**改动**（`lightrag/operate.py`，均带 `[jonex]` 标记）：
+
+| 位置 | 改动 |
+|------|------|
+| 模块级 | 新增 `_KEYWORD_INFLIGHT: dict[str, asyncio.Task]` |
+| 新增函数 | `_keyword_singleflight(key, factory)`：同 key 只跑一次 factory，其余 `await asyncio.shield(task)` 等待同一结果；done_callback 里 pop 并取回异常（避免 "exception was never retrieved" 告警） |
+| `extract_keywords_only` | 第 3~5 步（构建 prompt → 调 LLM → 解析）包进内部 `_extract()`，经 `_keyword_singleflight(args_hash, _extract)` 调用 |
+| `typing` 导入 | 补 `Awaitable, Callable` |
+
+**关键：第 2 步与第 6 步原样保留**——查的是**本 workspace** 的 PG 缓存、写的也是
+**本 workspace**，故跨请求的热查询仍是 0 次 LLM（与改动前一致）。single-flight
+只覆盖「并发同时 miss」这个窗口。
+
+**多 worker 扩展点**：本实现是**进程内**的。lightrag 当前单进程
+（`python -m lightrag.api.lightrag_server`，无 `--workers`），故等价于「全局只抽
+一次」；若将来上多 worker，会退化为「每 worker 一次」（N_worker 而非 N_KB，仍优于
+改动前）。要恢复「全局一次」只需把 `_keyword_singleflight` 的抢占换成跨进程实现
+（PG `INSERT ... ON CONFLICT DO NOTHING` 或 Redis `SET NX`），**调用点与返回语义不变**。
+
+**测试**：`tests/test_keyword_singleflight.py`（4 条契约：同 key 合并 / 不同 key
+不串 / 异常一致放散 / 取消不扩散，另查 inflight 表无残留）。
+**已反向验证**：把 `_KEYWORD_INFLIGHT.get(key)` 破坏成 `None` 后，第 1 条精确失败
+（`factory 应只跑 1 次，实跑 5 次`）。
+
+⚠️ 该测试**不在镜像内**（本 Dockerfile 第 4 行明确剔除 `tests/`），容器内运行需先
+`docker cp Reference/LightRAG/tests/test_keyword_singleflight.py jonex-lightrag:/app/`，
+再 `docker exec jonex-lightrag python /app/test_keyword_singleflight.py`。
+
+**部署**：随下一次 lightrag 镜像重建生效（`make rebuild-service SERVICE=lightrag`）。
 
 ---
 
@@ -480,3 +520,133 @@ vendored 改动，须**重建 lightrag 镜像**：`docker compose build lightrag
 - JSON 和 MongoDB 实现暂未修复（项目仅用 PostgreSQL），升级 LightRAG 时一并补。
 
 **部署**：vendored 改动，须 `docker compose build lightrag && up -d lightrag`。无 schema 变更。
+
+---
+
+## 十二、独立本体抽取支撑改造（P3：SKIP 开关 + custom-kg 两修复 + chunk 读回扩容）
+
+**背景**：本体抽取迁移到独立抽取器（`docs/ontology/ontology-native-extraction-execution-plan.md`）。
+本批为 vendor 侧配套改动，共四项，一次镜像重建。**本批上线后行为与改动前完全一致**
+（开关默认关、custom-kg 当前无调用方、分页仅扩上限、full_* 补写仅 custom-kg 路径触发），
+是 P4 切换前的免费安全垫。
+（后续变更：P4.5 验证通过后，§12.1 的开关默认值已由 false 翻转为 **true**，见 §12.1。）
+
+### 12.1 SKIP_ENTITY_EXTRACTION 环境开关
+
+**目的**：独立抽取器接管本体抽取后（P4.5），跳过 LightRAG 自抽，图数据完全由
+custom-kg 回写供给。
+
+**改动**（`# [jonex]` 标记）：
+
+| 文件 | 位置 | 改动 |
+|------|------|------|
+| `lightrag/lightrag.py` | `_process_extract_entities` 入口 | `get_env_value("SKIP_ENTITY_EXTRACTION", True, bool)` 为 true 时直接返回空 `chunk_results`；chunk 切分、embedding、chunk 存储、doc_status 状态机照旧 |
+
+**部署口径（关键）**：**代码默认值 true**（P4.5 已上线验证后翻转，原为 false）。
+翻转理由：默认 false 是故障不安全侧——`deploy/.env.rag` 漏配开关时，
+LightRAG 会对每个 chunk 做一遍自抽，与独立抽取器形成双份抽取并把队列堵死
+（2026-09-11 线上实测：8527 个 pending 积压、文档 `RAG_PUSH_TIMEOUT` 失败）。
+默认 true 下漏配 = 只走独立抽取器，行为与稳态一致。
+**回退旧自抽 = 显式置 `SKIP_ENTITY_EXTRACTION=false` + 重启 lightrag**（改配置 + 重跑重抽），
+此时才需要留意 `atomic-rag` 是否也回退，否则旧 `_run_ontology_extraction` 会因
+LightRAG 存储无候选实体使全部文档 `ontology_status=failed`。
+`ENABLE_LLM_CACHE_FOR_EXTRACT` 及 extract cache 写入随抽取关闭自然失效，暂不删代码。
+
+### 12.2 ainsert_custom_kg source_id map miss 回退
+
+**问题**：`ainsert_custom_kg` 对实体/关系的 `source_id` 经 `chunk_to_source_map`
+翻译，map 只由请求 `chunks` 参数建立。独立抽取回写路径 chunks 传空 → map 为空 →
+所有 source_id 落 `"UNKNOWN"`——写图侧仅 warning，查询期
+`_find_related_text_unit_from_entities` 按 UNKNOWN 取 chunk 全 miss、**无告警**，
+图增强名存实亡。
+
+**改动**（`# [jonex]` 标记）：
+
+| 文件 | 位置 | 改动 |
+|------|------|------|
+| `lightrag/lightrag.py` | `ainsert_custom_kg` 内新增 `_translate_source_id` 局部函数；实体/关系两处调用点（原 `chunk_to_source_map.get(source_chunk_id, "UNKNOWN")`） | map miss 回退原值：请求带 chunks 时行为不变（照常翻译）；chunks 传空时原样透传权威 chunk_id（`GET /documents/chunks` 读回，禁止客户端重算）。多来源 chunk 用 `GRAPH_FIELD_SEP` 拼接的逐段翻译再重拼 |
+
+### 12.3 get_chunks_by_doc_id 上限参数化
+
+**问题**：各 KV 后端硬编码 `limit 500`，超长文档 chunk 读回被截断 → 独立抽取
+Stage4 拿不到完整输入，抽取静默缺段。
+
+**改动**（`# [jonex]` 标记）：
+
+| 文件 | 改动 |
+|------|------|
+| `lightrag/kg/postgres_impl.py` | `limit: Optional[int] = None`（不设上限）；`limit is not None` 时才截断 |
+| `lightrag/kg/json_kv_impl.py` | 同上 |
+| `lightrag/kg/mongo_impl.py` | 同上 |
+| `lightrag/kg/redis_impl.py` | 同上（SCAN 循环两处 break 条件） |
+| `lightrag/kg/opensearch_impl.py` | `limit` 缺省时 `size=10000`（max_result_window 兜底） |
+
+### 12.4 custom-kg 补写 full_entities/full_relations（删除链路修复）
+
+**问题**：`SKIP_ENTITY_EXTRACTION=true` 后 `merge_nodes_and_edges` 不再运行，
+`full_entities`/`full_relations` 无人写；`adelete_by_doc_id` 靠这两个存储定位待删
+节点与边 → 删文档/重解析后 custom-kg 回写实体与 Milvus 向量不被清理，幽灵实体累积。
+方案选 a（vendor 补写，改动集中在一个函数；`adelete_by_doc_id` 零改动）。
+
+**改动**（`# [jonex]` 标记）：
+
+| 文件 | 位置 | 改动 |
+|------|------|------|
+| `lightrag/lightrag.py` | `ainsert_custom_kg` 尾部（VDB upsert 后） | 调用新增 `_backfill_full_storages`：从实体/关系 `source_id` 反查 `text_chunks` 的 `full_doc_id`（chunk 记录自带该字段），按每个 LightRAG doc id 聚合 upsert，结构（`entity_names`/`relation_pairs` + `count`）与 `merge_nodes_and_edges` Phase 3 一致 |
+
+**已知残留**（记 warning）：`entity_chunks`/`relation_chunks` 仍缺——删除主定位靠
+full_*，chunks 级 source 精确剥离缺位，接受为已知残留；chunk 记录缺失/查不到时
+跳过并记 warning。
+
+**部署**：vendored 改动，须 `docker compose build lightrag && up -d lightrag`。无 schema 变更。
+
+### 12.5 full_* 补写覆盖修复（P4 部署验证发现）
+
+**问题**：P4 已上线、P4.5 未关自抽的窗口期内，自抽 `merge_nodes_and_edges` Phase 3
+先写 `full_entities[doc_id]`（含自抽实体），随后 custom-kg 回写触发 12.4 补写时
+**整键覆盖**该清单（只剩 custom-kg 实体）→ `adelete_by_doc_id` 读到的待删清单
+不含自抽实体 → 删除文档后自抽实体成幽灵（Neo4j 图 + Milvus 向量残留，source_id
+仍指向已删 chunk）。P4 部署验证（2026-09-07，kb_demo_internet 测试文档删除）实测
+复现：7 个自抽实体残留、native 回写 9 个正常清理。
+
+**改动**（`# [jonex] P4 修复` 标记）：`_backfill_full_storages` 尾部两个 upsert 循环
+改为**合并式**——先 `get_by_id` 读已有清单，按插入序合并去重后再 upsert
+（实体按 `entity_name`、关系按 `(src, tgt)` 排序对去重）。自抽与 custom-kg 两路
+实体均进删除清单，幽灵实体不再产生。P4.5 关闭自抽后 custom-kg 成为唯一写入点，
+合并逻辑退化为幂等（读到的旧清单会被下一次抽取自然替换）。
+
+**部署**：随下一次 lightrag 镜像重建生效（可与 P4.5 的 `SKIP_ENTITY_EXTRACTION=true`
+配置变更合并为一次重建 + 一次重启，不再单独排期）。
+
+
+### 12.6 多段 source_id 归属 + 批末 rebuild 幽灵兜底（P4.5 部署验证发现）
+
+**问题**：2026-09-09 删除 `b5e95598-75c7-4e6b-9ed6-221b6a75f056`（MiMo-V2-Flash.md，
+kb=19eaaa3825a84c279e9cd19ada1a64f9）后图库删不干净：Neo4j workspace 图残留 8 个
+实体节点（file_path 仍指向已删文档）、Milvus entities 集合残留 8 个实体向量、
+PG `lightrag_entity_chunks` 残留 8 条记录。chunks 向量（Milvus chunks）与关系均
+正常删除。根因两条：
+
+1. **跨 doc chunk 实体归属遗漏**：实体 source_id 为
+   `chunk-A<SEP>chunk-B`（两个 chunk 分属两个 doc）时，12.4 补写的 `_doc_of`
+   只取第一段反查 doc，实体只进 doc-A 的 full_entities 清单。删除时 doc-A 先删
+   （实体剩余 chunk-B 非空 → 进 rebuild 集合），doc-B 后删时清单缺失该实体
+   （`Found 0 affected entities`）→ 实体从未进入待删集合。
+2. **批末 rebuild 无数据时不兜底**：defer_rebuild 收集的受影响实体在批末 rebuild
+   时，其 chunk-tracking 剩余引用已全部随本次删除消失（幽灵引用），rebuild 报
+   `No cached extraction results found, cannot rebuild`，节点既没删也没重建。
+
+**改动**（`# [jonex] P4.5 修复` 标记）：
+
+- `lightrag.py` `_backfill_full_storages`：`_doc_of` 改为 `_docs_of`，遍历 source_id
+  **所有**段反查 doc，实体/关系归属**全部**相关 doc 的清单（去重保序）。删除
+  最后一个归属 doc 时 remaining_sources 为空，实体正常进入待删集合。
+- `api/routers/document_routes.py` `background_delete_documents` 批末 rebuild：
+  对每个受影响实体/关系先用 `text_chunks.get_by_ids` 校验剩余 chunk 是否真实存在；
+  **全部缺失**（幽灵引用）时转为删除——图 `remove_nodes`/`remove_edges`、
+  `entities_vdb`/`relationships_vdb` 删向量、`entity_chunks`/`relation_chunks`
+  删记录，不再尝试无数据 rebuild。校验失败只记日志，不影响 rebuild 主流程。
+
+**部署**：随下一次 lightrag 镜像重建生效。存量幽灵数据需手工清理（Neo4j 按
+file_path 匹配删除节点、Milvus 按 entity_name 删除向量、PG 删 chunk_ids 全灭的
+entity_chunks/relation_chunks 记录）。

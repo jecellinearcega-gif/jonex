@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from typing import Any, final
+from typing import Any, final, Optional
 
 from lightrag.base import (
     BaseKVStorage,
@@ -136,7 +136,7 @@ class JsonKVStorage(BaseKVStorage):
 
     # ── [jonex] 按 doc= 锚点列出 chunks ──────────────────────────
     async def get_chunks_by_doc_id(
-        self, doc_id: str, *, limit: int = 500,
+        self, doc_id: str, *, limit: Optional[int] = None,
     ) -> list[dict[str, Any]]:
         """List chunks whose file_path contains ``doc=<doc_id>`` anchor.
 
@@ -144,6 +144,9 @@ class JsonKVStorage(BaseKVStorage):
         doc= anchor embedded in each chunk's file_source string.  Each
         matching chunk carries the full file_source (with tstart=/tend=
         time-axis metadata for video/audio).
+
+        [jonex] limit 默认 None = 不设上限（原硬编码 500 会截断超长文档，
+        §5.6 代价②）。
         """
         if not doc_id:
             return []
@@ -161,7 +164,7 @@ class JsonKVStorage(BaseKVStorage):
                 chunk.setdefault("create_time", 0)
                 chunk.setdefault("update_time", 0)
                 out.append(chunk)
-                if len(out) >= limit:
+                if limit is not None and len(out) >= limit:
                     break
         # 按 chunk_order_index 排序
         out.sort(key=lambda c: c.get("chunk_order_index") or 0)

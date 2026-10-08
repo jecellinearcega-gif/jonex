@@ -146,18 +146,9 @@ async def rerank(request: Request, ctx: MeteringContext = Depends(parse_ctx)):
 
     data, status_code, latency_ms = await proxy_rerank(request, body, ctx)
 
-    # 记录「检索期 rerank 命中」标记，供 kb-service reasoning 回读实测触发情况。
-    # 仅对非平台引用重排（scene != ontology_rerank，即 LightRAG 检索期调用）打标；best-effort。
-    if status_code == 200 and ctx.scene != "ontology_rerank":
-        try:
-            import hashlib
-            from jonex_core.common.cache import CacheUtil
-            q = (body.get("query") or "").strip()
-            if q:
-                qh = hashlib.sha1(q.encode("utf-8")).hexdigest()[:20]
-                await CacheUtil.set(f"yx:rr:hit:{qh}", str(time.time()), expire=120)
-        except Exception as e:
-            logger.warning("记录 rerank 命中标记失败(忽略) | req_id=%s err=%s", ctx.request_id, e)
+    # [jonex] 2026-09-22：原「检索期 rerank 命中」的 Redis 标记已删除——它的唯一读者
+    # 是 kb-service 旧链路的命中检测函数，二者随本次清理一并移除。留着只是让每次
+    # 非平台 rerank 白写一次 Redis（TTL 120s）。
 
     # 计量：ollama-generate 需按 N 次带模板调用估算，传入模板固定开销字符数
     template_overhead = 0

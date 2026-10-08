@@ -5,7 +5,7 @@ from pathlib import Path
 import asyncio
 import json
 import json_repair
-from typing import Any, AsyncIterator, overload, Literal
+from typing import Any, AsyncIterator, overload, Literal, Awaitable, Callable
 from collections import Counter, defaultdict
 
 from lightrag.exceptions import (
@@ -3424,6 +3424,39 @@ async def get_keywords_from_query(
     return hl_keywords, ll_keywords
 
 
+# ── [jonex] 关键词抽取的进程内 single-flight（跨 workspace 合并并发） ──
+# 动机见 `extract_keywords_only` 第 3~5 步注释：同一次查询在 N 个 KB 上并发
+# 发起，而抽取结果与 KB 无关（args_hash 不含 workspace），故只需抽一次。
+_KEYWORD_INFLIGHT: dict[str, "asyncio.Task"] = {}
+
+
+async def _keyword_singleflight(
+    key: str,
+    factory: Callable[[], Awaitable[tuple[list[str], list[str]]]],
+) -> tuple[list[str], list[str]]:
+    """按 `key` 合并并发调用：同 key 只跑一次 `factory`，其余等待同一结果。
+
+    ⚠️ **[jonex] 多 worker 扩展点**：本实现是**进程内**的。lightrag 当前单进程
+    （`python -m lightrag.api.lightrag_server`，无 `--workers`），故等价于
+    「全局只抽一次」；若将来上多 worker，会把它换成跨进程抢占
+    （PG `INSERT ... ON CONFLICT DO NOTHING` 或 Redis `SET NX`），
+    **调用点与返回语义保持不变**。
+    """
+    task = _KEYWORD_INFLIGHT.get(key)
+    if task is None:
+        task = asyncio.ensure_future(factory())
+        _KEYWORD_INFLIGHT[key] = task
+
+        def _cleanup(t: "asyncio.Task", _k: str = key) -> None:
+            _KEYWORD_INFLIGHT.pop(_k, None)
+            if not t.cancelled():
+                t.exception()  # 取回异常，避免 "exception was never retrieved" 告警
+
+        task.add_done_callback(_cleanup)
+    # shield：等待者被取消时不连带取消共享任务（其余等待者仍能拿到结果）
+    return await asyncio.shield(task)
+
+
 async def extract_keywords_only(
     text: str,
     param: QueryParam,
@@ -3462,43 +3495,58 @@ async def extract_keywords_only(
                 "Invalid cache format for keywords, proceeding with extraction"
             )
 
-    # 3. Build the keyword-extraction prompt
-    kw_prompt = PROMPTS["keywords_extraction"].format(
-        query=text,
-        examples=examples,
-        language=language,
-    )
+    # ── [jonex] 第 3~5 步整体走进程内 single-flight，按 `args_hash` 合并并发 ──
+    #
+    # 为什么这层必要：上面的 `handle_cache` 查的是**本 workspace** 的 PG 缓存
+    # （`hashing_kv` 是 per-workspace 实例，`RAG_WORKSPACE_ISOLATION=true`），
+    # 而 `args_hash` 只含 (mode, text, language)——**不含 workspace**，即本函数
+    # 本意就认为抽取结果与 KB 无关。于是同一 query 在 N 个 KB 上并发时，N 个
+    # workspace 同时 miss、各抽一次 LLM（实测 5 KB = 5 次、单次 3~9s，是查询
+    # 耗时的大头）。这层按 `args_hash` 在进程内合并：第一个进 LLM，其余等待
+    # 同一结果；抽完各自照常写回**本 workspace** 的缓存（第 6 步不变），
+    # 故跨请求的热查询仍是 0 次 LLM。
+    async def _extract() -> tuple[list[str], list[str]]:
+        # 3. Build the keyword-extraction prompt
+        kw_prompt = PROMPTS["keywords_extraction"].format(
+            query=text,
+            examples=examples,
+            language=language,
+        )
 
-    tokenizer: Tokenizer = global_config["tokenizer"]
-    len_of_prompts = len(tokenizer.encode(kw_prompt))
-    logger.debug(
-        f"[extract_keywords] Sending to LLM: {len_of_prompts:,} tokens (Prompt: {len_of_prompts})"
-    )
+        tokenizer: Tokenizer = global_config["tokenizer"]
+        len_of_prompts = len(tokenizer.encode(kw_prompt))
+        logger.debug(
+            f"[extract_keywords] Sending to LLM: {len_of_prompts:,} tokens (Prompt: {len_of_prompts})"
+        )
 
-    # 4. Call the LLM for keyword extraction
-    if param.model_func:
-        use_model_func = param.model_func
-    else:
-        use_model_func = global_config["llm_model_func"]
-        # Apply higher priority (5) to query relation LLM function
-        use_model_func = partial(use_model_func, _priority=5)
+        # 4. Call the LLM for keyword extraction
+        if param.model_func:
+            use_model_func = param.model_func
+        else:
+            use_model_func = global_config["llm_model_func"]
+            # Apply higher priority (5) to query relation LLM function
+            use_model_func = partial(use_model_func, _priority=5)
 
-    result = await use_model_func(kw_prompt, keyword_extraction=True)
+        result = await use_model_func(kw_prompt, keyword_extraction=True)
 
-    # 5. Parse out JSON from the LLM response
-    result = remove_think_tags(result)
-    try:
-        keywords_data = json_repair.loads(result)
-        if not keywords_data:
-            logger.error("No JSON-like structure found in the LLM respond.")
+        # 5. Parse out JSON from the LLM response
+        result = remove_think_tags(result)
+        try:
+            keywords_data = json_repair.loads(result)
+            if not keywords_data:
+                logger.error("No JSON-like structure found in the LLM respond.")
+                return [], []
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parsing error: {e}")
+            logger.error(f"LLM respond: {result}")
             return [], []
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parsing error: {e}")
-        logger.error(f"LLM respond: {result}")
-        return [], []
 
-    hl_keywords = keywords_data.get("high_level_keywords", [])
-    ll_keywords = keywords_data.get("low_level_keywords", [])
+        return (
+            keywords_data.get("high_level_keywords", []),
+            keywords_data.get("low_level_keywords", []),
+        )
+
+    hl_keywords, ll_keywords = await _keyword_singleflight(args_hash, _extract)
 
     # 6. Cache only the processed keywords with cache type
     if hl_keywords or ll_keywords:

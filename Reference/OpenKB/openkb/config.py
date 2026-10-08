@@ -28,7 +28,12 @@ DEFAULT_ENTITY_TYPES: tuple[str, ...] = (
 )
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "model": "gpt-5.4",
+    # [jonex] model 不再给静态默认值（原 "gpt-5.4" 是错误的运行时兜底：内网 LLM
+    # 网关没有该渠道，未配置时会静默发出 gpt-5.4 撞 "No available channel"）。
+    # 语义改为「未显式配置」：真正需要 model 的调用点必须走 resolve_llm_model()，
+    # 由它回落 OPENKB_LLM_MODEL（**不回落 DEFAULT_LLM_MODEL**，两者形态不兼容，
+    # 见下方 OPENKB_MODEL_ENV_VAR 的说明），缺失则抛 ModelNotConfiguredError。
+    "model": None,
     "language": "en",
     "pageindex_threshold": 20,
     # A GLOBAL_SCALAR_KEY like the three above, so the merged `effective` dict
@@ -37,6 +42,89 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # effective value on read.
     "entity_types": list(DEFAULT_ENTITY_TYPES),
 }
+
+
+#: 用途级环境变量：config.yaml 未显式写 model 时回落到它。
+#:
+#: ⚠⚠ **这是 openkb 唯一的模型 env 来源，刻意不回落 ``DEFAULT_LLM_MODEL``。**
+#:
+#: 理由是两者**形态不兼容**：openkb 的模型名是**原样**交给 LiteLLM 的
+#: （``agent/query.py`` 的 ``build_run_config_from_bundle`` → ``LitellmModel``
+#: → ``litellm.acompletion``），而 LiteLLM 把 ``X/Y`` 一律当成 ``provider/model``、
+#: **剥掉第一段**才发给上游，所以这里要的是 ``provider/上游服务ID`` 形态。
+#:
+#: ``DEFAULT_LLM_MODEL`` 则是给「原样发名」那批消费者（平台 / JonexWiki / RAG，
+#: 都走 openai SDK）用的**裸名**形态。跨形态回落必然出错：
+#:
+#: * 回落值 ``deepseek/deepseek-flash``（服务 ID 自带斜杠）→ 上游收到
+#:   ``deepseek-flash`` → 400004「服务 ID 不存在」（2026-10-08 线上实况）
+#: * 回落值 ``deepseek-v4-flash-202605`` → ``LLM Provider NOT provided``
+#:
+#: 也就是说，那条回落**只会把「没配」这个一眼能看懂的错误，换成一个看不懂的
+#: 上游错误**。故删除之 —— 缺失即响亮失败。
+OPENKB_MODEL_ENV_VAR = "OPENKB_LLM_MODEL"
+
+
+class ModelNotConfiguredError(RuntimeError):
+    """LLM model 未配置：config 无显式 model，且 ``OPENKB_LLM_MODEL`` 未设。
+
+    （**不看** ``DEFAULT_LLM_MODEL`` —— 形态不兼容，见
+    :data:`OPENKB_MODEL_ENV_VAR`。）
+    """
+
+
+def _read_env(name: str) -> str | None:
+    """读环境变量；空白（``""`` / 空格 / 换行）一律视为未配置。
+
+    容器 env 里 ``X=`` 是常见的误配形态，在 ``os.environ.get`` 眼里它是「有值」，
+    直接放行就会把空模型名发给上游。
+    """
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    return value.strip() or None
+
+
+def env_llm_model() -> str | None:
+    """只解析环境变量这一层：``OPENKB_LLM_MODEL`` → ``None``（**不回落**）。
+
+    不抛错（``None`` 交调用方决定怎么处置）。**这是 env 链的唯一实现** ——
+    :func:`resolve_llm_model` 与 ``cli`` 都调它，避免同一条链被手抄第二遍：
+    env 链曾在两处各写一份，补兜底时改了一处、漏了另一处。
+
+    刻意**不回落** ``DEFAULT_LLM_MODEL`` —— 形态不兼容，见
+    :data:`OPENKB_MODEL_ENV_VAR` 的长说明。
+    """
+    return _read_env(OPENKB_MODEL_ENV_VAR)
+
+
+def resolve_llm_model(config: dict[str, Any]) -> str:
+    """解析 LLM model，优先级：config 显式值 > OPENKB_LLM_MODEL > 抛错。
+
+    config（``resolve_effective_config`` / ``load_config`` 的产物）里显式写了
+    ``model`` 的（含历史遗留的 ``gpt-5.4``）**原样保留**——config 是最高权重。
+    只有 config 未配置 model 时才回落 ``OPENKB_LLM_MODEL``（空白同样按未配置
+    处理）；皆无则抛 :class:`ModelNotConfiguredError`，绝不静默落回某个写死的
+    模型名，也**不回落** ``DEFAULT_LLM_MODEL``（形态不兼容，见
+    :data:`OPENKB_MODEL_ENV_VAR`）。
+    """
+    model = config.get("model")
+    if model:  # config 层显式配置（KB config.yaml / global.yaml），最高权重
+        return model
+    model = env_llm_model()
+    if model:
+        return model
+    raise ModelNotConfiguredError(
+        f"未配置 LLM model：请在 KB config.yaml 的 model 字段，或环境变量 "
+        f"{OPENKB_MODEL_ENV_VAR} 中指定。\n"
+        f"⚠ 该值会原样交给 LitellmModel → litellm.acompletion，而 LiteLLM 把 "
+        f"'X/Y' 当成 provider/model 并**剥掉第一段**再发给上游，所以必须是"
+        f"'provider/上游服务ID' 形态（例：上游服务 ID 为 deepseek/deepseek-flash "
+        f"时要写 deepseek/deepseek/deepseek-flash）。\n"
+        f"⚠ 刻意**不**回落 DEFAULT_LLM_MODEL：那是给 openai SDK 消费者用的裸名"
+        f"形态，回落过去会被剥掉前缀，报 400004 / 'LLM Provider NOT provided'。"
+    )
+
 
 GLOBAL_CONFIG_DIR = Path.home() / ".config" / "openkb"
 GLOBAL_CONFIG_PATH = GLOBAL_CONFIG_DIR / "global.yaml"

@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Any, final, Union
+from typing import Any, final, Optional, Union
 from dataclasses import dataclass
 import pipmaster as pm
 import configparser
@@ -317,12 +317,15 @@ class RedisKVStorage(BaseKVStorage):
 
     # ── [jonex] 按 doc= 锚点列出 chunks ──────────────────────────
     async def get_chunks_by_doc_id(
-        self, doc_id: str, *, limit: int = 500,
+        self, doc_id: str, *, limit: Optional[int] = None,
     ) -> list[dict[str, Any]]:
         """List chunks whose file_path contains ``doc=<doc_id>`` anchor.
 
         Uses SCAN to iterate keys in the namespace and filters by the
         doc= anchor in each chunk's file_source JSON value.
+
+        [jonex] limit 默认 None = 不设上限（原硬编码 500 会截断超长文档，
+        §5.6 代价②）。
         """
         if not doc_id:
             return []
@@ -350,9 +353,9 @@ class RedisKVStorage(BaseKVStorage):
                     chunk.setdefault("create_time", 0)
                     chunk.setdefault("update_time", 0)
                     out.append(chunk)
-                    if len(out) >= limit:
+                    if limit is not None and len(out) >= limit:
                         break
-                if cursor == 0 or len(out) >= limit:
+                if cursor == 0 or (limit is not None and len(out) >= limit):
                     break
         out.sort(key=lambda c: c.get("chunk_order_index") or 0)
         return out
