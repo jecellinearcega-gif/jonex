@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS knowledge_base.knowledge_info (
     document_count INTEGER DEFAULT 0,
     status VARCHAR(32) DEFAULT 'synced',
     owner_id VARCHAR(64),
-    kb_type VARCHAR(16) NOT NULL DEFAULT 'lightrag',  -- [jonex] 知识库类型 lightrag / openkb
+    kb_type VARCHAR(16) NOT NULL DEFAULT 'lightrag',  -- [jonex] 知识库类型 lightrag / openkb / jonex_wiki
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     is_deleted SMALLINT DEFAULT 0
@@ -597,7 +597,7 @@ CREATE INDEX IF NOT EXISTS idx_kb_doc_tags_tag
 COMMENT ON TABLE knowledge_base.document_tags IS '文档与标签的多对多关联，级联删除。';
 
 -- ------------------------------------------------------------
--- LLM-Wiki Schema 编译设置表（kb_type=openkb 的编译配置权威源）
+-- LLM-Wiki Schema 编译设置表（llm-wiki 类型 kb_type=openkb/jonex_wiki 的编译配置权威源）
 -- 方案：docs/llmwiki-schema-settings-execution-plan.md
 -- 留档模型：每次保存递增 schema_version，旧 active 行转 archived；
 -- partial unique index 只约束 active（每 KB 单 active），archived 留历史。
@@ -642,3 +642,129 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_llm_wiki_schema_active
 -- active 查询加速（编译触发点/保存 CAS 主路径）
 CREATE INDEX IF NOT EXISTS idx_llm_wiki_schema_kb
     ON knowledge_base.llm_wiki_schemas (tenant_id, knowledge_base_id, schema_version);
+
+-- ------------------------------------------------------------
+-- 数据运营事件表（检索/处理链路的埋点，append-only 事实表）
+-- 不承载业务 CRUD：由检索/处理链路落库，由 knowledge-base
+-- AnalyticsService 聚合查询。id 沿用知识库服务统一约定：
+-- VARCHAR(64) + Python 端 uuid4。
+-- 方案：原先独立成 008_search_events.sql，后并入本文件——
+--       六张表全在 knowledge_base schema 内，无独立执行时机，
+--       且 008 不在 init.sql 的 \ir 清单里（手动初始化会漏建）。
+-- 存量库增量脚本：deploy/postgres/update/032_search_events.sql
+-- ------------------------------------------------------------
+
+-- 1. 检索请求接收事件（每次检索调用的入口记录，含失败/中断的请求）
+CREATE TABLE IF NOT EXISTS knowledge_base.search_request_event (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    user_id VARCHAR(128),
+    request_id VARCHAR(64) NOT NULL,
+    entry_service_id VARCHAR(64),
+    domain_space_id VARCHAR(64),
+    query TEXT,
+    query_hash VARCHAR(64),
+    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_deleted SMALLINT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sre_tenant_time ON knowledge_base.search_request_event (tenant_id, received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sre_request ON knowledge_base.search_request_event (request_id);
+
+-- 2. 检索步骤事件（一次检索内各推理/检索步骤，stage 对齐 ReasoningStep 的 STAGE_*/STATUS_*）
+CREATE TABLE IF NOT EXISTS knowledge_base.search_step_event (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    request_id VARCHAR(64) NOT NULL,
+    stage VARCHAR(32) NOT NULL,
+    title VARCHAR(128),
+    status VARCHAR(16) NOT NULL,
+    summary TEXT,
+    detail JSONB,
+    duration_ms INTEGER,
+    knowledge_base_ids JSONB NOT NULL DEFAULT '[]',
+    service_id VARCHAR(64),
+    searched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_deleted SMALLINT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sse_tenant_time ON knowledge_base.search_step_event (tenant_id, searched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sse_request ON knowledge_base.search_step_event (request_id);
+
+-- 3. 检索命中事件（检索链路实际命中的来源，request_id + target_id 去重）
+CREATE TABLE IF NOT EXISTS knowledge_base.search_hit_event (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    request_id VARCHAR(64) NOT NULL,
+    target_type VARCHAR(16) NOT NULL,
+    target_id VARCHAR(128) NOT NULL,
+    entity_type VARCHAR(64),
+    canonical_name VARCHAR(256),
+    kb_id VARCHAR(128),
+    hit_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_deleted SMALLINT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_she_tenant_time ON knowledge_base.search_hit_event (tenant_id, hit_at DESC);
+CREATE INDEX IF NOT EXISTS idx_she_request ON knowledge_base.search_hit_event (request_id);
+CREATE INDEX IF NOT EXISTS idx_she_target ON knowledge_base.search_hit_event (target_type, target_id);
+
+-- 4. 回答采用事件（最终答案实际引用的来源）
+CREATE TABLE IF NOT EXISTS knowledge_base.search_adoption_event (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    answer_id VARCHAR(64) NOT NULL,
+    request_id VARCHAR(64),
+    target_type VARCHAR(16) NOT NULL,
+    target_id VARCHAR(128) NOT NULL,
+    entity_type VARCHAR(64),
+    canonical_name VARCHAR(256),
+    kb_id VARCHAR(128),
+    adopted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_deleted SMALLINT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sae_tenant_time ON knowledge_base.search_adoption_event (tenant_id, adopted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sae_answer ON knowledge_base.search_adoption_event (answer_id);
+CREATE INDEX IF NOT EXISTS idx_sae_target ON knowledge_base.search_adoption_event (target_type, target_id);
+
+-- 5. 资产状态事件（文档资产状态流转的变更记录）
+CREATE TABLE IF NOT EXISTS knowledge_base.asset_status_event (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    asset_id VARCHAR(64) NOT NULL,
+    kb_id VARCHAR(128),
+    status VARCHAR(32) NOT NULL,
+    previous_status VARCHAR(32),
+    reason TEXT,
+    changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_deleted SMALLINT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_ase_tenant_time ON knowledge_base.asset_status_event (tenant_id, changed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ase_asset ON knowledge_base.asset_status_event (asset_id);
+
+-- 6. 处理任务事件（解析/本体抽取/编译等处理任务的执行记录）
+CREATE TABLE IF NOT EXISTS knowledge_base.processing_task_event (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    processing_task_id VARCHAR(128) NOT NULL,
+    asset_id VARCHAR(64) NOT NULL,
+    kb_id VARCHAR(128),
+    task_type VARCHAR(32) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    error TEXT,
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_deleted SMALLINT NOT NULL DEFAULT 0,
+    CONSTRAINT uq_pte_task UNIQUE (tenant_id, processing_task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pte_tenant_time ON knowledge_base.processing_task_event (tenant_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pte_asset ON knowledge_base.processing_task_event (asset_id);

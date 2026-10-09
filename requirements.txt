@@ -4,7 +4,13 @@ uvicorn[standard]>=0.27.0
 pydantic[dotenv]>=1.10.0,<2.0.0  # Use pydantic v1 with dotenv support (no pydantic-settings needed)
 
 # Database
-sqlalchemy>=2.0.25
+# [jonex] 必须带 `[asyncio]` extra：它才会拉 greenlet。SQLAlchemy **2.1 起**把 greenlet
+# 从默认依赖改成了 extra-only（2.0.x 是带平台标记的默认依赖，所以旧镜像能跑）。
+# 裸写 `sqlalchemy>=2.0.25` 时，任何一次重建都会解析到 2.1.x 并在启动时炸：
+#   ImportError: The SQLAlchemy asyncio module requires that the Python 'greenlet'
+#   library is installed.
+# （2026-09-29 atomic-rag 重建即因此 crash-loop；该服务 pyproject 侧也只声明了裸 sqlalchemy）
+sqlalchemy[asyncio]>=2.0.25
 asyncpg>=0.29.0
 alembic>=1.13.0
 

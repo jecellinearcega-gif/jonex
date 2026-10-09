@@ -35,6 +35,8 @@ volumes:
     driver: local
   jonex-openkb-storage:
     driver: local
+  jonex-wiki-storage:
+    driver: local
   jonex-logs:
     driver: local
   jonex-neo4j-data:
@@ -214,6 +216,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       # RAG 调用通过 Sidecar 反代到 atomic-rag
       SIDECAR_URL: http://sidecar:8000
+      # 内部 X-API-Key：须与 sidecar/gateway 镜像内 GATEWAY_API_KEY 默认值一致。
+      # 旧镜像默认 jonex_test_gateway，新代码默认哨兵 change-me-in-production（config.py），
+      # 显式注入避免重建后漂移导致 RAG 调 Sidecar /invoke 401。
+      GATEWAY_API_KEY: ${GATEWAY_API_KEY:-jonex_test_gateway}
       # 审计日志转发到 platform（非 platform 容器必须设置，否则审计静默丢弃）
       AUDIT_INGEST_URL: http://platform-service:8000
       CAPABILITY_RUNTIME_FILE: /app/config/capability_runtime.yaml
@@ -222,25 +228,35 @@ services:
       NEO4J_USERNAME: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-change-me}
       NEO4J_ONTOLOGY_LABEL: OntologyEntity
+      # [jonex] P5-var 退化闸门：reconcile 重写前对比本文档图中已有实体数，
+      # 跌幅超阈值（0.3 = 30%）告警并拒绝覆盖（方差下沿不吞旧数据；0 关闭）
+      ONTOLOGY_RECONCILE_DEGRADE_GUARD_THRESHOLD: ${ONTOLOGY_RECONCILE_DEGRADE_GUARD_THRESHOLD:-0.3}
       # Ontology LLM (分流问答)
       ONTOLOGY_LLM_BINDING_HOST: ${ONTOLOGY_LLM_BINDING_HOST:-http://llm-gateway:8787/v1}
       ONTOLOGY_LLM_BINDING_API_KEY: ${ONTOLOGY_LLM_BINDING_API_KEY:-gw_lightrag}
-      ONTOLOGY_LLM_MODEL: ${ONTOLOGY_LLM_MODEL:-deepseek-v4-flash-202605}
-      # RAG fallback 引用重排（方案 B2）：总开关默认关闭（灰度）；client 经 llm-gateway
-      ONTOLOGY_RAG_FALLBACK_RERANK_ENABLED: ${ONTOLOGY_RAG_FALLBACK_RERANK_ENABLED:-false}
-      # [jonex] 方案 A：平台取回作答权（LightRAG 降为 retriever），总开关默认关（灰度）；
-      # 新路径失败当次自动回退旧链路（rag-subject-filter 方案 §6.6）
-      RAG_PLATFORM_ANSWER_ENABLED: ${RAG_PLATFORM_ANSWER_ENABLED:-false}
+      ONTOLOGY_LLM_MODEL: ${ONTOLOGY_LLM_MODEL:-deepseek/deepseek-flash}
+      # RAG 降级路径（平台取回答作权）自 2026-09-22 起为唯一路径，原灰度开关已删除
       RAG_ANSWER_MAX_CONTEXT_CHARS: ${RAG_ANSWER_MAX_CONTEXT_CHARS:-12000}
       # [jonex] 方案 B：主体一致性软加权（λ，仅 RAG_SUBJECT_FILTER_ENABLED=true 时生效）
       RAG_SUBJECT_WEIGHT: ${RAG_SUBJECT_WEIGHT:-0.25}
-      # LightRAG 检索期 rerank 配置态（仅供 reasoning 展示，须与 .env.rag 的 RERANK_BINDING 一致）
-      RAG_RETRIEVAL_RERANK_ENABLED: ${RAG_RETRIEVAL_RERANK_ENABLED:-false}
       # [jonex] §block-packing §10 L2：跨页打包 chunk 引用页精算（页段打分，默认开）
       RAG_REF_PAGE_SCORING_ENABLED: ${RAG_REF_PAGE_SCORING_ENABLED:-true}
       RERANK_BINDING_HOST: ${RERANK_BINDING_HOST:-http://llm-gateway:8787/v1}
       RERANK_BINDING_API_KEY: ${RERANK_BINDING_API_KEY:-gw_lightrag}
-      RERANK_MODEL: ${RERANK_MODEL:-awenleven/Qwen3-Reranker-4B:Q4_K_M}
+      # [jonex] 默认值改为现网 vLLM 的 served-model-name。旧默认 `awenleven/Qwen3-Reranker-4B:Q4_K_M`
+      # 是已下线的 Ollama tag：上游收到不认识的模型名会**回 200 + 空 results**（静默），
+      # kb-service 侧只表现成「reranker 返回空结果」→ 统一 rerank 真分覆盖率 0%、整池退化
+      # order_decay。A/B 实测（2026-09-23）：旧 tag → {"results":[]}，Qwen3-Reranker-4B → 正常分值。
+      RERANK_MODEL: ${RERANK_MODEL:-Qwen3-Reranker-4B}
+      # [jonex] S1：本体侧候选 chunk 正文批量回捞。**它是统一 rerank 的前置条件**
+      # （关闭时文本/表格候选正文全空 → `_prellm_rerank_chunks` 提前返回 → 全池
+      # order_decay，且引用 location 无 text → 前端「命中片段原文」为空）。默认
+      # false＝保持改造前行为（只回捞图片）；开启由 .env 显式置 true。
+      # 依据见 deploy/.env.example「S1 本体侧 chunk 正文批量回捞」。
+      ONTOLOGY_CHUNK_TEXT_PREFETCH_ENABLED: ${ONTOLOGY_CHUNK_TEXT_PREFETCH_ENABLED:-false}
+      ONTOLOGY_CHUNK_TEXT_PREFETCH_TIMEOUT: ${ONTOLOGY_CHUNK_TEXT_PREFETCH_TIMEOUT:-10}
+      ONTOLOGY_CHUNK_TEXT_PREFETCH_MAX_DOCS: ${ONTOLOGY_CHUNK_TEXT_PREFETCH_MAX_DOCS:-32}
+      ONTOLOGY_CHUNK_TEXT_PREFETCH_CONCURRENCY: ${ONTOLOGY_CHUNK_TEXT_PREFETCH_CONCURRENCY:-4}
       # 对象存储（local / 腾讯云 COS / S3 兼容），默认 local
       OBJECT_STORAGE_BACKEND: ${OBJECT_STORAGE_BACKEND:-local}
       COS_REGION: ${COS_REGION:-}
@@ -264,6 +280,11 @@ services:
     volumes:
       - jonex-logs:/app/logs
       - jonex-rag-inputs:/app/inputs             # local 后端：读取 gateway/atomic-rag 写入的原始文件
+      # [jonex] P0-d：失败/完成任务的 JSON 直读兜底。大文档（实测 ontology_data
+      # 82MB）经 Sidecar 转发时会把 uvicorn worker 打崩，HTTP 侧只拿到
+      # "Server disconnected without sending a response."，故对账在 HTTP 不可用时
+      # 改从同卷磁盘读 task JSON。只读挂载，KB 不写 RAG 的工作目录。
+      - jonex-rag-storage:/app/rag_storage:ro
       - ./config/capability_runtime.yaml:/app/config/capability_runtime.yaml:ro
       - ./config/ontology:/app/deploy/config/ontology:ro   # 编译 yaml_default 兜底需要 default.yaml
     depends_on:
@@ -333,6 +354,68 @@ services:
     restart: unless-stopped
 
   # ============================================================
+  # 任务中心能力服务（编排定义 / 版本发版 / 触发 / 任务与子任务调度）
+  # ------------------------------------------------------------
+  # 它自己不开对外网络接口，只做两件事：
+  #   1) 经 Sidecar /invoke 收接入方与运行方的对内函数调用（§4.3）；
+  #   2) 后台循环出站派活给运行方（§4.1 ① execute）。
+  # ============================================================
+  task-center-service:
+    build:
+      context: ..
+      dockerfile: deploy/docker/capability.Dockerfile
+      args:
+        CAPABILITY_NAME: task_center
+        PYTHON_BASE: python-base                            # 共享基础镜像
+      additional_contexts:
+        python-base: "docker-image://jonex/python-base:local"
+    container_name: jonex-task-center
+    hostname: task-center
+    networks:
+      - jonex-network
+    ports:
+      - "8007:8000"
+    environment:
+      TZ: Asia/Shanghai
+      CAPABILITY_NAME: task_center
+      SERVICE_ENDPOINT: http://task-center-service:8000
+      LOG_LEVEL: INFO
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USERNAME: ${DB_USERNAME:-jonex}
+      DB_PASSWORD: ${DB_PASSWORD:-change-me}
+      DB_NAME: ${DB_NAME:-jonex}
+      REDIS_URL: redis://redis:6379/0
+      # 派活给运行方（知识库）经 Sidecar 反代
+      SIDECAR_URL: http://sidecar:8000
+      # 审计日志转发到 platform（非 platform 容器必须设置，否则审计静默丢弃）
+      AUDIT_INGEST_URL: http://platform-service:8000
+      # 派活目标（business.knowledge_base.v1）的落地方式在这份清单里；
+      # 清单里没声明的能力一律回退 local，运行方就会「找不到」。
+      CAPABILITY_RUNTIME_FILE: /app/config/capability_runtime.yaml
+      # 任务中心自己的配置（后台循环节奏、任务锁、派活超时…）**统一走 .env**，
+      # 见 `deploy/.env.example` 第 20 节。这里不再逐个透传 —— 免得两处各写一份、
+      # 改了一处忘了另一处。`config.py` 的 `TaskCenterSettings` 有同样的默认值兜底。
+      # （后台循环本身**恒开、没有开关**：多副本下不选主，每份都跑。）
+    env_file:
+      - .env
+    volumes:
+      - jonex-logs:/app/logs
+      - ./config/capability_runtime.yaml:/app/config/capability_runtime.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  # ============================================================
   # 平台管理能力服务（用户认证、RBAC、菜单、系统配置等）
   # ============================================================
   platform-service:
@@ -365,6 +448,8 @@ services:
       AUDIT_INGEST_URL: ""   # platform 自身走本地直写，不走 HTTP 转发
     env_file:
       - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # 独立 keycloak 在宿主 8081：platform 容器内经此访问（SSO token/JWKS）
     volumes:
       - jonex-logs:/app/logs
     depends_on:
@@ -408,9 +493,15 @@ services:
       REDIS_URL: redis://redis:6379/0
       KNOWLEDGE_BASE_URL: http://knowledge-base-service:8000
       BUSINESS_DOMAIN_URL: http://business-domain-service:8000
+      TASK_CENTER_URL: http://task-center-service:8000
       ATOMIC_RAG_URL: http://atomic-rag:8000
       PLATFORM_URL: http://platform-service:8000
       OPENKB_URL: http://openkb:7566
+      JONEX_WIKI_URL: http://jonex-wiki:8007
+      # 内部 X-API-Key：Sidecar 是校验方，必须与调用方一致——
+      # gateway（Gateway→Sidecar）与 knowledge-base（RAG/openkb/jonex_wiki client→Sidecar）
+      # 都发这个 key；与下方 gateway 服务、knowledge_base 服务注入同一值。
+      GATEWAY_API_KEY: ${GATEWAY_API_KEY:-jonex_test_gateway}
       JWT_SECRET: ${JWT_SECRET}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       LOGIN_TICKET_EXPIRE_SECONDS: ${LOGIN_TICKET_EXPIRE_SECONDS:-60}
@@ -430,6 +521,8 @@ services:
       knowledge-base-service:
         condition: service_healthy
       business-domain-service:
+        condition: service_healthy
+      task-center-service:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -467,6 +560,8 @@ services:
       DB_NAME: ${DB_NAME:-jonex}
       REDIS_URL: redis://redis:6379/0
       SIDECAR_URL: http://sidecar:8000
+      # 内部 X-API-Key：Gateway→Sidecar 认证，须与 sidecar 服务注入值一致
+      GATEWAY_API_KEY: ${GATEWAY_API_KEY:-jonex_test_gateway}
       # 网关 → Sidecar 代理超时（秒）；需 ≥ Sidecar 的 SIDECAR_PROXY_TIMEOUT
       GATEWAY_SIDECAR_TIMEOUT: ${GATEWAY_SIDECAR_TIMEOUT:-300}
       JWT_SECRET: ${JWT_SECRET}
@@ -490,7 +585,6 @@ services:
       S3_PRESIGN_EXPIRES: ${S3_PRESIGN_EXPIRES:-900}
       # 网关对外公开地址（用于构造文档下载等公开 URL），生产环境需覆盖为实际 IP/域名
       GATEWAY_PUBLIC_BASE_URL: ${GATEWAY_PUBLIC_BASE_URL:-http://localhost:8000}
-      GATEWAY_API_KEY: ${GATEWAY_API_KEY:-change-me-in-production}
     volumes:
       - jonex-logs:/app/logs
       - jonex-rag-inputs:/app/inputs             # 与 atomic-rag 共享上传文件（named volume）
@@ -890,19 +984,36 @@ services:
       ONTOLOGY_EXTRACT_MAX_RETRIES: ${ONTOLOGY_EXTRACT_MAX_RETRIES:-3}
       ONTOLOGY_LLM_BINDING_HOST: ${ONTOLOGY_LLM_BINDING_HOST:-http://llm-gateway:8787/v1}
       ONTOLOGY_LLM_BINDING_API_KEY: ${ONTOLOGY_LLM_BINDING_API_KEY:-gw_lightrag}
-      ONTOLOGY_LLM_MODEL: ${ONTOLOGY_LLM_MODEL:-deepseek-v4-flash-202605}
+      ONTOLOGY_LLM_MODEL: ${ONTOLOGY_LLM_MODEL:-deepseek/deepseek-flash}
       ONTOLOGY_LLM_TIMEOUT: ${ONTOLOGY_LLM_TIMEOUT:-60}
-      ONTOLOGY_EXTRACT_MAX_ENTITIES: ${ONTOLOGY_EXTRACT_MAX_ENTITIES:-200}
-      ONTOLOGY_EXTRACT_MAX_CHUNKS: ${ONTOLOGY_EXTRACT_MAX_CHUNKS:-50}
-      ONTOLOGY_EXTRACT_MAX_TOKENS: ${ONTOLOGY_EXTRACT_MAX_TOKENS:-4096}
-      # 本体抽取 LLM 批次并发度（实体归类/关系定型共用）。经 llm-gateway → 上游 LLM，
+      # 独立抽取器单批 LLM 输出 token 上限（P5：4096→8192，§5.4 截断风险）
+      ONTOLOGY_EXTRACT_MAX_TOKENS: ${ONTOLOGY_EXTRACT_MAX_TOKENS:-8192}
+      # 本体抽取 LLM 批次并发度。经 llm-gateway → 上游 LLM，
       # 与入库期 LightRAG 抽取共用上游并发额度（tokenhub 实测约 48 触发 429）。
       # 默认 8：保守取值、落在无限流区并留余量；上游更严或多文档并行时下调。
       ONTOLOGY_EXTRACT_CONCURRENCY: ${ONTOLOGY_EXTRACT_CONCURRENCY:-8}
-      # 实体描述写入 Neo4j 的截断长度（answer_from_facts 的核心上下文）
-      ONTOLOGY_ENTITY_DESC_MAXLEN: ${ONTOLOGY_ENTITY_DESC_MAXLEN:-1000}
-      # schema relation_types 覆盖稀疏时，对 LightRAG 已有边落通用 RELATED_TO 边保证图非空（默认关）
-      ONTOLOGY_KEEP_UNTYPED_EDGES: ${ONTOLOGY_KEEP_UNTYPED_EDGES:-false}
+      # 实体描述写入 Neo4j 的截断长度（answer_from_facts 的核心上下文；P5：默认 2000 = 独立抽取器现状）
+      ONTOLOGY_ENTITY_DESC_MAXLEN: ${ONTOLOGY_ENTITY_DESC_MAXLEN:-2000}
+      # ---- [jonex] P1/P2 批策略与补抽（30 vs 107 召回修复）----
+      # 每批输入 token 预算上限（估算值，装箱 AND 上限；单 chunk 超预算仍单 chunk 成批）
+      ONTOLOGY_EXTRACT_BATCH_BUDGET_TOKENS: ${ONTOLOGY_EXTRACT_BATCH_BUDGET_TOKENS:-24000}
+      # 每 chunk 输出 token 预留：每批 chunk 数 = max_tokens // 该值（与 BATCH_SIZE 取小）。
+      # 默认 1000 → 8192/1000≈8 chunk/批，缓解大批判注意力稀释的少输出
+      ONTOLOGY_EXTRACT_PER_CHUNK_OUTPUT_RESERVE: ${ONTOLOGY_EXTRACT_PER_CHUNK_OUTPUT_RESERVE:-1000}
+      # gleaning 补抽轮数：每批回传已抽实体名只输出遗漏。
+      # [jonex] P5-var：默认 2（原 1）——上游 temperature=0 非位精确，
+      # 多轮 gleaning 只收遗漏，是收敛采样方差的第一个抓手（0 关闭）
+      ONTOLOGY_EXTRACT_GLEANING: ${ONTOLOGY_EXTRACT_GLEANING:-2}
+      # [jonex] P5-var：主批独立采样次数（self-consistency 并集）。
+      # 同输入单次实测实体数波动 25~39；跑 N 次按 canonical_name 取并集
+      # 收敛方差（默认 2，成本 ≈N 倍；1 关闭）
+      ONTOLOGY_NATIVE_SAMPLE_RUNS: ${ONTOLOGY_NATIVE_SAMPLE_RUNS:-2}
+      # ---- procedural 抽取子管线（P7 M2：Skill/Action 规程抽取）----
+      # 总闸默认关 = 行为与改造前一致；与「schema 含 Action」每文档条件 AND 生效
+      ONTOLOGY_PROCEDURAL_EXTRACT_ENABLED: ${ONTOLOGY_PROCEDURAL_EXTRACT_ENABLED:-false}
+      ONTOLOGY_PROCEDURAL_CHUNK_MAX: ${ONTOLOGY_PROCEDURAL_CHUNK_MAX:-30}
+      ONTOLOGY_PROCEDURAL_MAX_ACTIONS: ${ONTOLOGY_PROCEDURAL_MAX_ACTIONS:-100}
+      ONTOLOGY_PROCEDURAL_NAME_MAXLEN: ${ONTOLOGY_PROCEDURAL_NAME_MAXLEN:-30}
       # 对象存储（local / 腾讯云 COS / S3 兼容），默认 local
       OBJECT_STORAGE_BACKEND: ${OBJECT_STORAGE_BACKEND:-local}
       COS_REGION: ${COS_REGION:-}
@@ -949,6 +1060,16 @@ services:
       retries: 3
       start_period: 300s          # 5 分钟：mineru 首次启动需下载模型，pymupdf 可缩短到 120s
     restart: unless-stopped
+    # [jonex] P0-1：内存上限（2026-09-13 宿主 OOM 事故后的护栏）。
+    # 本服务原先无任何内存限制（mem_limit=0），抽取产出能把宿主内存吃到
+    # 23.7GB，内核 oom-killer 挑谁杀是随机的——实测那次挑中 python
+    # （anon-rss 23702540kB），触发者是 healthcheck 的 curl 在申请内存时踩响。
+    # 加上限后超限变为 cgroup OOM（OOMKilled=true，只死本容器），不再波及同宿主机
+    # 的其它服务。取值需高于正常文档峰值：线上 5961 实体文档 VmPeak ≈2.3GB；
+    # 本项只管「崩溃边界」，异常大文档由 ONTOLOGY_SOURCE_CHUNKS_MAX 等配额在源头拦。
+    mem_limit: ${ATOMIC_RAG_MEM_LIMIT:-12g}
+    # 与 mem_limit 相等 = 禁用 swap：避免 OOM 前长时间 swap 抖动把宿主一起拖垮。
+    memswap_limit: ${ATOMIC_RAG_MEM_LIMIT:-12g}
     # GPU 用户请叠加 docker-compose.gpu.yml 启用 NVIDIA GPU 加速。
     # Mac 本地开发请叠加 docker-compose.mac.yml 降低资源占用。
 
@@ -987,6 +1108,44 @@ services:
       start_period: 30s
     restart: unless-stopped
     depends_on:
+      llm-gateway:
+        condition: service_started
+
+  # ============================================================
+  # jonex-wiki - 单容器（B1）：引擎 + Jonex Atomic Capability 同进程 pydantic v2
+  # ============================================================
+  # 运行 deploy/docker/jonex-wiki.Dockerfile：alembic upgrade head + start_capability.py（8007）。
+  # B1：JonexWikiCapability 进程内 import jonex_wiki 调 WikiApplication，无独立 adapter / HTTP 转调。
+  # Sidecar 通过 JONEX_WIKI_URL 指向本容器（8007）。
+  # ============================================================
+  jonex-wiki:
+    build:
+      context: ..
+      dockerfile: deploy/docker/jonex-wiki.Dockerfile
+      args:
+        USE_OVERSEAS_MIRROR: ${USE_OVERSEAS_MIRROR:-false}
+    container_name: jonex-wiki
+    hostname: jonex-wiki
+    image: jonex-wiki-server
+    networks:
+      - jonex-network
+    expose:
+      - "8007"                      # 仅容器内，Sidecar 通过此端口调用 /invoke
+    env_file:
+      - .env.jonex_wiki             # 引擎专属环境变量（JONEX_WIKI_* / LLM_BINDING_* / DB_*）
+    volumes:
+      - jonex-wiki-storage:/data/jonex-wiki   # 引擎产物根（compile/query bundles）
+      - jonex-rag-inputs:/app/inputs           # 读取 Jonex parsed artifact（共享卷）
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8007/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
       llm-gateway:
         condition: service_started
 
@@ -1050,4 +1209,47 @@ services:
       timeout: 10s
       retries: 10
       start_period: 40s
+    restart: unless-stopped
+
+  # ============================================================
+  # 身份同步侧车 —— Jonex标准拉取契约 ⇄ Casdoor Admin API
+  # 平台按服务名寻址：http://identity-sync-gateway:8099
+  # 默认不随 make up 起（profiles 隔离）：
+  #   docker compose --profile identity-sync-gateway up -d
+  # 详见 deploy/identity-sync-gateway/README.md
+  # ============================================================
+  identity-sync-gateway:
+    build:
+      context: ./identity-sync-gateway
+      dockerfile: Dockerfile
+    container_name: jonex-identity-sync-gateway
+    hostname: identity-sync-gateway
+    profiles: ["identity-sync-gateway"]
+    networks:
+      - jonex-network
+    ports:
+      # 只绑宿主回环：平台走 compose 内网按服务名寻址，这条映射仅供本地调试
+      - "127.0.0.1:8099:8099"
+    environment:
+      TZ: Asia/Shanghai
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # ⚠️ 端口映射固定 8099；改这里的值须同步改上面的 ports
+      DATASOURCE_GATEWAY_PORT: ${DATASOURCE_GATEWAY_PORT:-8099}
+      # 鉴权 token（必填）：须与平台租户 UI 里填的 token 同值，缺失则容器启动即退出
+      DATASOURCE_GATEWAY_TOKEN: ${DATASOURCE_GATEWAY_TOKEN:-}
+      DATASOURCE_GATEWAY_INCREMENTAL_MODE: ${DATASOURCE_GATEWAY_INCREMENTAL_MODE:-time_window}
+      # 上游 IdP（Casdoor）连接，键名沿用平台既有 MOCK_DATASOURCE_* 前缀
+      MOCK_DATASOURCE_BASE_URL: ${MOCK_DATASOURCE_BASE_URL:-}
+      MOCK_DATASOURCE_OWNER: ${MOCK_DATASOURCE_OWNER:-}
+      MOCK_DATASOURCE_ADMIN_USER: ${MOCK_DATASOURCE_ADMIN_USER:-}
+      MOCK_DATASOURCE_ADMIN_PASSWORD: ${MOCK_DATASOURCE_ADMIN_PASSWORD:-}
+      MOCK_DATASOURCE_PAGE_SIZE: ${MOCK_DATASOURCE_PAGE_SIZE:-100}
+      MOCK_DATASOURCE_USERNAMES: ${MOCK_DATASOURCE_USERNAMES:-}
+    healthcheck:
+      # 基础镜像无 curl，用 python 探针
+      test: ["CMD", "python", "-c", "import sys,urllib.request;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8099/health',timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped

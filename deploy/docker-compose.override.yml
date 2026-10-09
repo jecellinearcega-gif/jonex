@@ -21,6 +21,10 @@ services:
     ports:
       - "8001:8000"  # 开发模式对外暴露 Sidecar 端口
 
+  llm-gateway:
+    ports:
+      - "8788:8787"  # 开发模式对外暴露 LLM 网关端口（8787 被本机 bun 进程占用，改映射 8788）
+
   lightrag:
     ports:
       - "9621:9621"  # 开发模式对外暴露 LightRAG 端口
@@ -36,6 +40,10 @@ services:
   knowledge-base-service:
     ports:
       - "8003:8000"  # 开发模式对外暴露知识库服务端口
+
+  task-center-service:
+    ports:
+      - "8007:8000"  # 开发模式对外暴露任务中心服务端口
 
   platform-service:
     ports:

@@ -24,6 +24,7 @@ services:
     environment:
       KNOWLEDGE_BASE_URL: http://host.docker.internal:8003
       BUSINESS_DOMAIN_URL: http://host.docker.internal:8005
+      TASK_CENTER_URL: http://host.docker.internal:8007
       ATOMIC_RAG_URL: http://host.docker.internal:8004
       PLATFORM_URL: http://host.docker.internal:8006
     extra_hosts:
@@ -49,6 +50,10 @@ services:
   business-domain-service:
     ports:
       - "8005:8000"  # 开发模式对外暴露业务领域服务端口
+
+  task-center-service:
+    ports:
+      - "8007:8000"  # 开发模式对外暴露任务中心服务端口
 
   platform-service:
     ports:

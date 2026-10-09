@@ -89,6 +89,7 @@ from .response import (
     StandardResponse,
     success_response,
     error_response,
+    passthrough_upstream_response,
 )
 from .audit import emit_audit, audit_action
 from .exception_handler import register_exception_handlers
@@ -185,6 +186,7 @@ __all__ = [
     "StandardResponse",
     "success_response",
     "error_response",
+    "passthrough_upstream_response",
     # 异常处理器
     "register_exception_handlers",
     # 国际化

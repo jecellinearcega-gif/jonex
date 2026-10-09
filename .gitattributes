@@ -10,3 +10,9 @@ frontends/*/nginx/*.conf text eol=lf
 
 # Python files — auto (cross-platform compatible)
 *.py text
+
+# Vendored 资源 — 字节必须精确（镜像构建期按 sha256 校验），禁止 EOL 转换
+deploy/resources/** binary
+
+# PDF 是二进制格式（文本型 PDF 不含 NUL 字节，会被 git 误判为文本），禁止 EOL 转换
+*.pdf binary

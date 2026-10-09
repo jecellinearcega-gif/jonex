@@ -22,6 +22,7 @@ deploy/.env.rag
 
 # Generated Docker Compose files (output of setup wizard)
 docker-compose.*.yml
+deploy/docker-compose.yml.bak*
 !docker-compose.podman.yml
 
 # Build / Distribution
@@ -138,6 +139,9 @@ data/
 # 例外：uv.lock 纳入版本控制，供团队/CI/镜像构建共用同一份（uv 官方推荐），
 # 保证依赖解析可复现
 !/uv.lock
+!mcp_server/uv.lock
+!Reference/Rag-anything/uv.lock
+!Reference/JonexWiki/uv.lock
 
 # ===== 虚拟环境 =====
 .venv/
@@ -198,6 +202,7 @@ frontends/dev-gateway/package-lock.json
 !mcp_server/.env.mcp.example
 !deploy/.env.mcp.example
 !deploy/.env.openkb.example
+!deploy/.env.jonex_wiki.example
 
 # ===== Reference 引用项目（排除非项目文件） =====
 Reference/Rag-anything/.github/
@@ -306,12 +311,18 @@ certs/
 !/docs/dev/
 !/docs/examples/
 # —— 其余内部文档 ——
-/Reference/Rag-anything/docs/
+# 各引用项目自带的 docs/ 一律不入库（vendored 项目的内部文档，防止同步时漏网）
+/Reference/*/docs/
 # 客户定制领域本体（含真实业务语料引用），不入库
 /deploy/config/ontology/nanfang_publishing.yaml
+# 视频/OCR 部署栈（内部环境专用，不入库）
+/deploy/ocr-stack/
+/deploy/mineru-video/
 # frontends/ 下的误提交杂项
 /frontends/_tc.txt
 # frontends/ 内部文档（设计/i18n 计划等，不入库）
 /frontends/docs/
 /frontends/translateDocs/
 /frontends/i18n-status.md
+# —— 发布台账（记录每次同步/发布的改动与 dev 基线，本地保留，不入库）——
+/.release-log/

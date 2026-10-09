@@ -3,6 +3,16 @@ import pkg from 'http-proxy'
 const { createProxyServer } = pkg
 
 // ============================================================
+// Environment (.env) — 按本文件位置加载，避免 --env-file 相对 cwd
+// 解析在不同启动方式（pnpm --filter / 直接 node / VSCode）下不一致
+// ============================================================
+try {
+  process.loadEnvFile(new URL('./.env', import.meta.url))
+} catch {
+  // .env 缺失时使用下方默认值，不阻塞启动
+}
+
+// ============================================================
 // Configuration
 // ============================================================
 const PORT = parseInt(process.env.GATEWAY_PORT || '8080', 10)
@@ -102,7 +112,16 @@ function findRoute(pathname) {
 // HTTP server
 // ============================================================
 const server = createServer((req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
+  let url
+  try {
+    url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
+  } catch {
+    // 畸形 URL（如 "//"）会让 new URL 抛 ERR_INVALID_URL，必须兜底，
+    // 否则未捕获异常会直接杀死进程（历史崩溃根因）。
+    res.writeHead(400, { 'Content-Type': 'text/plain' })
+    res.end('Bad Request')
+    return
+  }
   const route = findRoute(url.pathname)
 
   // Health check
@@ -132,7 +151,13 @@ const server = createServer((req, res) => {
 // WebSocket upgrade (Vite HMR)
 // ============================================================
 server.on('upgrade', (req, socket, head) => {
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
+  let url
+  try {
+    url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
+  } catch {
+    socket.destroy()
+    return
+  }
   const route = findRoute(url.pathname)
 
   if (route.target) {

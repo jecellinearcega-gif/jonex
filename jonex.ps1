@@ -64,7 +64,7 @@ $FrontendsDir = Join-Path $RepoRoot "frontends"
 
 $MiddlewareServices = @("postgres", "redis", "etcd", "minio", "milvus")
 $RagServices = @("lightrag", "atomic-rag")
-$BackendServices = @("gateway", "sidecar", "knowledge-base-service", "business-domain-service", "platform-service", "mcp-server")
+$BackendServices = @("gateway", "sidecar", "knowledge-base-service", "business-domain-service", "task-center-service", "platform-service", "mcp-server")
 $FrontendServices = @("frontend-gateway", "shell-frontend", "core-business-frontend", "platform-management-frontend", "ecosystem-management-frontend")
 
 $ShellApp = "@jonex/shell"
@@ -259,6 +259,7 @@ $UpServiceCommands = @{
     "up-postgres" = "postgres"
     "up-redis" = "redis"
     "up-lightrag" = "lightrag"
+    "up-keycloak" = "keycloak"
 }
 
 $DownServiceCommands = @{
@@ -281,6 +282,7 @@ $LogsServiceCommands = @{
     "logs-milvus" = "milvus"
     "logs-etcd" = "etcd"
     "logs-minio" = "minio"
+    "logs-keycloak" = "keycloak"
     "logs-mcp-server" = "mcp-server"
 }
 
@@ -371,6 +373,8 @@ switch ($Command) {
         Write-Host "  .\jonex.ps1 dev                         启动中间件 + RAG，并提示下一步"
         Write-Host "  .\jonex.ps1 dev-deps-up                 启动 postgres/redis/etcd/minio/milvus/lightrag/atomic-rag"
         Write-Host "  .\jonex.ps1 dev-infra-up                只启动 postgres/redis/etcd/minio/milvus"
+        Write-Host "  .\jonex.ps1 up-keycloak                 启动 Keycloak（SSO，本地 dev/test）"
+        Write-Host "  .\jonex.ps1 keycloak-db-init            幂等建 keycloak 独立库（存量库）"
         Write-Host "  .\jonex.ps1 dev-rag-up                  只启动 lightrag/atomic-rag"
         Write-Host "  .\jonex.ps1 dev-deps-down               停止本地开发依赖"
         Write-Host "  .\jonex.ps1 dev-deps-logs               查看本地开发依赖日志"
@@ -802,6 +806,12 @@ switch ($Command) {
     "init-db" {
         Set-LocalBackendEnv
         Invoke-Compose -Mode Dev -ComposeArgs @("exec", "postgres", "psql", "-U", $env:DB_USERNAME, "-d", $env:DB_NAME, "-f", "/docker-entrypoint-initdb.d/init.sql")
+    }
+
+    "keycloak-db-init" {
+        Set-LocalBackendEnv
+        Invoke-Compose -Mode Dev -ComposeArgs @("exec", "postgres", "createdb", "-U", $env:DB_USERNAME, "keycloak")
+        Write-Host "若提示 keycloak 已存在可忽略（幂等）；新卷无需此步（migrations/001_schemas.sql 自动建）" -ForegroundColor Yellow
     }
 
     "exec-postgres" {

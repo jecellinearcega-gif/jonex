@@ -17,7 +17,7 @@ Jonex 平台是一个插件化、多租户的 AI 能力平台。平台由前端�
 | 目标 | 说明 |
 |---|---|
 | 多子应用统一入口 | 通过 `frontend-gateway` 聚合 shell、核心业务、平台管理、生态管理 4 个前端应用。 |
-| 能力服务独立演进 | `platform`、`business_domain`、`knowledge_base`、`atomic-rag` 可独立部署和扩展。 |
+| 能力服务独立演进 | `platform`、`business_domain`、`knowledge_base`、`task_center`、`atomic-rag` 可独立部署和扩展。 |
 | 统一工程规范 | 后端遵循 [backend-development-standard.md](backend-development-standard.md)，前端遵循 [frontend-development-standard.md](frontend-development-standard.md)。 |
 | 显式租户隔离 | 业务数据必须使用合法 `tenant_id`，禁止默认租户兜底。 |
 | 薄入口、厚服务 | Gateway 只做 HTTP 路由聚合；Sidecar 做认证、治理和代理；业务规则进入 capability service。 |
@@ -31,7 +31,7 @@ Jonex 平台是一个插件化、多租户的 AI 能力平台。平台由前端�
 | 前端入口 | Nginx `frontend-gateway`，聚合静态资源并反代 `/api/**` |
 | 后端框架 | Python 3.12、FastAPI、Uvicorn、Pydantic v1 兼容模式 |
 | 数据访问 | SQLAlchemy 2.0 async、asyncpg、统一 `BaseRepository` |
-| 数据库 | PostgreSQL 15，schema 包含 `platform`、`business_domain`、`knowledge_base` |
+| 数据库 | PostgreSQL 15，schema 包含 `platform`、`business_domain`、`knowledge_base`、`task_center` |
 | 缓存和发现 | Redis 7，服务注册、心跳、任务状态和缓存 |
 | RAG 和向量 | atomic-rag、LightRAG、Milvus 2.5、etcd 3.5、MinIO |
 | 对象存储 | COS（腾讯云对象存储，生产） / 本地文件系统（开发回退），通过 `ObjectStorage` 抽象统一访问 |
@@ -60,12 +60,13 @@ frontend-gateway (Nginx, 80)
                  |
                  +--> platform-service (8006)
                  +--> business-domain-service (8005)
+                 +--> task-center-service (8007)
                  +--> knowledge-base-service (8003)
                  +--> atomic-rag (8004) -> lightrag (9621)
                                             -> llm-gateway (8787)  ← 所有 LLM/Embedding 出口
                                                -> TokenHub / Ollama 等上游
 
-PostgreSQL / Redis / Neo4j / Milvus / etcd / MinIO
+PostgreSQL / Redis / Neo4j / Milvus / etcd / MinIO / Keycloak（SSO，独立仓库纳管 + 生产甲方 DB）
 ```
 
 ### 2.2 暴露原则
@@ -73,7 +74,7 @@ PostgreSQL / Redis / Neo4j / Milvus / etcd / MinIO
 | 模式 | 对外端口 | 说明 |
 |---|---|---|
 | 生产模式 | `frontend-gateway:80` | 唯一浏览器入口，其余后端、能力服务和基础设施仅容器内访问。 |
-| 开发模式 | `80`、`8000`、`8001`、`8003`、`8004`、`8005`、`8006`、`8787`、`9621` | 通过 Compose override 或本机开发命令暴露，方便独立调试。 |
+| 开发模式 | `80`、`8000`、`8001`、`8003`、`8004`、`8005`、`8006`、`8007`、`8787`、`9621` | 通过 Compose override 或本机开发命令暴露，方便独立调试。 |
 
 浏览器生产环境只进入 `frontend-gateway`。前端业务请求统一调用 `/api/v1/**`，由 Gateway 转发到 Sidecar，再由 Sidecar 调用具体 capability service。
 
@@ -88,6 +89,7 @@ PostgreSQL / Redis / Neo4j / Milvus / etcd / MinIO
 | `knowledge-base-service` | `8003` | 知识库、文档状态机、RAG 接入、Neo4j 本体图、增强搜索、数据源接入。 |
 | `atomic-rag` | `8004` | 多模态解析、RAG 任务、LightRAG 调用、`ontology_data` 产出。 |
 | `business-domain-service` | `8005` | 领域空间、领域服务、引擎、适配器、技能、模板。 |
+| `task-center-service` | `8007` | 任务编排（定义 / 版本 / 发版）、触发、任务与子任务调度。**自己不监听任何 HTTP 业务端点**：只收发对内的函数调用，并出站派活给运行方。对前端唯一的入口是 Gateway 的 `/api/v1/task-center/**`（经 Sidecar `/invoke`），共六个：两个只读接口（任务列表 / 子任务列表）加四个写接口（停止任务 / 停止子任务 / 重试任务 / 重试子任务，统一判 `task_center:write`）；删除 / 详情不开。 |
 | `platform-service` | `8006` | 登录、RBAC、菜单、应用注册、审计、任务。 |
 | `lightrag` | `9621` | 文档索引、RAG 检索、生成、WebUI。 |
 | `neo4j` | `7474`/`7687` dev | 本体 ABox 图存储，承载 `:OntologyEntity` 节点和 `[:ONT_REL]` 边。 |
@@ -225,6 +227,7 @@ Sidecar 静态 fallback 配置：
 | `platform` | `PLATFORM_URL` |
 | `business_domain` | `BUSINESS_DOMAIN_URL` |
 | `knowledge_base` | `KNOWLEDGE_BASE_URL` |
+| `task_center` | `TASK_CENTER_URL` |
 | `rag.lightrag` | `ATOMIC_RAG_URL` |
 
 ### 4.3 Capability Service
@@ -250,6 +253,7 @@ capabilities/{capability_name}/
 | `platform` | 登录、用户、角色、权限、菜单、应用、审计、任务调度。 |
 | `business_domain` | 领域空间、领域服务、引擎、适配器、技能、模板。 |
 | `knowledge_base` | 知识库、文档状态机、检索历史、RAG 接入、Neo4j 本体图、增强搜索、数据源接入。 |
+| `task_center` | 任务编排定义与版本（草稿→发布，发布后不可变）、触发、任务 / 子任务 / 尝试记录，以及后台派活与超时巡检。是**管理方**：自己不执行任何一步业务动作、自己不监听 HTTP 端点；对浏览器**只经 Gateway `/api/v1/task-center/**` 开六个口子**（两个只读 + 四个写，见上表 `task-center-service` 那一行）。 |
 
 ---
 
@@ -274,6 +278,7 @@ capabilities/{capability_name}/
 |---|---|
 | `business.knowledge_base.v1` | 知识库业务能力。 |
 | `business.business_domain.v1` | 业务领域能力。 |
+| `business.task_center.v1` | 任务中心能力（编排 / 触发 / 调度）；自己不监听 HTTP 端点，前端只经 Gateway `/api/v1/task-center/**` 的六条路（两个只读 + 停止任务 / 停止子任务 / 重试任务 / 重试子任务）进来。 |
 | `atomic.rag.lightrag.v1` | 基于 LightRAG 的 RAG 原子能力。 |
 
 ### 5.2 能力 SDK

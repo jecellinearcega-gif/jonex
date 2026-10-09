@@ -77,7 +77,7 @@ DOCKER_DEV := cd deploy && $(COMPOSE) $(COMPOSE_DEV_FILES)
 
 MIDDLEWARE_SERVICES := postgres redis etcd minio milvus
 RAG_SERVICES := lightrag atomic-rag
-BACKEND_SERVICES := gateway sidecar knowledge-base-service business-domain-service platform-service mcp-server
+BACKEND_SERVICES := gateway sidecar knowledge-base-service business-domain-service task-center-service platform-service mcp-server
 FRONTEND_SERVICES := frontend-gateway shell-frontend core-business-frontend platform-management-frontend ecosystem-management-frontend
 
 FRONTENDS_DIR := frontends
@@ -199,7 +199,7 @@ help: ## 显示帮助信息
 	@echo "  docker-compose.debug.yml          单服务宿主机调试覆盖（sidecar 指向宿主机后端/atomic-rag）"
 	@echo ""
 	@echo "常用服务名:"
-	@echo "  后端: gateway sidecar knowledge-base-service business-domain-service platform-service mcp-server"
+	@echo "  后端: gateway sidecar knowledge-base-service business-domain-service task-center-service platform-service mcp-server"
 	@echo "  前端: shell-frontend core-business-frontend platform-management-frontend ecosystem-management-frontend"
 	@echo "  RAG/原子能力: lightrag atomic-rag"
 	@echo "  中间件: postgres redis etcd minio milvus"
@@ -233,7 +233,13 @@ init: ## 初始化环境配置
 	else \
 		echo "OpenKB 配置已存在: deploy/.env.openkb"; \
 	fi
-	@echo "下一步: 按需修改 deploy/.env、deploy/.env.rag、deploy/.env.mcp 和 deploy/.env.openkb"
+	@if [ ! -f deploy/.env.jonex_wiki ]; then \
+		cp deploy/.env.jonex_wiki.example deploy/.env.jonex_wiki; \
+		echo "已创建 Jonex Wiki 配置: deploy/.env.jonex_wiki"; \
+	else \
+		echo "Jonex Wiki 配置已存在: deploy/.env.jonex_wiki"; \
+	fi
+	@echo "下一步: 按需修改 deploy/.env、deploy/.env.rag、deploy/.env.mcp、deploy/.env.openkb 和 deploy/.env.jonex_wiki"
 	@$(MAKE) frontends-env
 
 frontends-env: ## 初始化各前端子应用 .env
@@ -485,6 +491,19 @@ exec-openkb: ## 进入 openkb 容器
 
 rebuild-openkb: ## 重建 openkb 镜像
 	cd deploy && DOCKER_BUILDKIT=1 COMPOSE_BAKE=1 BUILDX_BAKE_ENTITLEMENTS_FS=0 $(COMPOSE) $(COMPOSE_LOCAL_FILES) build --no-cache openkb
+
+# ── jonex-wiki（B1 单容器：引擎 + 能力同进程）──
+up-jonex-wiki: ## 启动 jonex-wiki（引擎 + 能力同容器）
+	$(DOCKER_OVERRIDE) up -d jonex-wiki
+
+logs-jonex-wiki: ## 查看 jonex-wiki 日志
+	@$(MAKE) logs-service SERVICE=jonex-wiki
+
+exec-jonex-wiki: ## 进入 jonex-wiki 容器
+	$(DOCKER_OVERRIDE) exec jonex-wiki bash
+
+rebuild-jonex-wiki: ## 重建 jonex-wiki 镜像
+	cd deploy && DOCKER_BUILDKIT=1 COMPOSE_BAKE=1 BUILDX_BAKE_ENTITLEMENTS_FS=0 $(COMPOSE) $(COMPOSE_LOCAL_FILES) build --no-cache jonex-wiki
 
 logs-postgres: ## 查看 Postgres 日志
 	@$(MAKE) logs-service SERVICE=postgres

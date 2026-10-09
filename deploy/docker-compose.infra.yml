@@ -138,8 +138,8 @@ services:
       - "0.0.0.0:9000:9000"
       - "0.0.0.0:9001:9001"
     environment:
-      MINIO_ACCESS_KEY: change-me
-      MINIO_SECRET_KEY: change-me
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
       TZ: Asia/Shanghai
     volumes:
       - jonex-minio-data:/minio_data
@@ -167,8 +167,8 @@ services:
       TZ: Asia/Shanghai
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
-      MINIO_ACCESS_KEY: change-me
-      MINIO_SECRET_KEY: change-me
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
     volumes:
       - jonex-milvus-data:/var/lib/milvus
     command: ["milvus", "run", "standalone"]

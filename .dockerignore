@@ -60,6 +60,18 @@ env/
 .env.local
 .env.*.local
 
+# 子目录里的 env —— 上面的 `.env` 系列是**锚定根目录**的，不覆盖 `deploy/`，
+# 而 jonex-wiki / openkb-source 两个 Dockerfile 在仓库根构建上下文下
+# 执行 `COPY deploy/ ./deploy/`，会把 deploy/.env（DB 密码 / JWT_SECRET / 云凭据）
+# 与 deploy/.env.rag 整份烤进镜像层。这里显式收窄。
+# 口径与 .gitignore 一致：先排除 `deploy/.env*`，再 `!` 放行各 `.example` 模板
+# （`!` 必须写在其排除规则**之后**，否则不生效）。
+deploy/.env
+deploy/.env.*
+# 保留模板（不是机密，部署脚本与 compose 要读）
+!deploy/.env.example
+!deploy/.env.*.example
+
 # 日志
 logs/
 *.log

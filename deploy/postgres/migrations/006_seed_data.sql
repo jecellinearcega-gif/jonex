@@ -18,7 +18,7 @@ ON CONFLICT (id) DO NOTHING;
 
 -- 测试 API Key
 INSERT INTO platform.api_keys (tenant_id, api_key, name, rate_limit)
-VALUES ('tenant_jonex_demo', 'jonex_demo_key', '示例 API Key', 1000)
+VALUES ('tenant_jonex_demo', 'jonex_test_key', '示例 API Key', 1000)
 ON CONFLICT (api_key) DO NOTHING;
 
 -- 管理员用户 (password: admin123)
@@ -176,7 +176,21 @@ INSERT INTO platform.permissions (code, name, resource, action, description, sco
     ('space:read', '查看领域空间', 'space', 'read', '领域空间菜单与设置页可见（内容按资源身份过滤）', 'tenant'),
     ('space:write', '管理领域空间', 'space', 'write', '创建/管理领域空间、指定领域管理者（租户级能力）', 'tenant'),
     -- 租户审计查看：数据边界早已由 extract_tenant_id 保证为本租户，本码只是补上「租户级」这一层。
-    ('audit:read', '查看审计日志', 'audit_log', 'read', '租户级：仅本租户操作与调用记录', 'tenant')
+    ('audit:read', '查看审计日志', 'audit_log', 'read', '租户级：仅本租户操作与调用记录', 'tenant'),
+    -- 数据运营页（/apps/platform-management/data-operations）：看的是**本租户**的检索与资产
+    -- 统计（4 个接口在无 domain_space_id 时要求租户管理员），所以是租户级码而非平台码。
+    -- 当前只用于菜单可见性与角色授权，接口准入仍按 tenant:admin / platform:admin 判定
+    -- （2026-09-23 决策：不动后端判权）：它**不是**接口防线，别把它当准入依据。
+    ('analytics:read', '查看数据运营', 'analytics', 'read', '租户级：数据运营页可见（内容为本租户检索与资产统计）', 'tenant'),
+    -- 任务中心页（/apps/platform-management/task-center）：管理本租户文档入库任务的执行实例。
+    -- 与「任务调度」是两个页面，此前共用 platform:task:read 无法分别授权，2026-10-08 分开
+    -- （resource 用 task_center 而非 task，即为此）。
+    -- 分组不落数据：角色权限页按现有兜底口径，把不带 platform: 前缀、也不在租户管理员名单里的
+    -- 码归入「业务功能」，与 analytics:read 同一处理，不额外加分组字段。
+    -- 与 analytics:read 不同，这两个码**是**接口防线：能力侧 capabilities/task_center 按它们判权
+    -- （task.console_page / task.console_subtask_list → read，task.stop → write）。
+    ('task_center:read', '查看任务中心', 'task_center', 'read', '租户级：任务中心页面与两个只读接口', 'tenant'),
+    ('task_center:write', '管理任务中心', 'task_center', 'write', '租户级：停止任务（task.stop）', 'tenant')
 ON CONFLICT (code) DO NOTHING;
 
 -- RBAC 权限系统：租户业务权限码（scope='tenant'）
@@ -334,63 +348,53 @@ WHERE u.is_deleted = 0
 ON CONFLICT DO NOTHING;
 
 -- 默认菜单（四大板块：领域本体/数据接入/集成扩展/平台管理；path 为前端 hosted 路由；分组 permission_code=NULL 靠子项裁剪）
-INSERT INTO platform.menus (id, parent_id, name, path, icon, app_id, sort_order, visible, status, permission_code, is_deleted) VALUES
+INSERT INTO platform.menus (id, parent_id, name, path, icon, app_id, sort_order, permission_code) VALUES
     -- 领域本体分组（直接项，无中间组）
-    (1, 0, 'navigation.coreBusiness', NULL, 'HomeOutlined', NULL, 1, 1, 1, NULL, 0),
-    (2, 1, 'navigation.knowledgeSearch', '/apps/core-business/knowledge-search', 'SearchOutlined', NULL, 1, 1, 1, 'knowledge:read', 0),
-    (3, 1, 'navigation.domainKnowledge', '/apps/core-business/domain-knowledge', 'DatabaseOutlined', NULL, 2, 1, 1, 'knowledge:read', 0),
-    (4, 1, 'navigation.domainManagement', '/apps/core-business/domain-management', 'ClusterOutlined', NULL, 3, 1, 1, 'service:read', 0),
-    (20, 1, 'navigation.templateDomains', '/apps/ecosystem-management/template-domains', 'CopyOutlined', NULL, 4, 1, 1, 'template:read', 0),
+    (1, 0, 'navigation.coreBusiness', NULL, 'HomeOutlined', NULL, 1, NULL),
+    (2, 1, 'navigation.knowledgeSearch', '/apps/core-business/knowledge-search', 'SearchOutlined', NULL, 1, 'knowledge:read'),
+    (3, 1, 'navigation.domainKnowledge', '/apps/core-business/domain-knowledge', 'DatabaseOutlined', NULL, 2, 'knowledge:read'),
+    (4, 1, 'navigation.domainManagement', '/apps/core-business/domain-management', 'ClusterOutlined', NULL, 3, 'service:read'),
+    (20, 1, 'navigation.templateDomains', '/apps/ecosystem-management/template-domains', 'CopyOutlined', NULL, 4, 'template:read'),
     -- 数据接入分组 → 数据源管理、解析器管理（直接项）
-    (21, 0, 'navigation.dataAccessGroup', NULL, 'CloudServerOutlined', NULL, 2, 1, 1, NULL, 0),
+    (21, 0, 'navigation.dataAccessGroup', NULL, 'CloudServerOutlined', NULL, 2, NULL),
     -- [jonex] B1：数据源管理改用 datasource:read（原先与解析器管理共用 engine:read，
     -- 两个不同的页面共享一个码 → 无法分别授权）。两者都是 platform scope，仅平台管理员可见。
-    (7, 21, 'navigation.dataAccess', '/apps/platform-management/data-access', 'CloudServerOutlined', NULL, 1, 1, 1, 'datasource:read', 0),
-    (8, 21, 'navigation.parserManagement', '/apps/platform-management/parser-management', 'CodeOutlined', NULL, 2, 1, 1, 'engine:read', 0),
+    (7, 21, 'navigation.dataAccess', '/apps/platform-management/data-access', 'CloudServerOutlined', NULL, 1, 'datasource:read'),
+    (8, 21, 'navigation.parserManagement', '/apps/platform-management/parser-management', 'CodeOutlined', NULL, 2, 'engine:read'),
     -- [jonex] 模型适配：此前只在 platform-management 子应用侧边栏（standalone 模式）可达，
     -- 未进菜单树 → 经 shell 的 hosted 模式无入口（HostedLayout 不渲染子应用侧边栏）。
-    (27, 21, 'navigation.modelAdapter', '/apps/platform-management/model-adapter', 'ApiOutlined', NULL, 3, 1, 1, 'model:read', 1),  -- 隐藏（软删除）
+    (27, 21, 'navigation.modelAdapter', '/apps/platform-management/model-adapter', 'ApiOutlined', NULL, 3, 'model:read'),
     -- 集成扩展分组 → Mcp生态（直接项；适配器目录已注释隐藏）
-    (22, 0, 'navigation.integrationExtension', NULL, 'GlobalOutlined', NULL, 3, 1, 1, NULL, 0),
+    (22, 0, 'navigation.integrationExtension', NULL, 'GlobalOutlined', NULL, 3, NULL),
     -- (18, 22, 'navigation.adapterList', '/apps/ecosystem-management/adapter-management', 'BlockOutlined', NULL, 1, 'adapter:read'), -- 适配器目录：已注释隐藏，恢复时放开本行
-    (19, 22, 'navigation.mcpServiceDirectory', '/apps/ecosystem-management/mcp-service-directory', 'ClusterOutlined', NULL, 2, 1, 1, 'mcp:service:view', 0),
+    (19, 22, 'navigation.mcpServiceDirectory', '/apps/ecosystem-management/mcp-service-directory', 'ClusterOutlined', NULL, 2, 'mcp:service:view'),
+    -- 平台管理分组 → 数据运营（直接项，按需求排在「账号与权限」之前）
+    (5, 0, 'navigation.platformManagement', NULL, 'SettingOutlined', NULL, 4, NULL),
+    (29, 5, 'navigation.dataOperations', '/apps/platform-management/data-operations', 'BarChartOutlined', NULL, 1, 'analytics:read'),
     -- 平台管理分组 → 账号与权限组（可折叠）
-    (5, 0, 'navigation.platformManagement', NULL, 'SettingOutlined', NULL, 4, 1, 1, NULL, 0),
-    (25, 5, 'navigation.accountPermission', NULL, 'TeamOutlined', NULL, 1, 1, 1, NULL, 0),
-    (11, 25, 'navigation.tenantManagement', '/apps/platform-management/tenant-management', 'TeamOutlined', NULL, 1, 1, 1, 'platform:tenant:read', 0),
-    (12, 25, 'navigation.userManagement', '/apps/platform-management/user-management', 'UserOutlined', NULL, 2, 1, 1, 'user:read', 0),
-    (13, 25, 'navigation.rolePermission', '/apps/platform-management/role-permission', 'SafetyOutlined', NULL, 3, 1, 1, 'role:read', 0),
+    (25, 5, 'navigation.accountPermission', NULL, 'TeamOutlined', NULL, 2, NULL),
+    (11, 25, 'navigation.tenantManagement', '/apps/platform-management/tenant-management', 'TeamOutlined', NULL, 1, 'platform:tenant:read'),
+    (12, 25, 'navigation.userManagement', '/apps/platform-management/user-management', 'UserOutlined', NULL, 2, 'user:read'),
+    (13, 25, 'navigation.rolePermission', '/apps/platform-management/role-permission', 'SafetyOutlined', NULL, 3, 'role:read'),
     -- 平台管理分组 → 提示词与模板（直接项）
-    (9, 5, 'navigation.promptTemplates', '/apps/ecosystem-management/prompt-templates', 'FileTextOutlined', NULL, 2, 1, 1, 'prompt:read', 0),
+    (9, 5, 'navigation.promptTemplates', '/apps/ecosystem-management/prompt-templates', 'FileTextOutlined', NULL, 3, 'prompt:read'),
     -- 平台管理分组 → 系统运维组（可折叠）
-    (26, 5, 'navigation.systemOperations', NULL, 'SettingOutlined', NULL, 3, 1, 1, NULL, 0),
-    (14, 26, 'navigation.systemConfig', '/apps/platform-management/system-config', 'SettingOutlined', NULL, 1, 1, 1, 'platform:config:read', 0),
+    (26, 5, 'navigation.systemOperations', NULL, 'SettingOutlined', NULL, 4, NULL),
+    (14, 26, 'navigation.systemConfig', '/apps/platform-management/system-config', 'SettingOutlined', NULL, 1, 'platform:config:read'),
     -- [jonex] B1：操作日志菜单码由 platform:audit:read 改为 audit:read（tenant scope）。
     -- 接口已改成双码放行（platform:audit:read 或 audit:read），但菜单码若还是平台码，
     -- 租户管理员会被 _filter_visible_menus 裁掉这一项 → 组头「系统运维」也被连带裁掉
     -- → 「接口通了但没有入口」。菜单与接口必须一起改。
     -- 平台管理员天然持全部 tenant 码，所以他仍然看得到。
-    (15, 26, 'navigation.operationLog', '/apps/platform-management/operation-log', 'FileTextOutlined', NULL, 2, 1, 1, 'audit:read', 0),
+    (15, 26, 'navigation.operationLog', '/apps/platform-management/operation-log', 'FileTextOutlined', NULL, 2, 'audit:read'),
     -- [jonex] 系统监控：占位页（研发中），与系统配置/操作日志同属系统运维组
-    (28, 26, 'navigation.systemMonitor', '/apps/platform-management/system-monitor', 'DashboardOutlined', NULL, 3, 1, 1, 'platform:monitor:read', 1)  -- 隐藏（软删除）
-ON CONFLICT (id) DO UPDATE SET
-    parent_id      = EXCLUDED.parent_id,
-    name           = EXCLUDED.name,
-    path           = EXCLUDED.path,
-    icon           = EXCLUDED.icon,
-    app_id         = EXCLUDED.app_id,
-    sort_order     = EXCLUDED.sort_order,
-    visible        = EXCLUDED.visible,
-    status         = EXCLUDED.status,
-    permission_code = EXCLUDED.permission_code,
-    is_deleted     = EXCLUDED.is_deleted,
-    updated_at     = CURRENT_TIMESTAMP;
+    (28, 26, 'navigation.systemMonitor', '/apps/platform-management/system-monitor', 'DashboardOutlined', NULL, 3, 'platform:monitor:read')
+ON CONFLICT DO NOTHING;
 
--- 清理规范集合之外的旧 seed 菜单（name LIKE 'navigation.%' 即 seed 菜单；用户自定义菜单不在此列）
+-- 隐藏「模型适配」与「系统监控」两个菜单（软删除；恢复时改回 0）
 UPDATE platform.menus
-SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP
-WHERE name LIKE 'navigation.%'
-  AND id NOT IN (1, 2, 3, 4, 5, 7, 8, 9, 11, 12, 13, 14, 15, 19, 20, 21, 22, 25, 26, 27, 28);
+SET is_deleted = 1
+WHERE name IN ('navigation.modelAdapter', 'navigation.systemMonitor');
 
 
 -- 默认应用注册
@@ -593,7 +597,7 @@ ON CONFLICT (id) DO NOTHING;
 -- 参考: Reference/Rag-anything/raganything/parser.py
 --   OFFICE_FORMATS = .doc .docx .ppt .pptx .xls .xlsx
 --   IMAGE_FORMATS  = .png .jpeg .jpg .bmp .tiff .tif .gif .webp
---   TEXT_FORMATS   = .txt .md
+--   TEXT_FORMATS   = .txt .md .markdown .json .jsonl
 --   AUDIO_FORMATS  = .mp3 .wav .m4a .ogg .flac .wma .aac .opus .amr
 --   VIDEO_FORMATS  = .mp4 .avi .mov .mkv .flv .wmv .webm .m4v .mpg .mpeg .3gp
 
@@ -615,7 +619,7 @@ VALUES
      '["PDF","DOC","DOCX","PPT","PPTX","XLS","XLSX"]'::jsonb,
      '{"version":"v3.0.1","process_count":12890,"display_fields":[{"label":"排版保留","value":"启用"},{"label":"表格提取","value":"智能提取"}]}'::jsonb, 'active'),
     ('text_parse', '文本解析器', 'txt',
-     '["TXT","MD"]'::jsonb,
+     '["TXT","MD","MARKDOWN","JSON","JSONL"]'::jsonb,
      '{"version":"v3.0.1","process_count":12890,"display_fields":[{"label":"排版保留","value":"启用"},{"label":"表格提取","value":"智能提取"}]}'::jsonb, 'active'),
     ('parser_demo_web', '网页解析器', 'web',
      '["HTML","HTM","XHTML"]'::jsonb,
@@ -2662,373 +2666,5 @@ INSERT INTO knowledge_base.service_knowledge_bases (id, tenant_id, service_id, k
 
 
 INSERT INTO knowledge_base.ontology_compiled_schemas (tenant_id, knowledge_base_id, template_domain_id, template_scenario_id, source_type, source_version, source_hash, schema_version, entity_types, relation_types, "constraints", disambiguation, prompt_schema, schema_mode, sync_status, edited_at, edited_by, status, compiled_at, created_at, updated_at) VALUES('tenant_jonex_demo', 'b11dd30de0994178a3a4e388e6cf816e', NULL, NULL, 'yaml_default', 1, NULL, 1, '[{"name": "Organization", "status": "active", "aliases": ["公司", "企业", "机构", "集团", "组织"], "attributes": [{"name": "legal_name", "type": "string", "required": false, "description": "", "display_name": "legal_name", "is_primary_key": false, "source_attribute_id": null}, {"name": "industry", "type": "string", "required": false, "description": "", "display_name": "industry", "is_primary_key": false, "source_attribute_id": null}], "description": "", "requirement": "", "display_name": "Organization", "source_object_id": null}, {"name": "Person", "status": "active", "aliases": ["人", "人员", "个人", "员工"], "attributes": [{"name": "title", "type": "string", "required": false, "description": "", "display_name": "title", "is_primary_key": false, "source_attribute_id": null}], "description": "", "requirement": "", "display_name": "Person", "source_object_id": null}, {"name": "Location", "status": "active", "aliases": ["地点", "位置", "地区", "城市"], "attributes": [{"name": "address", "type": "string", "required": false, "description": "", "display_name": "address", "is_primary_key": false, "source_attribute_id": null}], "description": "", "requirement": "", "display_name": "Location", "source_object_id": null}, {"name": "Product", "status": "active", "aliases": ["产品", "服务", "解决方案"], "attributes": [{"name": "model", "type": "string", "required": false, "description": "", "display_name": "model", "is_primary_key": false, "source_attribute_id": null}], "description": "", "requirement": "", "display_name": "Product", "source_object_id": null}, {"name": "Concept", "status": "active", "aliases": ["概念", "术语", "定义"], "attributes": [], "description": "", "requirement": "", "display_name": "Concept", "source_object_id": null}, {"name": "Method", "status": "active", "aliases": ["方法", "技术", "算法", "方法论"], "attributes": [], "description": "", "requirement": "", "display_name": "Method", "source_object_id": null}, {"name": "Event", "status": "active", "aliases": ["事件", "活动", "会议"], "attributes": [{"name": "date", "type": "string", "required": false, "description": "", "display_name": "date", "is_primary_key": false, "source_attribute_id": null}], "description": "", "requirement": "", "display_name": "Event", "source_object_id": null}]', '[{"name": "BELONGS_TO", "source": "Person", "status": "active", "target": "Organization", "aliases": [], "cardinality": "custom", "description": "", "display_name": "BELONGS_TO", "source_relation_id": null}, {"name": "PRODUCES", "source": "Organization", "status": "active", "target": "Product", "aliases": [], "cardinality": "custom", "description": "", "display_name": "PRODUCES", "source_relation_id": null}, {"name": "LOCATED_AT", "source": "Organization", "status": "active", "target": "Location", "aliases": [], "cardinality": "custom", "description": "", "display_name": "LOCATED_AT", "source_relation_id": null}, {"name": "WORKS_WITH", "source": "Person", "status": "active", "target": "Person", "aliases": [], "cardinality": "custom", "description": "", "display_name": "WORKS_WITH", "source_relation_id": null}, {"name": "USES", "source": "Organization", "status": "active", "target": "Method", "aliases": [], "cardinality": "custom", "description": "", "display_name": "USES", "source_relation_id": null}, {"name": "RELATES_TO", "source": "Concept", "status": "active", "target": "Concept", "aliases": [], "cardinality": "custom", "description": "", "display_name": "RELATES_TO", "source_relation_id": null}, {"name": "PART_OF", "source": "Concept", "status": "active", "target": "Product", "aliases": [], "cardinality": "custom", "description": "", "display_name": "PART_OF", "source_relation_id": null}, {"name": "HAS_FEATURE", "source": "Product", "status": "active", "target": "Concept", "aliases": [], "cardinality": "custom", "description": "", "display_name": "HAS_FEATURE", "source_relation_id": null}]', '[]', '{"alias_merge": true, "case_insensitive": true}', '{"entity_types": [{"name": "Organization", "aliases": ["公司", "企业", "机构", "集团", "组织"], "attributes": [{"name": "legal_name", "type": "string", "required": false}, {"name": "industry", "type": "string", "required": false}]}, {"name": "Person", "aliases": ["人", "人员", "个人", "员工"], "attributes": [{"name": "title", "type": "string", "required": false}]}, {"name": "Location", "aliases": ["地点", "位置", "地区", "城市"], "attributes": [{"name": "address", "type": "string", "required": false}]}, {"name": "Product", "aliases": ["产品", "服务", "解决方案"], "attributes": [{"name": "model", "type": "string", "required": false}]}, {"name": "Concept", "aliases": ["概念", "术语", "定义"], "attributes": []}, {"name": "Method", "aliases": ["方法", "技术", "算法", "方法论"], "attributes": []}, {"name": "Event", "aliases": ["事件", "活动", "会议"], "attributes": [{"name": "date", "type": "string", "required": false}]}], "relation_types": [{"name": "BELONGS_TO", "source": "Person", "target": "Organization"}, {"name": "PRODUCES", "source": "Organization", "target": "Product"}, {"name": "LOCATED_AT", "source": "Organization", "target": "Location"}, {"name": "WORKS_WITH", "source": "Person", "target": "Person"}, {"name": "USES", "source": "Organization", "target": "Method"}, {"name": "RELATES_TO", "source": "Concept", "target": "Concept"}, {"name": "PART_OF", "source": "Concept", "target": "Product"}, {"name": "HAS_FEATURE", "source": "Product", "target": "Concept"}]}', 'template_seeded', 'synced', NULL, NULL, 'active', '2026-07-23 13:09:04.065', '2026-07-23 05:09:04.067', '2026-07-23 05:09:04.067');
-
-
--- ============================================================
--- 英文显示数据（原 010_english_display_data.sql 整合至此）
--- 将演示租户的中文展示名/描述替换为英文，便于国际化演示
--- ============================================================
-
-BEGIN;
-
-UPDATE platform.tenants AS t
-SET name = v.name, description = v.description
-FROM (VALUES
-    ('tenant_jonex_demo',  'Jonex Demo Tenant',       'Local development and demonstration tenant'),
-    ('tenant_jonex_alpha', 'Jonex Alpha Test Tenant', 'Tenant selection flow test tenant'),
-    ('tenant_jonex_beta',  'Jonex Beta Test Tenant',  'Tenant selection flow test tenant')
-) AS v(id, name, description)
-WHERE t.id = v.id;
-
-UPDATE platform.users AS u
-SET display_name = v.display_name
-FROM (VALUES
-    ('tenant_jonex_demo',  'admin',              'System Administrator'),
-    ('tenant_jonex_demo',  'multi_same_pass',    'Same Credentials User - Demo Tenant'),
-    ('tenant_jonex_alpha', 'multi_same_pass',    'Same Credentials User - Alpha Tenant'),
-    ('tenant_jonex_demo',  'multi_one_match',    'Single Tenant Password Match - Demo Tenant'),
-    ('tenant_jonex_alpha', 'multi_one_match',    'Single Tenant Password Match - Alpha Tenant'),
-    ('tenant_jonex_beta',  'tenant_header_user', 'Explicit Tenant Login Test User - Beta Tenant')
-) AS v(tenant_id, username, display_name)
-WHERE u.tenant_id = v.tenant_id AND u.username = v.username;
-
-UPDATE platform.roles
-SET description = CASE name
-    WHEN 'admin' THEN 'System administrator role'
-    WHEN 'user' THEN 'Standard user role'
-    ELSE description
-END
-WHERE name IN ('admin', 'user');
-
-UPDATE platform.roles
-SET name = CASE name
-    WHEN U&'\77E5\8BC6\7F16\8F91\8005' THEN 'Knowledge Editor'
-    WHEN U&'\89C2\5BDF\8005' THEN 'Observer'
-    ELSE name
-END,
-description = CASE name
-    WHEN U&'\77E5\8BC6\7F16\8F91\8005' THEN 'Edits, uploads, and maintains knowledge base documents and data'
-    WHEN U&'\89C2\5BDF\8005' THEN 'Read-only access to search and view knowledge'
-    ELSE description
-END
-WHERE name IN (U&'\77E5\8BC6\7F16\8F91\8005', U&'\89C2\5BDF\8005');
-
-UPDATE platform.permissions
-SET name = initcap(action) || ' ' || initcap(replace(resource, '_', ' ')),
-    description = CASE
-        WHEN description ~ U&'[\4E00-\9FA5]' THEN initcap(action) || ' access for ' || replace(resource, '_', ' ')
-        ELSE description
-    END
-WHERE name ~ U&'[\4E00-\9FA5]' OR coalesce(description, '') ~ U&'[\4E00-\9FA5]';
-
--- [jonex] 菜单 name 现为 i18n key（navigation.*），由前端 t(node.name) 翻译（zh/en 文案在
--- frontends/shared/i18n-resources）。原 010_english_display_data.sql 里「把菜单 name 覆写成英文
--- 字面量」这段已废弃：它按旧菜单结构（id 1-8 对应旧「平台管理/用户管理/角色管理/菜单管理…」）
--- 覆写现在的导航 key，会导致菜单文案错乱（中英都显示错误英文）。菜单英文由 navigation.* 键承担，
--- 此处不再覆写 name。
-
-UPDATE platform.applications AS a
-SET name = v.name, description = v.description
-FROM (VALUES
-    ('shell',                 'Jonex Shell',          'Unified login and navigation shell'),
-    ('core-business',         'Core Business',        'Core business management'),
-    ('platform-management',   'Platform Management',  'Platform administration'),
-    ('ecosystem-management',  'Ecosystem Management', 'Ecosystem administration')
-) AS v(app_code, name, description)
-WHERE a.app_code = v.app_code;
-
-UPDATE platform.api_keys
-SET name = 'Test API Key'
-WHERE api_key = 'jonex_demo_key';
-
-UPDATE business_domain.skill_catalog AS s
-SET name = v.name,
-    description = v.description,
-    instruction = v.instruction,
-    input_schema_json = v.input_schema::jsonb,
-    tags_json = v.tags::jsonb
-FROM (VALUES
-    (
-      'skill_image_recognition',
-      'Image Recognition and Analysis',
-      'Intelligently analyzes images to identify objects, text, scenes, and other multimodal information, including OCR.',
-      'Use this tool when a user needs to identify objects, text, or scenes in an image. Provide an accessible image URL to receive recognition results and confidence scores.',
-      '{"type":"object","properties":{"file_url":{"type":"string","description":"Accessible image URL"},"tasks":{"type":"array","items":{"type":"string","enum":["ocr","object_detection","scene_classification"]},"description":"Recognition tasks to perform"}},"required":["file_url"]}',
-      '["Image","OCR","Recognition"]'
-    ),
-    (
-      'skill_speech_to_text',
-      'Speech to Text',
-      'Transcribes speech from audio files into structured text with multilingual recognition and speaker diarization.',
-      'Use this tool when a user needs to convert audio or recordings into text. It supports multilingual recognition and speaker diarization.',
-      '{"type":"object","properties":{"file_url":{"type":"string","description":"Accessible audio file URL"},"language":{"type":"string","description":"Audio language, for example en-US"},"speaker_diarization":{"type":"boolean","description":"Whether to enable speaker diarization"}},"required":["file_url"]}',
-      '["Audio","Transcription","ASR"]'
-    ),
-    (
-      'skill_document_layout',
-      'Document Layout Analysis',
-      'Analyzes the layout of PDFs and images to identify paragraphs, tables, charts, headers, footers, and other elements.',
-      'Use this tool when a user needs to analyze the layout of a PDF or image document. It identifies paragraphs, tables, charts, headers, footers, and other layout elements.',
-      '{"type":"object","properties":{"file_url":{"type":"string","description":"Accessible PDF or image document URL"},"output_format":{"type":"string","enum":["json","markdown"],"description":"Output format"}},"required":["file_url"]}',
-      '["Document","Layout","Structured Data"]'
-    ),
-    (
-      'skill_video_understanding',
-      'Video Content Understanding',
-      'Samples and analyzes video frames to identify scenes, actions, people, and event timelines.',
-      'Use this tool when a user needs to understand video content. It supports frame sampling, scene recognition, action detection, and timeline extraction.',
-      '{"type":"object","properties":{"file_url":{"type":"string","description":"Accessible video file URL"},"sample_rate":{"type":"integer","description":"Frame sampling interval in seconds","default":5}},"required":["file_url"]}',
-      '["Video","Frame Sampling","Analysis"]'
-    ),
-    (
-      'skill_multimodal_search',
-      'Multimodal Search',
-      'Provides unified semantic retrieval and similarity matching across text, images, audio, and other modalities.',
-      'Use this tool when a user needs to search across text, images, and audio. It supports semantic understanding and similarity matching.',
-      '{"type":"object","properties":{"query":{"type":"string","description":"Search query"},"modalities":{"type":"array","items":{"type":"string","enum":["text","image","audio"]},"description":"Modalities to search"},"top_k":{"type":"integer","description":"Maximum number of results","default":10}},"required":["query"]}',
-      '["Search","Multimodal","Semantic"]'
-    ),
-    (
-      'skill_data_extraction',
-      'Intelligent Data Extraction',
-      'Extracts key fields and structured data from unstructured documents, including tables, forms, invoices, and contracts.',
-      'Use this tool when a user needs structured data extracted from an unstructured document. It supports key-field extraction from tables, forms, invoices, contracts, and general documents.',
-      '{"type":"object","properties":{"file_url":{"type":"string","description":"Accessible document URL"},"schema":{"type":"object","description":"Definition of fields to extract"},"doc_type":{"type":"string","enum":["invoice","form","contract","table","general"],"description":"Document type"}},"required":["file_url"]}',
-      '["Extraction","Structured Data","Document"]'
-    )
-) AS v(id, name, description, instruction, input_schema, tags)
-WHERE s.id = v.id;
-
-UPDATE business_domain.adapters AS a
-SET name = v.name, config_json = jsonb_build_object('description', v.description)
-FROM (VALUES
-    ('adapter_demo_dingtalk',        'ADP Adapter',       'ADP human resources data integration'),
-    ('adapter_demo_wechat_agent',    'HiAgent Adapter',   'HiAgent agent platform integration'),
-    ('adapter_demo_feishu_analytics','AWS QuickSight',    'AWS analytics platform integration'),
-    ('adapter_demo_dingtalk_ai',     'Gemini Adapter',    'Google Gemini model integration'),
-    ('adapter_demo_wechat_workbench','WorkBuddy',         'WorkBuddy workflow integration'),
-    ('adapter_demo_feishu_crawler',  'Claw Adapter',      'Claw data crawling platform integration')
-) AS v(id, name, description)
-WHERE a.id = v.id;
-
-UPDATE business_domain.model_providers AS p
-SET model_type = v.model_type,
-    config_json = jsonb_set(p.config_json, '{vendor}', to_jsonb(v.vendor::text), true)
-FROM (VALUES
-    ('provider_demo_gpt4o',    'Chat Model',      'OpenAI'),
-    ('provider_demo_claude',   'Chat Model',      'Anthropic'),
-    ('provider_demo_text2vec', 'Embedding Model', 'Local Deployment'),
-    ('provider_demo_reranker', 'Reranking Model', 'Local Deployment')
-) AS v(id, model_type, vendor)
-WHERE p.id = v.id;
-
-UPDATE business_domain.parser_configs AS p
-SET name = v.name, config_json = v.config_json::jsonb
-FROM (VALUES
-    ('parser_demo_video',    'Video Parser',    '{"version":"v2.3.0","process_count":1245,"display_fields":[{"label":"Keyframe Extraction","value":"Smart Mode"},{"label":"Resolution Limit","value":"1080p"}]}'),
-    ('parser_demo_audio',    'Audio Parser',    '{"version":"v2.1.2","process_count":3678,"display_fields":[{"label":"Transcription Model","value":"General Transcription Model"},{"label":"Output Format","value":"SRT"}]}'),
-    ('parser_demo_image',    'Image Parser',    '{"version":"v1.9.5","process_count":5432,"display_fields":[{"label":"OCR Engine","value":"Built-in OCR"},{"label":"Image Compression","value":"High Quality"}]}'),
-    ('parser_demo_document', 'Document Parser', '{"version":"v3.0.1","process_count":12890,"display_fields":[{"label":"Preserve Layout","value":"Enabled"},{"label":"Table Extraction","value":"Smart Extraction"}]}'),
-    ('parser_demo_web',      'Web Parser',      '{"version":"--","process_count":0,"display_fields":[{"label":"Rendering Mode","value":"Static Rendering"},{"label":"Crawl Depth","value":"--"}]}'),
-    ('parser_demo_cad',      'CAD Parser',      '{"version":"--","process_count":0,"display_fields":[{"label":"Precision Level","value":"Standard"},{"label":"Layer Extraction","value":"All"}]}')
-) AS v(id, name, config_json)
-WHERE p.id = v.id;
-
-UPDATE business_domain.data_access_methods AS d
-SET name = v.name, config_json = jsonb_build_object('description', v.description)
-FROM (VALUES
-    ('dam_demo_api',      'API Pull',                  'Ingest data through REST or gRPC APIs'),
-    ('dam_api_push_demo', 'Open API Push',             'Receive documents pushed through OpenAPI'),
-    ('dam_demo_storage',  'Direct Storage Connection', 'Connect directly to NAS, S3, MinIO, or OSS'),
-    ('dam_demo_file',     'File Upload',               'Upload PDF, DOCX, CSV, JSON, and other files'),
-    ('dam_demo_mqtt',     'MQTT Integration',          'Ingest data from IoT message queues')
-) AS v(id, name, description)
-WHERE d.id = v.id;
-
-UPDATE business_domain.template_domains AS d
-SET name = v.name, description = v.description
-FROM (VALUES
-    ('tpl_domain_internet',      'Internet Technology', 'Ontology templates for internet companies, products, and technology intelligence'),
-    ('tpl_domain_finance',       'Financial Services',  'Ontology templates for risk control, advisory services, and customer operations'),
-    ('tpl_domain_medical',       'Healthcare',          'Ontology templates for medical data parsing and health management'),
-    ('tpl_domain_manufacturing', 'Manufacturing',       'Ontology templates for production, quality inspection, and equipment operations')
-) AS v(id, name, description)
-WHERE d.id = v.id;
-
-UPDATE business_domain.template_scenarios AS s
-SET name = v.name, description = v.description
-FROM (VALUES
-    ('tpl_scenario_internet_general',   'General Internet Intelligence', 'General entity and relationship extraction for internet technology'),
-    ('tpl_scenario_credit_risk',        'Credit Risk Control',           'Credit risk assessment based on enterprise financial data'),
-    ('tpl_scenario_robo_advisor',       'Robo-Advisor',                  'Automated investment advisory based on market data'),
-    ('tpl_scenario_medical_record',     'Medical Record Parsing',        'Structured extraction from electronic medical records'),
-    ('tpl_scenario_quality_inspection', 'Production Quality Analysis',   'Quality inspection data analysis for manufacturing processes')
-) AS v(id, name, description)
-WHERE s.id = v.id;
-
-WITH object_labels(id, name, description) AS (VALUES
-    ('tpl_obj_inet_company',              'Company',             'Internet company or platform operator'),
-    ('tpl_obj_inet_product',              'Product',             'Application, product, or platform'),
-    ('tpl_obj_inet_tech',                 'Technology',          'Framework, protocol, algorithm, or method'),
-    ('tpl_obj_inet_feature',              'Feature',             'Product feature or functional module'),
-    ('tpl_obj_inet_person',               'Person',              'Founder, executive, or engineer'),
-    ('tpl_obj_inet_event',                'Event',               'Launch, financing, or business event'),
-    ('tpl_obj_inet_market',               'Market',              'Target market, segment, or audience'),
-    ('tpl_obj_inet_investor',             'Investor',            'Venture capital or investment organization'),
-    ('tpl_object_enterprise_customer',    'Enterprise Customer', 'Enterprise applying for credit'),
-    ('tpl_object_financial_statement',    'Financial Statement', 'Enterprise financial statement data'),
-    ('tpl_object_guarantee_company',      'Guarantor Company',   'Enterprise providing a loan guarantee'),
-    ('tpl_object_patient_record',         'Patient Record',      'Electronic patient medical record'),
-    ('tpl_object_visit_record',           'Visit Record',        'A single patient visit record'),
-    ('tpl_object_diagnosis_result',       'Diagnosis Result',    'Clinical diagnosis provided by a physician'),
-    ('tpl_obj_mfg_product',               'Manufactured Product','Manufactured product or component'),
-    ('tpl_obj_mfg_line',                  'Production Line',     'Manufacturing production line'),
-    ('tpl_obj_mfg_defect',                'Quality Defect',      'Defect identified during quality inspection'),
-    ('tpl_obj_mfg_inspection',            'Inspection Report',  'Product quality inspection report')
-)
-UPDATE business_domain.template_objects AS o
-SET name = v.name,
-    description = v.description,
-    aliases = jsonb_build_array(v.name)
-FROM object_labels AS v
-WHERE o.id = v.id;
-
-UPDATE business_domain.template_attributes
-SET attr_name = initcap(replace(ontology_code, '_', ' ')),
-    description = 'Business definition for ' || initcap(replace(ontology_code, '_', ' ')),
-    attr_type = CASE attr_type
-        WHEN U&'\5B57\7B26\4E32' THEN 'string'
-        WHEN U&'\6587\672C'   THEN 'text'
-        WHEN U&'\6570\503C'   THEN 'number'
-        WHEN U&'\65E5\671F'   THEN 'date'
-        WHEN U&'\679A\4E3E'   THEN 'enum'
-        ELSE attr_type
-    END
-WHERE id LIKE 'tpl_attr_%'
-  AND ontology_code IS NOT NULL;
-
-UPDATE business_domain.template_relations
-SET name = initcap(replace(ontology_code, '_', ' ')),
-    description = 'Ontology relationship: ' || initcap(replace(ontology_code, '_', ' ')),
-    aliases = jsonb_build_array(initcap(replace(ontology_code, '_', ' '))),
-    relation_type = CASE relation_type
-        WHEN U&'\4E00\5BF9\4E00' THEN 'one_to_one'
-        WHEN U&'\4E00\5BF9\591A' THEN 'one_to_many'
-        WHEN U&'\591A\5BF9\4E00' THEN 'many_to_one'
-        WHEN U&'\591A\5BF9\591A' THEN 'many_to_many'
-        ELSE relation_type
-    END
-WHERE id LIKE 'tpl_rel_%' OR id LIKE 'tpl_relation_%';
-
-UPDATE knowledge_base.spaces
-SET name = 'Demo Workspace', description = 'Demonstration workspace'
-WHERE id = 'space_demo_test';
-
-UPDATE knowledge_base.knowledge_info AS k
-SET name = v.name, description = v.description
-FROM (VALUES
-    ('kb_demo_internet',    'Internet Technology Knowledge Base', 'Demo knowledge base for internet ontology extraction'),
-    ('kb_demo_credit_risk', 'Credit Risk Knowledge Base',         'Demo knowledge base for financial credit risk ontology extraction'),
-    ('kb_demo_medical',     'Healthcare Knowledge Base',          'Demo knowledge base for medical record ontology extraction')
-) AS v(id, name, description)
-WHERE k.id = v.id;
-
-UPDATE knowledge_base.knowledge_data_sources
-SET name = 'File Upload'
-WHERE id IN ('ds_demo_internet_file', 'ds_demo_credit_file', 'ds_demo_medical_file');
-
-UPDATE knowledge_base.services AS s
-SET name = v.name, description = v.description, domain_type = v.domain_type
-FROM (VALUES
-    ('svc_demo_internet', 'Internet Intelligence Service', 'Test service for internet technology intelligence', 'Technology'),
-    ('svc_demo_credit',   'Credit Risk Service',            'Test service for credit risk analysis',              'Finance'),
-    ('svc_demo_medical',  'Healthcare Record Service',      'Test service for medical record parsing',            'Healthcare')
-) AS v(id, name, description, domain_type)
-WHERE s.id = v.id;
-
-CREATE OR REPLACE FUNCTION pg_temp.clean_compiled_display_json(
-    p_value jsonb,
-    p_parent_key text DEFAULT NULL
-) RETURNS jsonb
-LANGUAGE plpgsql
-IMMUTABLE
-AS $$
-DECLARE
-    result jsonb;
-    item jsonb;
-    pair record;
-    raw_text text;
-BEGIN
-    CASE jsonb_typeof(p_value)
-        WHEN 'object' THEN
-            result := '{}'::jsonb;
-            FOR pair IN SELECT key, value FROM jsonb_each(p_value)
-            LOOP
-                IF pair.key = 'display_name'
-                   AND jsonb_typeof(pair.value) = 'string'
-                   AND (pair.value #>> '{}') ~ U&'[\4E00-\9FA5]'
-                   AND p_value ? 'name'
-                THEN
-                    result := result || jsonb_build_object(pair.key, p_value -> 'name');
-                ELSE
-                    result := result || jsonb_build_object(
-                        pair.key,
-                        pg_temp.clean_compiled_display_json(pair.value, pair.key)
-                    );
-                END IF;
-            END LOOP;
-            RETURN result;
-        WHEN 'array' THEN
-            result := '[]'::jsonb;
-            FOR item IN SELECT value FROM jsonb_array_elements(p_value)
-            LOOP
-                IF p_parent_key = 'aliases'
-                   AND jsonb_typeof(item) = 'string'
-                   AND (item #>> '{}') ~ U&'[\4E00-\9FA5]'
-                THEN
-                    CONTINUE;
-                END IF;
-                result := result || jsonb_build_array(
-                    pg_temp.clean_compiled_display_json(item, p_parent_key)
-                );
-            END LOOP;
-            RETURN result;
-        WHEN 'string' THEN
-            raw_text := p_value #>> '{}';
-            IF raw_text ~ U&'[\4E00-\9FA5]' THEN
-                RETURN to_jsonb(initcap(replace(coalesce(p_parent_key, 'value'), '_', ' ')));
-            END IF;
-            RETURN p_value;
-        ELSE
-            RETURN p_value;
-    END CASE;
-END;
-$$;
-
-UPDATE knowledge_base.ontology_compiled_schemas
-SET entity_types = pg_temp.clean_compiled_display_json(entity_types),
-    relation_types = pg_temp.clean_compiled_display_json(relation_types),
-    prompt_schema = pg_temp.clean_compiled_display_json(prompt_schema)
-WHERE entity_types::text ~ U&'[\4E00-\9FA5]'
-   OR relation_types::text ~ U&'[\4E00-\9FA5]'
-   OR prompt_schema::text ~ U&'[\4E00-\9FA5]';
-
-UPDATE knowledge_base.ontology_compiled_schemas
-SET entity_types = replace(
-    replace(
-    replace(
-    replace(
-    replace(
-    replace(entity_types::text,
-        U&'\7EDF\4E00\793E\4F1A\4FE1\7528\4EE3\78011', 'Unified Social Credit Code 1'),
-        U&'\516C\53F8\540D\79F0', 'Company Name'),
-        U&'\6240\5C5E\884C\4E1A', 'Industry'),
-        U&'\6210\7ACB\65F6\95F4', 'Founded Date'),
-        U&'\6CE8\518C\8D44\672C', 'Registered Capital'),
-        U&'\516C\53F8\7B80\4ECB', 'Company Overview')::jsonb
-WHERE knowledge_base_id = 'kb_demo_internet'
-  AND entity_types::text ~ U&'[\4E00-\9FA5]';
-
-COMMIT;
 
 INSERT INTO knowledge_base.knowledge_parser_settings (id, tenant_id, knowledge_base_id, parser_type, parser_config_id, prompt_config_id, preprocessing_json, postprocessing_json, prompt_text, prompt_template_id, prompt_template_version, summary_prompt_text, summary_template_id, summary_template_version, tag_prompt_text, tag_template_id, tag_template_version, status, is_deleted, created_at, updated_at) VALUES('94688b83c58f461cb74af4f5f661bffd', 'tenant_jonex_demo', 'b11dd30de0994178a3a4e388e6cf816e', 'document', 'document_parse', NULL, '[]', '[]', '', NULL, NULL, '', NULL, NULL, '', NULL, NULL, 'active', 0, '2026-07-23 05:09:01.974', '2026-07-23 05:09:01.974');

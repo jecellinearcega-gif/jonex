@@ -7,6 +7,7 @@ COMMENT ON SCHEMA platform IS '平台核心数据';
 COMMENT ON SCHEMA knowledge_base IS '知识库业务层数据（CRUD + 状态机 + 本体绑定/编译 + 数据源，与 LightRAG 内部存储分离）';
 COMMENT ON SCHEMA business_domain IS '业务领域 + 生态管理数据（领域空间/服务/引擎/适配器/技能/模板）';
 COMMENT ON SCHEMA metering IS '计量 schema：存储 LLM/Embedding 出口计量数据';
+COMMENT ON SCHEMA task_center IS '任务中心数据（内置清单/任务定义与版本/触发/任务实例与子任务，见 docs/superpowers/specs/2026-09-09-task-center-design.md）';
 
 -- metering
 COMMENT ON TABLE metering.llm_usage_log IS 'LLM 网关调用日志：记录每次 LLM/Embedding 调用的 token 用量';
@@ -30,14 +31,10 @@ COMMENT ON TABLE platform.applications IS '应用注册表';
 COMMENT ON TABLE platform.application_routes IS '应用路由表';
 COMMENT ON TABLE platform.system_configs IS '系统配置表';
 COMMENT ON TABLE platform.audit_logs IS '审计日志表';
-COMMENT ON COLUMN platform.audit_logs.log_type IS 'Log type column on platform.audit_logs.';
-COMMENT ON COLUMN platform.audit_logs.service_name IS 'Service name column on platform.audit_logs.';
-COMMENT ON COLUMN platform.audit_logs.outcome IS 'SUCCESS / FAILED';
-COMMENT ON COLUMN platform.audit_logs.log_level IS 'INFO / WARN / ERROR';
-COMMENT ON COLUMN platform.audit_logs.error_message IS 'Error message column on platform.audit_logs.';
-COMMENT ON COLUMN platform.audit_logs.method IS 'Method column on platform.audit_logs.';
-COMMENT ON COLUMN platform.audit_logs.path IS 'Path column on platform.audit_logs.';
 COMMENT ON TABLE platform.task_schedules IS '任务调度表';
+COMMENT ON TABLE platform.identity_integration_config IS '企业身份集成配置表（配置聚合根，一租户一份；SSO 子配置复用 tenant_realm_map）';
+COMMENT ON TABLE platform.identity_sync_tasks IS '身份同步任务表（同步头，单租户最多一条 running）';
+COMMENT ON TABLE platform.identity_sync_failures IS '身份同步失败明细表（弱实体，归属 sync_task 聚合）';
 
 -- knowledge_base
 COMMENT ON TABLE knowledge_base.knowledge_documents IS '知识库文档元数据表（业务层独有，含状态机和 RAG 对账字段）';
@@ -160,7 +157,6 @@ COMMENT ON COLUMN knowledge_base.knowledge_info.status IS '知识库状态：syn
 COMMENT ON COLUMN knowledge_base.knowledge_info.owner_id IS '负责人用户 ID';
 
 COMMENT ON COLUMN knowledge_base.knowledge_documents.data_source_type IS '文档来源类型：api/api_push/storage/file';
-COMMENT ON COLUMN knowledge_base.knowledge_documents.folder_id IS 'Folder id column on knowledge_base.knowledge_documents.';
 
 -- ============================================================
 -- 补齐：business_domain 模板表注释
@@ -271,10 +267,10 @@ COMMENT ON VIEW metering.v_llm_usage_detail   IS 'LLM 计量明细可读视图�
 COMMENT ON VIEW metering.v_llm_usage_by_doc   IS 'LLM 计量按文档汇总（call_count/tokens/avg_latency）';
 COMMENT ON VIEW metering.v_llm_usage_by_trace IS 'LLM 计量按链路 trace 汇总';
 COMMENT ON VIEW metering.v_llm_usage_daily    IS 'LLM 计量按天汇总（趋势/对账）';
--- LLM-Wiki Schema 编译设置（kb_type=openkb 的编译配置权威源，方案 docs/llmwiki-schema-settings-execution-plan.md）
+-- LLM-Wiki Schema 编译设置（llm-wiki 类型 kb_type=openkb/jonex_wiki 的编译配置权威源，方案 docs/llmwiki-schema-settings-execution-plan.md）
 COMMENT ON TABLE knowledge_base.llm_wiki_schemas IS 'LLM-Wiki Schema 编译设置表（留档模型：active/archived，每 KB 单 active；Jonex DB 权威源，OpenKB 文件系统为运行时投影）';
 COMMENT ON COLUMN knowledge_base.llm_wiki_schemas.tenant_id IS '租户 ID';
-COMMENT ON COLUMN knowledge_base.llm_wiki_schemas.knowledge_base_id IS '知识库业务 ID（kb_type=openkb）';
+COMMENT ON COLUMN knowledge_base.llm_wiki_schemas.knowledge_base_id IS '知识库业务 ID（llm-wiki 类型 kb_type=openkb/jonex_wiki）';
 COMMENT ON COLUMN knowledge_base.llm_wiki_schemas.schema_version IS 'Schema 业务版本：每次保存递增，留档历史版本';
 COMMENT ON COLUMN knowledge_base.llm_wiki_schemas.status IS '留档状态：active（当前生效）/ archived（历史留档）';
 COMMENT ON COLUMN knowledge_base.llm_wiki_schemas.sync_status IS 'apply_schema 同步状态：synced / apply_failed（与 status 的留档语义分开）';

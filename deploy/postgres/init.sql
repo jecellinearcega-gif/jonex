@@ -15,3 +15,4 @@
 \ir migrations/005_business_domain.sql
 \ir migrations/006_seed_data.sql
 \ir migrations/007_comments.sql
+\ir migrations/008_task_center.sql

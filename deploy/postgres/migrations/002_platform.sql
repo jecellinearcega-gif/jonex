@@ -46,7 +46,9 @@ CREATE TABLE IF NOT EXISTS platform.users (
     id BIGSERIAL PRIMARY KEY,
     tenant_id VARCHAR(64) NOT NULL,
     username VARCHAR(128) NOT NULL,
-    password_hash VARCHAR(256) NOT NULL,
+    external_id VARCHAR(64),             -- Keycloak sub(UUID) 字符串，映射本地 int user_id（D7 映射桥梁）
+    upstream_subject VARCHAR(64),        -- 上游客户系统的稳定主体标识（本地 = Casdoor id）；跨 realm 稳定，认人主键
+    password_hash VARCHAR(256),          -- 可空：密码校验上移 Keycloak，影子用户首登无本地密码（D7/BC2）
     display_name VARCHAR(255),
     email VARCHAR(255),
     role VARCHAR(32) NOT NULL DEFAULT 'user',
@@ -58,6 +60,8 @@ CREATE TABLE IF NOT EXISTS platform.users (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS users_tenant_id_username_key ON platform.users(tenant_id, username) WHERE is_deleted = 0;
+CREATE UNIQUE INDEX IF NOT EXISTS users_tenant_id_external_id_key ON platform.users(tenant_id, external_id) WHERE is_deleted = 0;
+CREATE UNIQUE INDEX IF NOT EXISTS users_tenant_id_upstream_subject_key ON platform.users(tenant_id, upstream_subject) WHERE is_deleted = 0 AND upstream_subject IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_users_tenant ON platform.users(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_users_username ON platform.users(tenant_id, username);
@@ -83,6 +87,21 @@ CREATE INDEX IF NOT EXISTS idx_login_tickets_tenant ON platform.login_tickets(te
 CREATE INDEX IF NOT EXISTS idx_login_tickets_hash ON platform.login_tickets(ticket_hash);
 CREATE INDEX IF NOT EXISTS idx_login_tickets_expires ON platform.login_tickets(expires_at);
 CREATE INDEX IF NOT EXISTS idx_login_tickets_app_redirect ON platform.login_tickets(app_id, redirect_uri);
+
+-- 租户 ↔ Realm 映射表（Keycloak SSO，PRD §3.2 / T5 拍板独立表）
+-- realm = 'jonex-' + tenant_id，全局唯一；供 pre-provision Realm、登录反查 tenant、SLO 回调定位 tenant
+CREATE TABLE IF NOT EXISTS platform.tenant_realm_map (
+    id BIGSERIAL PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    realm VARCHAR(128) NOT NULL UNIQUE,
+    issuer_url VARCHAR(512) NOT NULL,
+    client_id VARCHAR(255) NOT NULL,
+    status SMALLINT DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_tenant_realm_map_tenant ON platform.tenant_realm_map(tenant_id);
 
 -- 调用计量表已下线：LLM/embedding 出口计量统一由 llm-gateway 写入 metering.llm_usage_log
 -- （表定义见本文件末尾「计量层」段；决策见 docs/llm-gateway-token-metering-execution-plan.md G2c-A）
@@ -258,6 +277,76 @@ CREATE TABLE IF NOT EXISTS platform.task_schedules (
 
 CREATE INDEX IF NOT EXISTS idx_task_tenant ON platform.task_schedules(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_task_type ON platform.task_schedules(task_type);
+
+-- 企业身份集成配置（配置聚合根，一租户一份）
+-- SSO 子配置：Realm/issuer_url/client_id 归 tenant_realm_map，此处不复制
+CREATE TABLE IF NOT EXISTS platform.identity_integration_config (
+    id BIGSERIAL PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    sso_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    login_policy VARCHAR(32) NOT NULL DEFAULT 'auto_create',
+    login_field_mapping JSONB,
+    sso_connection_verified_at TIMESTAMP,
+    -- 租户级 kc_idp_hint alias 覆盖值；NULL = 用平台默认值
+    -- KEYCLOAK_IDP_HINT_DEFAULT_ALIAS（无覆盖值零人工配置）
+    idp_hint_alias VARCHAR(64),
+    -- 主数据源子配置
+    datasource_name VARCHAR(255),
+    datasource_url VARCHAR(512),
+    auth_type VARCHAR(32),
+    token_ciphertext VARCHAR(1024),
+    auto_sync_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    sync_interval INTEGER,
+    datasource_connection_verified_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 一租户一份配置
+CREATE UNIQUE INDEX IF NOT EXISTS uq_identity_integration_config_tenant
+    ON platform.identity_integration_config(tenant_id);
+
+-- 同步任务（同步任务聚合根，同步头）
+CREATE TABLE IF NOT EXISTS platform.identity_sync_tasks (
+    id BIGSERIAL PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    sync_type VARCHAR(32) NOT NULL DEFAULT 'incremental',
+    trigger VARCHAR(32) NOT NULL DEFAULT 'manual',
+    user_added INTEGER NOT NULL DEFAULT 0,
+    user_updated INTEGER NOT NULL DEFAULT 0,
+    user_disabled INTEGER NOT NULL DEFAULT 0,
+    user_enabled INTEGER NOT NULL DEFAULT 0,
+    user_deleted INTEGER NOT NULL DEFAULT 0,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    started_at TIMESTAMP,
+    finished_at TIMESTAMP,
+    cursor VARCHAR(1024),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_deleted SMALLINT DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_identity_sync_tasks_tenant
+    ON platform.identity_sync_tasks(tenant_id);
+
+-- 单租户最多一条 running（防并发重复 running，状态机 + 部分唯一索引双兜底）
+CREATE UNIQUE INDEX IF NOT EXISTS uq_identity_sync_tasks_running
+    ON platform.identity_sync_tasks(tenant_id)
+    WHERE status = 'running';
+
+-- 同步失败明细（弱实体，归属 sync_task 聚合，不单独带 tenant_id）
+CREATE TABLE IF NOT EXISTS platform.identity_sync_failures (
+    id BIGSERIAL PRIMARY KEY,
+    sync_task_id BIGINT NOT NULL,
+    entity_type VARCHAR(32) NOT NULL DEFAULT 'user',
+    external_entity_id VARCHAR(128),
+    failure_reason VARCHAR(512),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_identity_sync_failures_task
+    ON platform.identity_sync_failures(sync_task_id);
 
 -- ============================================================
 -- 计量层 (metering schema)

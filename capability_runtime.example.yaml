@@ -60,7 +60,15 @@ domain:
 #     mode: remote
 #     endpoint: ${SIDECAR_URL}
 
-# business:
-#   business.knowledge_base.v1:
-#     mode: remote
-#     endpoint: ${SIDECAR_URL}
+business:
+  # 任务中心：独立部署的能力服务，接入方（知识库等）经 Sidecar 反代调用。
+  # 一期只在「任务中心自身」的容器里注册能力，其他进程一律 remote。
+  business.task_center.v1:
+    mode: remote
+    endpoint: ${SIDECAR_URL:-http://localhost:8001}
+
+  # 运行方：任务中心派活（§4.1 ① execute）的目标，同样 remote。
+  # 读它的只有任务中心的 RunnerAdapter。
+  business.knowledge_base.v1:
+    mode: remote
+    endpoint: ${SIDECAR_URL:-http://localhost:8001}
