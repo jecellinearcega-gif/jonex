@@ -25,10 +25,15 @@ class KnowledgeInfo(TenantMixin, TimestampMixin, SoftDeleteMixin, Base):
     status = Column(String(32), default="synced")
     owner_id = Column(String(64))
     # [jonex] 知识库类型：lightrag（标准检索型：向量+图谱+本体）
-    #                  / openkb（Wiki 编译型：LLM 编译为结构化 Wiki）
+    #                  / openkb / jonex_wiki（Wiki 编译型：LLM 编译为结构化 Wiki）
     # 创建时选定，之后不可变（改类型意味着旧数据全部失效）。
     # 原名 pipeline_type，位于 service_knowledge_bases。
     kb_type = Column(String(16), nullable=False, default="lightrag")
+    # [jonex] 库级派单值（2026-10-09）：这个库走哪条入库链。当前仅 `rag` 一条链；
+    # **NULL 是合法值** = 没表态、跟随服务端开关（`KB_INGEST_BACKEND`）—— 存量库全是
+    # NULL，行为与从前逐字一致。
+    # 建列脚本：`deploy/postgres/update/045_knowledge_info_ingest_backend.sql`。
+    ingest_backend = Column(String(32), nullable=True)
 
     def to_dict(self, space_name: str = None):
         result = {
@@ -42,6 +47,7 @@ class KnowledgeInfo(TenantMixin, TimestampMixin, SoftDeleteMixin, Base):
             "status": self.status,
             "owner_id": self.owner_id,
             "kb_type": self.kb_type,  # [jonex]
+            "ingest_backend": self.ingest_backend,  # [jonex] NULL = 跟随服务端开关
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

@@ -127,12 +127,25 @@ class CosObjectStorage:
         return key
 
     async def get_bytes(self, key: str) -> bytes:
-        """获取对象字节内容。"""
+        """获取对象字节内容（完整读取）。
+
+        注意：qcloud_cos 的 ``StreamBody.read(chunk_size=1024)`` 只返回单个
+        chunk 即返回，并不读完整对象——直接 ``.read()`` 会把内容截断到 1024
+        字节，导致上传去重（content_hash）按「前 1024 字节」比对而误判重复。
+        这里循环读取直到耗尽，与 SDK ``get_stream_to_file`` 的读取方式一致。
+        """
         resp = await asyncio.to_thread(
             _client().get_object,
             Bucket=self._bucket, Key=key,
         )
-        return resp["Body"].read()
+        body = resp["Body"]
+        chunks: list[bytes] = []
+        while True:
+            chunk = body.read(1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
 
     def fs_path(self, key: str) -> str | None:
         """COS 无本地文件路径；下游应改用 storage_key 通过 get_to_path 下载。"""

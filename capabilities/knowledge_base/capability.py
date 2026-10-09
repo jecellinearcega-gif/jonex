@@ -20,6 +20,7 @@ from jonex_core.capability.models import (
 )
 from jonex_core.common import get_db_session
 from jonex_core.common.exceptions import (
+    InternalError,
     InvalidParameterError,
     JonexException,
     PermissionDeniedError,
@@ -33,6 +34,7 @@ from jonex_core.common.neo4j_client import (
     get_neo4j_driver,
 )
 from jonex_core.common.quota import get_system_quota
+from jonex_core.common.security_guards import assert_secure_jwt_secret
 from jonex_core.common.tenant import require_tenant
 
 from .repository.ontology_graph_repository import OntologyGraphRepository
@@ -53,10 +55,18 @@ from .services import (
     TagService,
 )
 from .services.quota_service import QuotaService
+from .services.analytics_service import AnalyticsService
+# [jonex] KB_ENABLED_TYPES：本部署允许创建哪些 KB 类型（部署级白名单，随 env 走）
+from .services.kb_type_service import enabled_kb_types, kb_type_options
 
 logger = logging.getLogger(__name__)
 
 ActionHandler = Callable[[CapabilityRequest, dict[str, Any]], Awaitable[dict]]
+
+#: 「这一趟对账没跑成」的哨兵（`_reconcile_pass` 的返回值）。
+#: 必须与「跑成了、只是结果是空的」区分开 —— 后者是正常回执（如 `{}`、`None`、
+#: `{"timed_out": 0}`），拿假值判失败会把每一轮都记成失败、退化成一味退避。
+_PASS_FAILED = object()
 
 # ---------------------------------------------------------------------------
 # 模块级常量：每个 action 的必填字段（纯静态数据，避免每次调用重建 ~90 键 dict）
@@ -72,6 +82,7 @@ _REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "search_enhanced": ("query", "knowledge_base_id"),
     "query_with_ontology": ("query",),
     "search_llmwiki": ("query",),     # [jonex]
+    "search_jonex_wiki": ("query",),  # [jonex]
     "search_mix": ("query",),          # [jonex]
     "deep_query": ("query",),
     "get_search_overview": (),
@@ -88,6 +99,16 @@ _REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "get_document_parse_result": ("document_id", "knowledge_base_id"),
     "get_wiki_page": ("knowledge_base_id", "path"),
     "list_wiki_contents": ("knowledge_base_id",),  # document_id 不进必填（服务层可选）
+    "get_wiki_compilation_state": ("knowledge_base_id",),
+    "pause_wiki_compilation": ("knowledge_base_id",),
+    "resume_wiki_compilation": ("knowledge_base_id",),
+    # ── [jonex] Wiki 阅读侧：反向链接 / claim 级溯源审计（仅 jonex_wiki）──
+    "get_wiki_backlinks": ("knowledge_base_id", "path"),
+    "get_wiki_claims": ("knowledge_base_id",),  # path / document_id 至少一个，适配器校验
+    # ── [jonex] Wiki 阅读目录（LLM 起草 + LLM 调整；仅 jonex_wiki）──
+    "get_wiki_outline": ("knowledge_base_id",),
+    "draft_wiki_outline": ("knowledge_base_id",),
+    "adjust_wiki_outline": ("knowledge_base_id", "instruction"),
     # ── [jonex] LLM-Wiki Schema 编译设置（方案 llmwiki-schema-settings-execution-plan §9）──
     "get_llm_wiki_schema": ("knowledge_base_id",),
     "save_llm_wiki_schema": ("knowledge_base_id", "expected_schema_version"),
@@ -128,6 +149,7 @@ _REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     # ── 知识库信息管理 ──
     "list_knowledge_info": (),
     "get_quota_view": (),  # [jonex] 系统配额查询（无空间语义）
+    "get_kb_type_options": (),  # [jonex] 本部署可创建的 KB 类型（无空间语义、无入参）
     "create_knowledge_info": (),
     "get_knowledge_info": ("kb_id",),
     "update_knowledge_info": ("kb_id",),
@@ -226,6 +248,23 @@ _REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "ingest_push": ("ds_id", "ingest_key", "storage_key", "file_name"),
     # ── MCP 文档上传状态查询 ──
     "get_document_status": ("document_id",),
+    # ── 数据运营（Data Operations）──
+    "get_data_operations_overview": (),
+    "get_data_assets_analytics": (),
+    "get_knowledge_assets_analytics": (),
+    "get_search_analytics": (),
+    # 异常资产下钻（分页/筛选，全部可选，故必填字段为空）
+    "get_abnormal_assets_analytics": (),
+    # ── 任务中心接入（运行方**三个**入口：execute / remove_task / task_stopped，
+    #    由 `dispatch.update(runner.bind())` 装配）──
+    # ⚠️ **`execute` 是六个键，别漏 `node_id`**：`ExecutionEnvelope` 的字段是
+    # `tenant_id / space_id / task_id / step_code / node_id / execution_id`。
+    # 这几个键确实落在 `payload.data` 这一层（任务中心 `flows/runner_adapter.py`
+    # 就是从 `data.get("tenant_id")` 取的），所以放在这里校验是对的层。
+    "execute": ("tenant_id", "space_id", "task_id", "step_code", "node_id", "execution_id"),
+    "remove_task": ("tenant_id", "space_id", "task_id"),
+    # §4.1 ③ 那条**通知**（2026-09-30 加）：字段与 `remove_task` 逐字相同（同一份定位键）。
+    "task_stopped": ("tenant_id", "space_id", "task_id"),
 }
 
 # ══════════════════════════════════════════════════════════════
@@ -250,6 +289,23 @@ _SPACE_EXEMPT_ACTIONS = frozenset({
     "ingest_push",
     "resolve_references",
     "get_quota_view",
+    # [jonex] KB_ENABLED_TYPES 的下发口：报文体里没有任何 id（没有 space_id、没有 kb_id），
+    # 走常规判定只会「解析不到空间、什么也不判」。豁免是把这份「不判」写成意图而不是巧合
+    # —— 与 get_quota_view 同款：部署级只读事实，与「是不是这个空间的成员」无关。
+    # ⚠ 它不敏感（就是一张 UI 选项清单），所以不另设权限码；真正的闸门在 create 那一侧。
+    "get_kb_type_options",
+    # [jonex] 任务中心接入的两个入口：**空间成员判定对它们无意义，写死豁免**。
+    # 派活/删除是**内部调用**（管理方发出、没有终端用户在场），`actor` 常常是空的 ——
+    # 真跑一遍空间判定只会以「调用方不是这个空间的成员」把每一次派活 403 掉。
+    # 报文体里也确实没有可判的东西：`knowledge_base_id` 在 `inputs` 里（派活报文的
+    # 顶层只有 tenant_id / space_id / task_id / step_code / node_id / execution_id），
+    # 而 `_resolve_space_context` 只认顶层那个键 —— 所以今天走常规判定会**解析不到空间、
+    # 什么也不判**。豁免是把这份「不判」写成意图而不是巧合：哪天有人把 KB id 提到报文
+    # 顶层，判定会突然开始生效、而且是以一个与业务无关的理由（调用方不是空间成员）。
+    # ⚠️ **绝不能改放进 `_INTERNAL_ACTIONS`**（那条路跳过的是**租户闸**）：派活报文带的
+    # 正是必须走 `require_tenant()` 收口的可信租户，跳过它等于放弃租户隔离 —— 两件事
+    # 别混：这里豁免的是「是不是这个空间的成员」，不是「是不是这个租户的」。
+    "execute", "remove_task", "task_stopped",
 })
 
 # 空间级管理：仅 owner 或租户管理员（tenant:write）。
@@ -299,6 +355,9 @@ _SPACE_WRITE_ACTIONS = frozenset({
     "recompile_schema", "reextract_kb_documents", "retry_ontology_extract",
     "save_llm_wiki_schema", "import_llm_wiki_schema_yaml",
     "apply_llm_wiki_schema", "recompile_llm_wiki_schema_outdated_documents",
+    # [jonex] Wiki 阅读目录生成/调整（LLM 调用有成本，按写口径：KB 管理者/空间管理者）
+    "draft_wiki_outline", "adjust_wiki_outline",
+    "pause_wiki_compilation", "resume_wiki_compilation",
 })
 
 # [jonex] 权限重构 B4（方案 §5 Gap 8 / 执行文档 §5.4）：
@@ -340,7 +399,9 @@ _SPACE_READ_ACTIONS = frozenset({
     "expand_ontology_neighbors", "search_ontology_entities",
     "get_compiled_schema", "export_compiled_schema_yaml", "export_llm_wiki_schema_yaml",
     "get_llm_wiki_schema", "list_synonyms", "list_tags", "list_parser_settings",
-    "get_wiki_page", "list_wiki_contents", "get_editor_state",
+    "get_wiki_page", "list_wiki_contents", "get_wiki_outline", "get_editor_state",
+    "get_wiki_compilation_state",
+    "get_wiki_backlinks", "get_wiki_claims",
     "get_parse_result_documents", "get_parse_result_entities",
     "get_parse_result_graph", "get_parse_result_graph_summary",
     "get_parse_result_relationships", "get_parse_result_summary",
@@ -350,7 +411,15 @@ _SPACE_READ_ACTIONS = frozenset({
 # 检索类（过滤无权限 KB，不整体拒绝）
 _SEARCH_ACTIONS = frozenset({
     "search", "search_enhanced", "deep_query", "search_mix",
-    "query_with_ontology", "search_llmwiki",
+    "query_with_ontology", "search_llmwiki", "search_jonex_wiki",
+})
+
+# 数据运营聚合（空间级聚合，非用户级）：domain_space_id 传则空间成员，
+# 不传则仅租户管理员（execute 内单独判定，不进 _SPACE_EXEMPT_ACTIONS）。
+_ANALYTICS_ACTIONS = frozenset({
+    "get_data_operations_overview", "get_data_assets_analytics",
+    "get_knowledge_assets_analytics", "get_search_analytics",
+    "get_abnormal_assets_analytics",
 })
 
 # 空间解析路径（action 组 → space_id 数据来源）
@@ -421,8 +490,35 @@ class KnowledgeBaseCapability(BaseCapability):
         app.include_router(router, prefix="/api/v1")
 
     async def initialize(self) -> None:
+        # 安全守卫：JWT_SECRET 必须为真实随机值（无条件）。本服务用 _sign_payload
+        # 计算 ingest key 哈希，泄漏即可伪造 ingest key 向任意租户知识库注入数据。
+        assert_secure_jwt_secret()
         # [jonex] 配额：启动时解析校验，配置非法抛 QuotaConfigError 拒绝启动。
         get_system_quota()
+
+        # [jonex] KB_ENABLED_TYPES：启动时解析校验，并记一条**生效值**。
+        # 配置非法（最典型的是 `jonex-wiki` 把下划线写成连字符）在这里直接拒绝启动 ——
+        # 它的失败方式很隐蔽：不报错，只是客户现场的弹窗**少一个选项**，没人知道为什么。
+        # 顺带把生效值打进日志：排查时不用再去猜容器里那个 env 到底读到没有。
+        logger.info("KB_ENABLED_TYPES 生效：%s", ", ".join(sorted(enabled_kb_types())))
+
+        # [jonex] 任务中心接入：**执行登记必须是持久实现**（缺失即拒绝启动）。
+        #
+        # 为什么值得在这里拒启动：`RunnerBase.__init__` 默认给的是
+        # `InMemoryExecutionRegistry`，而**漏传 registry 不报错**、只打一条 warning 就
+        # 静默降级。它的失效方式很隐蔽 —— 任务中心出站没够着运行方时**会重派同一个
+        # `execution_id`**，内存实现重启即丢、多副本互相看不见，认不出重派就会重复建
+        # 下游 atomic-rag 任务、重复扣配额、产出重复向量。而任务一跑就是几十分钟
+        # （`RAG_TASK_HARD_TIMEOUT_SEC` 默认 21600 秒），重启窗口是真实存在的。
+        # 这里拦不住的话，那句话只会在某次重启后的重复向量里才被人发现。
+        if not getattr(self.service.task_runner.registry, "persistent", False):
+            raise InternalError(
+                message=translate(
+                    "err.kb.task_center.registry_not_persistent",
+                    fallback="知识库任务执行登记必须是持久实现（当前是内存实现，重启/多副本会重复干活）",
+                )
+            )
+
         try:
             await ensure_ontology_schema()
         except Neo4jAuthError:
@@ -471,6 +567,36 @@ class KnowledgeBaseCapability(BaseCapability):
         except Exception as exc:
             logger.warning("存量手动实体回填失败（不阻塞启动）: %s", exc)
 
+    async def _reconcile_pass(self, label: str, run: Callable[[], Awaitable[Any]]) -> Any:
+        """跑一趟对账/巡检，**只兜自己这一趟的异常**；没跑成返回 `_PASS_FAILED`。
+
+        为什么逐趟包、而不是像原来那样整轮包一个 try/except：这几趟之间**没有数据依赖**
+        （各自扫各自的状态、写各自的表），而被跳过的代价**并不等价** —— 排在最后的任务中心
+        看门狗是被接管文档**唯一**的解封点（用户中途要接管会被拦住，见
+        `services/task_watch_service.py` 的模块 docstring），它被前面某趟的事故连坐，等于
+        用户可能被**一直**拦着。整轮一个 except 会把「Neo4j 抖一下」放大成「整条对账停摆」，
+        连另两类 Wiki 库的文档也跟着不再被推进。
+
+        ⚠️ **隔离不等于免疫共同依赖**：坏的是「只有某一趟才用到的东西」（Neo4j、某趟自己的
+        客户端）时，其余趟照跑、看门狗照样能给用户解封；坏的是**多趟共用的东西**时
+        （典型：`041` 没应用 → 看门狗自己 `list_active` 也抛），看门狗一样每轮失败 ——
+        那种情况要连根因一起修，不是这里能兜的。
+
+        日志口径与原来一致（DB 类异常 warning、其它记完整堆栈），只是多带一个趟名。
+        `CancelledError` **原样上抛** —— shutdown 靠它退出，不能被这里吃掉。
+        """
+        try:
+            return await run()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            # 数据库连接异常（可恢复）→ 等后重试；其它异常 → 记录完整堆栈
+            if isinstance(e, (OperationalError, DBAPIError)):
+                logger.warning("对账→%s: DB connection lost, will retry. %s", label, e)
+            else:
+                logger.exception("对账→%s error", label)
+            return _PASS_FAILED
+
     async def _reconcile_loop(self) -> None:
         """每 30 秒扫描 PARSING 文档和本体对账（启动时立即执行一次）。"""
         logger.info("Reconciliation loop started (first run immediately)")
@@ -482,27 +608,84 @@ class KnowledgeBaseCapability(BaseCapability):
                 first_run = False
 
                 logger.debug("Reconciliation cycle begin")
-                doc_result = await self.service.reconciliation.reconcile_documents(limit=50)
-                logger.info("对账→文档: %s", doc_result)
-                onto_result = await self.service.reconciliation.reconcile_ontology(limit=50)
-                logger.info("对账→本体: %s", onto_result)
-                patrol_result = await self.service.reconciliation.patrol_parsing_timeout(limit=50)
-                if patrol_result.get("timed_out", 0) > 0 or patrol_result.get("waiting", 0) > 0:
+                # 逐趟隔离（`_reconcile_pass`）：某一趟崩了只跳过它自己。这一轮的失败趟名
+                # 收进 `failed`，末尾照旧退避一轮 —— 那正是原来整轮 except 里那个 sleep 的
+                # 语义，只是不再以「跳过后面的趟」为代价。
+                failed: list[str] = []
+
+                doc_result = await self._reconcile_pass(
+                    "文档",
+                    lambda: self.service.reconciliation.reconcile_documents(limit=50),
+                )
+                if doc_result is _PASS_FAILED:
+                    failed.append("文档")
+                else:
+                    logger.info("对账→文档: %s", doc_result)
+
+                onto_result = await self._reconcile_pass(
+                    "本体",
+                    lambda: self.service.reconciliation.reconcile_ontology(limit=50),
+                )
+                if onto_result is _PASS_FAILED:
+                    failed.append("本体")
+                else:
+                    logger.info("对账→本体: %s", onto_result)
+
+                patrol_result = await self._reconcile_pass(
+                    "超时巡检",
+                    lambda: self.service.reconciliation.patrol_parsing_timeout(limit=50),
+                )
+                if patrol_result is _PASS_FAILED:
+                    failed.append("超时巡检")
+                elif patrol_result.get("timed_out", 0) > 0 or patrol_result.get("waiting", 0) > 0:
                     logger.info("对账→超时巡检: %s", patrol_result)
+
                 # [jonex] LLM-Wiki 编译巡检：轮询任务状态回写 PG + stale 补提交 + 超时判死
-                okb_result = await self.service.reconciliation.patrol_openkb_compile(limit=50)
-                if okb_result.get("timed_out", 0) > 0 or okb_result.get("compiled", 0) > 0 \
+                okb_result = await self._reconcile_pass(
+                    "LLM-Wiki 编译巡检",
+                    lambda: self.service.reconciliation.patrol_openkb_compile(limit=50),
+                )
+                if okb_result is _PASS_FAILED:
+                    failed.append("LLM-Wiki 编译巡检")
+                elif okb_result.get("timed_out", 0) > 0 or okb_result.get("compiled", 0) > 0 \
                         or okb_result.get("failed", 0) > 0 or okb_result.get("stale_submitted", 0) > 0:
                     logger.info("对账→LLM-Wiki 编译巡检: %s", okb_result)
+
+                # [jonex] Phase 5：jonex_wiki 编译巡检（状态机同 openkb，kb_type 过滤 jonex_wiki）
+                jw_result = await self._reconcile_pass(
+                    "jonex_wiki 编译巡检",
+                    lambda: self.service.reconciliation.patrol_jonex_wiki_compile(limit=50),
+                )
+                if jw_result is _PASS_FAILED:
+                    failed.append("jonex_wiki 编译巡检")
+                elif jw_result.get("timed_out", 0) > 0 or jw_result.get("compiled", 0) > 0 \
+                        or jw_result.get("failed", 0) > 0:
+                    logger.info("对账→jonex_wiki 编译巡检: %s", jw_result)
+
+                # [jonex] 任务中心看门狗：编排里每一步的终态由它上报（见 task_watch_service）。
+                # **挂在同一轮循环里、复用这里的 30 秒节拍，不新起线程也不另拉循环** ——
+                # 两件事本来就是同一个职责：「让在途文档往前走一步」。
+                # 放在最后只是因为它与其他几趟无耦合；**它不再被前面几趟的失败连坐**
+                # （逐趟隔离见 `_reconcile_pass`）—— 它是被接管文档唯一的解封点。
+                watch_result = await self._reconcile_pass(
+                    "任务中心看门狗",
+                    lambda: self.service.task_watch.sweep(limit=50),
+                )
+                if watch_result is _PASS_FAILED:
+                    failed.append("任务中心看门狗")
+                elif watch_result:
+                    logger.info("对账→任务中心看门狗: %s", watch_result)
+
+                if failed:
+                    await asyncio.sleep(10)
             except asyncio.CancelledError:
                 logger.info("Reconciliation loop cancelled, exiting")
                 break
             except Exception as e:
-                # 数据库连接异常（可恢复）→ 等后重试；其它异常 → 记录完整堆栈
-                if isinstance(e, (OperationalError, DBAPIError)):
-                    logger.warning("Reconciliation loop: DB connection lost, will retry. %s", e)
-                else:
-                    logger.exception("Reconciliation loop error")
+                # 逐趟的异常已在 `_reconcile_pass` 里就地兜住，能落到这里的只有「循环骨架
+                # 自己」的异常（组装趟列表、算失败趟名等）。留着它纯粹是最后一道网：
+                # 没有它，一个骨架级的意外会让整个协程静默死掉、后台再无对账。
+                logger.exception("Reconciliation loop error")
                 await asyncio.sleep(10)
 
     def _build_dispatch(self) -> dict[str, ActionHandler]:
@@ -516,6 +699,7 @@ class KnowledgeBaseCapability(BaseCapability):
         kbinfo = self.service.knowledge_infos
         compiler = self.service.compiler
         lws = self.service.llm_wiki_schemas  # [jonex] LLM-Wiki Schema
+        wo = self.service.wiki_outlines  # [jonex] Wiki 阅读目录
         folders = self.service.folders
         syn = self.service.synonyms
         oq = self.service.ontology_query
@@ -524,8 +708,11 @@ class KnowledgeBaseCapability(BaseCapability):
         s = self._space
         sv = self._domain_service
         quota = QuotaService()
+        analytics = AnalyticsService()
 
-        return {
+        # 先摆业务 action，任务中心的两个入口在末尾 `dispatch.update(...)` 补进去
+        # （SDK 的装配约定，理由见函数尾那一段）。
+        dispatch: dict[str, ActionHandler] = {
             # ── 文档管理 ──
             "upload_document": lambda r, d: docs.upload_document(r.tenant_id, d, user_id=r.user_id, username=r.username, ip=r.ip),
             "list_documents": lambda r, d: docs.list_documents(r.tenant_id, d),
@@ -560,13 +747,21 @@ class KnowledgeBaseCapability(BaseCapability):
                 r.tenant_id, d, user_id=r.user_id, username=r.username, ip=r.ip
             ),
             # ── 检索 ──
-            "search": lambda r, d: search.search(r.tenant_id, _user_id(r), d, trace_id=r.request_id or str(uuid4())),
-            "search_enhanced": lambda r, d: search.enhanced_search(r.tenant_id, _user_id(r), d, trace_id=r.request_id or str(uuid4())),
+            # D3：request_id 已在 execute 开头规范化，这里不再二次生成
+            "search": lambda r, d: search.search(r.tenant_id, _user_id(r), d, trace_id=r.request_id),
+            "search_enhanced": lambda r, d: search.enhanced_search(r.tenant_id, _user_id(r), d, trace_id=r.request_id),
             "query_with_ontology": self._query_with_ontology,
             "deep_query": self._deep_query,
             # [jonex] openkb 分流
             "search_llmwiki": self._search_llmwiki,
+            "search_jonex_wiki": self._search_jonex_wiki,
             "search_mix": self._search_mix,
+            # ── 数据运营（Data Operations）──
+            "get_data_operations_overview": lambda r, d: analytics.overview(r.tenant_id, _user_id(r), d),
+            "get_data_assets_analytics": lambda r, d: analytics.data_assets(r.tenant_id, _user_id(r), d),
+            "get_knowledge_assets_analytics": lambda r, d: analytics.knowledge_assets(r.tenant_id, _user_id(r), d),
+            "get_search_analytics": lambda r, d: analytics.search_analytics(r.tenant_id, _user_id(r), d),
+            "get_abnormal_assets_analytics": lambda r, d: analytics.abnormal_assets(r.tenant_id, _user_id(r), d),
             "get_search_overview": lambda r, d: history.get_overview(r.tenant_id, _user_id(r), d),
             "list_search_history": lambda r, d: history.list_history(r.tenant_id, _user_id(r), d),
             "save_search_history": lambda r, d: history.save_history(r.tenant_id, _user_id(r), d),
@@ -599,13 +794,35 @@ class KnowledgeBaseCapability(BaseCapability):
             "get_wiki_page": lambda r, d: parse.get_wiki_page(
                 r.tenant_id, d["knowledge_base_id"], d["path"]),
             "list_wiki_contents": lambda r, d: parse.get_wiki_contents(
+                r.tenant_id, d["knowledge_base_id"], d.get("document_id", ""),
+                # view=counts：编译资产 tab 只要三类页数，别搬整棵页面树
+                d.get("view", "")),
+            "get_wiki_compilation_state": lambda r, d: parse.compilation_state(
+                r.tenant_id, d["knowledge_base_id"]),
+            "pause_wiki_compilation": lambda r, d: parse.compilation_state(
+                r.tenant_id, d["knowledge_base_id"], True),
+            "resume_wiki_compilation": lambda r, d: parse.compilation_state(
+                r.tenant_id, d["knowledge_base_id"], False),
+            # ── [jonex] Wiki 阅读侧：反向链接（链入本页）/ claim 级溯源审计 ──
+            "get_wiki_backlinks": lambda r, d: parse.get_wiki_backlinks(
+                r.tenant_id, d["knowledge_base_id"], d["path"], d.get("document_id", "")),
+            "get_wiki_claims": lambda r, d: parse.get_wiki_claims(
+                r.tenant_id, d["knowledge_base_id"], d.get("path", ""),
+                d.get("document_id", ""), int(d.get("limit") or 500)),
+            # ── [jonex] Wiki 阅读目录（Topic/Section/Entry 纯展示投影）──
+            # document_id 非空 = 文档级阅读视图：页面清单按文档过滤 + 目录做过滤投影
+            "get_wiki_outline": lambda r, d: wo.get_view(
                 r.tenant_id, d["knowledge_base_id"], d.get("document_id", "")),
+            "draft_wiki_outline": lambda r, d: wo.draft(
+                r.tenant_id, d["knowledge_base_id"], d, user_id=r.user_id),
+            "adjust_wiki_outline": lambda r, d: wo.adjust(
+                r.tenant_id, d["knowledge_base_id"], d, user_id=r.user_id),
             # ── [jonex] LLM-Wiki Schema 编译设置 ──
             "get_llm_wiki_schema": lambda r, d: lws.get_schema(
                 r.tenant_id, d["knowledge_base_id"]),
             "save_llm_wiki_schema": lambda r, d: lws.save_schema(
                 r.tenant_id, d, user_id=r.user_id),
-            "apply_llm_wiki_schema": lambda r, d: lws.apply_to_openkb(
+            "apply_llm_wiki_schema": lambda r, d: lws.apply_schema_to_engine(
                 r.tenant_id, d["knowledge_base_id"]),
             "export_llm_wiki_schema_yaml": lambda r, d: lws.export_yaml(
                 r.tenant_id, d["knowledge_base_id"]),
@@ -618,6 +835,11 @@ class KnowledgeBaseCapability(BaseCapability):
                 r.tenant_id,
                 d["document_id"],
                 d["knowledge_base_id"],
+                # [jonex] 只用于任务中心那条路的 `updated_by`（「最后是谁动的」）：
+                # Ontology 库的「重新编译」现在会转成「让任务中心重跑 compile_1」，
+                # 那一列正好要记下是哪个用户点的按钮（与「重新解析」同口径）。
+                # 漏传不报错（空值是合法状态），但这里拿得到就传。
+                operator_id=r.user_id,
             ),
             # ── 本体编译 schema 编辑 ──
             "get_editor_state": lambda r, d: compiler.get_editor_state(
@@ -710,11 +932,18 @@ class KnowledgeBaseCapability(BaseCapability):
             "list_knowledge_info": lambda r, d: kbinfo.list(
                 r.tenant_id, d.get("space_id"), d.get("status"),
                 d.get("keyword"), d.get("offset", 0), d.get("limit", 20),
-                user_id=r.user_id,
+                user_id=r.user_id, scope=d.get("scope") or "manage",
             ),
+            # [jonex] 本部署可创建的 KB 类型：前端「新建知识库」弹窗据此过滤选项。
+            # 这是**下发口**；真正的闸门在 `kbinfo.create` → `resolve_creatable_kb_type()`。
+            # 两边都要有：隐藏选项**不等于**拦住请求（直接 POST kb_type=openkb 一样能提交）。
+            # ⚠ handler 必须是 async —— execute() 无条件 await，见 _kb_type_options 的注释。
+            "get_kb_type_options": _kb_type_options,
             "create_knowledge_info": lambda r, d: kbinfo.create(r.tenant_id, d),
             "get_quota_view": lambda r, d: quota.get_quota_view(r.tenant_id, d.get("knowledge_base_id")),
-            "get_knowledge_info": lambda r, d: kbinfo.get(d["kb_id"], r.tenant_id, user_id=r.user_id),
+            "get_knowledge_info": lambda r, d: kbinfo.get(
+                d["kb_id"], r.tenant_id, user_id=r.user_id,
+                with_stats=bool(d.get("with_stats", False))),
             "update_knowledge_info": lambda r, d: kbinfo.update(d["kb_id"], r.tenant_id, d),
             "delete_knowledge_info": lambda r, d: kbinfo.delete(d["kb_id"], r.tenant_id),
             "get_kb_permissions": lambda r, d: _list_result(
@@ -762,8 +991,14 @@ class KnowledgeBaseCapability(BaseCapability):
             "update_service_configs": lambda r, d: _updated(
                 sv.update_configs(d["service_id"], r.tenant_id, d.get("configs", {}))
             ),
+            # D4：search_service（MCP / API Key 链路）不在 _SEARCH_ACTIONS 里，
+            # 但它同样要埋点（否则整条链路漏计）。这里把 trace_id 透传下去，
+            # 让一次服务检索落下的 N 条 history 共享同一个 trace
+            # （原先 DomainServiceService.search 内部硬编码 trace_id=""，
+            #  N 条 history 的 request_id 全为空 → 事件无法关联）。
             "search_service": lambda r, d: sv.search(
-                d["service_id"], r.tenant_id, d["query"], actor_user_id=r.user_id,
+                d["service_id"], r.tenant_id, d["query"],
+                actor_user_id=r.user_id, trace_id=r.request_id,
             ),
             # ── 引用富化 ──
             "resolve_references": lambda r, d: search.resolve_references(
@@ -825,6 +1060,15 @@ class KnowledgeBaseCapability(BaseCapability):
             ),
         }
 
+        # [jonex] 任务中心接入：运行方那两个入口（§4.1 ① 派活 `execute` / ② 删除
+        # `remove_task`）。**就这一行，别自己往 `dispatch` 里塞方法** —— `bind()` 兜住
+        # 两个会静默坏掉的坑（签名必须是两个位置参数 `(request, data)`；回执必须是
+        # 裸三层壳 dict）。塞 `runner.execute` 会 `TypeError` → 兜成 500 → 子任务直接
+        # 终态 `failed`；回 pydantic 对象会被判成「没送达」→ 传送层重发，同一个
+        # `execution_id` 最多被调 3 次（详见 `RunnerBase.bind` 的 docstring）。
+        dispatch.update(self.service.task_runner.bind())
+        return dispatch
+
     async def _resolve_service_id_to_kb_ids(self, data: dict, tenant_id: str) -> list[str]:
         """从 service_id 解析 knowledge_base_ids 列表。
 
@@ -877,7 +1121,8 @@ class KnowledgeBaseCapability(BaseCapability):
             method = getattr(self.service.search, search_method_name)
             return await method(
                 request.tenant_id, _user_id(request), data,
-                trace_id=request.request_id or str(uuid4()),
+                # D3：request_id 已在 execute 开头规范化，这里不再二次生成
+                trace_id=request.request_id,
             )
         return _handler
 
@@ -889,6 +1134,9 @@ class KnowledgeBaseCapability(BaseCapability):
 
     async def _search_llmwiki(self, request: CapabilityRequest, data: dict[str, Any]) -> dict:
         return await self._make_search_handler("search_llmwiki")(request, data)
+
+    async def _search_jonex_wiki(self, request: CapabilityRequest, data: dict[str, Any]) -> dict:
+        return await self._make_search_handler("search_jonex_wiki")(request, data)
 
     async def _search_mix(self, request: CapabilityRequest, data: dict[str, Any]) -> dict:
         return await self._make_search_handler("search_mix")(request, data)
@@ -1148,9 +1396,54 @@ class KnowledgeBaseCapability(BaseCapability):
             return False
         return all(data.get(field) is not None for field in _REQUIRED_FIELDS.get(action, ()))
 
+    async def _record_search_request(self, request: CapabilityRequest, action: str, data: dict) -> None:
+        """[jonex] 数据运营二期：检索入口埋点。
+
+        写在 `handler` **之前**，因此后面 try 内的三类异常
+        （TenantIsolationError / JonexException / 兜底 Exception）全部能被记成
+        「已接收但失败」—— 有请求事件、没有步骤事件。
+
+        埋点门禁是 `_SEARCH_ACTIONS | {"search_service"}`：**不能**直接用
+        `_SEARCH_ACTIONS` —— `search_service`（MCP / API Key 链路）不在那个集合里，
+        用它会整条链路漏计；也**不要**把 `search_service` 塞进 `_SEARCH_ACTIONS`
+        （那是权限过滤分组，语义不同）。
+
+        kb 列表取 `data` 里**已过权限过滤**的值（`_filter_search_kbs` 在 handler
+        之前就把过滤结果写回 `data["knowledge_base_ids"]`）；领域服务形态只有
+        `service_id`、拿不到 kb → 空数组，聚合期按 `entry_service_id` 反查
+        `service_knowledge_bases` 补齐。
+
+        口径：权限拒绝（403）的请求**不计数** —— 埋点在这之后，那是 403 而非检索行为。
+        """
+        if action not in _SEARCH_ACTIONS and action not in _SERVICE_SEARCH_ACTIONS:
+            return
+        from .services.search_event_writer import write_request_event
+
+        kb_ids = (
+            data.get("knowledge_base_ids")
+            or ([data["knowledge_base_id"]] if data.get("knowledge_base_id") else [])
+        )
+        await write_request_event(
+            tenant_id=request.tenant_id,
+            request_id=request.request_id,
+            user_id=_user_id(request),
+            query=data.get("query"),
+            kb_ids=list(kb_ids),
+            entry_service_id=data.get("service_id"),
+            domain_space_id=data.get("domain_space_id"),
+        )
+
     async def execute(self, request: CapabilityRequest) -> CapabilityResponse:
         action = request.payload.get("action")
         data = request.payload.get("data") or {}
+        # [jonex] 数据运营二期：request_id 规范化（**一处生成、全程复用**）。
+        # 原先 `_make_search_handler` 与 `_dispatch["search"]` 各自
+        # `request.request_id or str(uuid4())`，与入口是两次独立生成 ——
+        # request_id 为空串时三者不同，请求事件与步骤/命中/采用事件永远关联不上。
+        # 这里提前定值，下面各处一律直接用 request.request_id。
+        # 副作用（有意）：request_id 为空的请求，其 CapabilityResponse 信封的
+        # request_id 从 "" 变为生成的 uuid —— 空串本身就是缺陷。
+        request.request_id = request.request_id or str(uuid4())
         handler = self._dispatch.get(action)
 
         if handler is None:
@@ -1189,6 +1482,22 @@ class KnowledgeBaseCapability(BaseCapability):
 
                 if action in _SEARCH_ACTIONS:
                     data = await self._filter_search_kbs(request, data)
+                elif action in _ANALYTICS_ACTIONS:
+                    # 数据运营聚合：domain_space_id 传则空间成员可见；
+                    # 不传则仅租户管理员（租户级全量总览）。
+                    domain_space_id = data.get("domain_space_id")
+                    if domain_space_id:
+                        await require_space_role(
+                            request.tenant_id, domain_space_id, actor,
+                            SPACE_MANAGER, SPACE_MEMBER,
+                        )
+                    elif not await is_tenant_admin(request.tenant_id, actor):
+                        raise PermissionDeniedError(
+                            message=translate(
+                                "err.analytics.tenant_admin_required",
+                                fallback="租户级数据运营总览仅租户管理员可访问",
+                            )
+                        )
                 elif action not in _SPACE_EXEMPT_ACTIONS:
                     space_id, kb_type, kb_id = await self._resolve_space_context(
                         action, data, request.tenant_id
@@ -1287,25 +1596,31 @@ class KnowledgeBaseCapability(BaseCapability):
                                     )
 
 
-            # [jonex] 双向门禁（方案 §15）：本体 schema/抽取类 action 拒绝 openkb KB——
-            # openkb 不跑本体，调了会存没人读的 ontology_compiled_schemas 行。
+            # [jonex] 双向门禁（方案 §15）：本体 schema/抽取类 action 拒绝 llm-wiki KB——
+            # llm-wiki 不跑本体，调了会存没人读的 ontology_compiled_schemas 行。
             # kb_type 已由上方 _resolve_space_context 单查询带回（kb 类 action）；
             # 未命中时保持原有自查（单条兜底，不叠加 action 分组条件——
             # _ONTOLOGY_GATED_ACTIONS 与 _SEARCH_ACTIONS/_SPACE_EXEMPT_ACTIONS 本无交集）
             if action in self._ONTOLOGY_GATED_ACTIONS:
+                # [jonex] 导入必须无条件执行：kb_type 非 None（正常登录用户路径，由
+                # _resolve_space_context 带回）时下方分支不进入，若 import 留在分支内
+                # 则该名字未绑定 → 1337 行 UnboundLocalError（b3dce757 引入，2026-09-21 修复）
+                from .services.kb_type_service import LLM_WIKI_TYPES, get_kb_type
+
                 if kb_type is None:
                     fallback_kb_id = (data or {}).get("knowledge_base_id", "")
                     if fallback_kb_id:
-                        from .services.kb_type_service import get_kb_type
-
                         kb_type = await get_kb_type(request.tenant_id, fallback_kb_id)
-                if kb_type == "openkb":
+                if kb_type in LLM_WIKI_TYPES:
                     return CapabilityResponse.error(
                         request.request_id, 400,
                         "该知识库为 llm-wiki 类型，不支持本体 schema/抽取操作",
                         details={"error_code": "ONTOLOGY_ACTION_KB_TYPE_MISMATCH",
                                  "kb_type": kb_type},
                     )
+            # [jonex] 数据运营二期：检索入口埋点（在 handler 之前落库，
+            # 使「已接收但失败」的请求也有请求事件）
+            await self._record_search_request(request, action, data)
             result = await handler(request, data)
             return CapabilityResponse.ok(request.request_id, result)
         except TenantIsolationError as exc:
@@ -1335,6 +1650,20 @@ async def _deleted(coro) -> dict:
 async def _updated(coro) -> dict:
     result = await coro
     return {"updated": result}
+
+
+async def _kb_type_options(request, data) -> dict:
+    """[jonex] `GET /knowledge-base/kb-types` 的 handler：本部署可创建的 KB 类型。
+
+    ⚠ **必须是 `async def`**：`execute()` 是**无条件** `await handler(request, data)`。
+    写成一个直接返回 dict 的 lambda 会抛
+    `TypeError: object dict can't be used in 'await' expression` —— 而且它只在
+    **真被调用**时才炸（不在启动时、不在 import 时），正是本次踩过的坑。
+
+    `kb_type_options()` 本身是**纯同步**函数（无 IO、会被单测直接调用），所以就地包一层；
+    **别**为了省这一层把它改成 `async def` —— 那会把纯函数拖成协程，连累所有调用点。
+    """
+    return kb_type_options()
 
 
 async def _list_result(coro) -> dict:

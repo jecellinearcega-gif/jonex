@@ -6,8 +6,9 @@ import logging
 import os
 import re
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 from urllib.parse import quote
+from uuid import uuid4
 
 from sqlalchemy import and_, delete, or_, select
 
@@ -15,8 +16,9 @@ from jonex_core.capability.atomic.rag.client import get_rag_client
 from jonex_core.common.audit import schedule_emit
 from jonex_core.common.audit_enums import ResourceType
 from jonex_core.common.database import get_db_session
-from jonex_core.common.file_source_util import parse_file_source
+from jonex_core.common.file_source_util import classify_media, parse_file_source
 from jonex_core.common.exceptions import (
+    InternalError,
     InvalidParameterError,
     PermissionDeniedError,
     ResourceConflictError,
@@ -27,19 +29,32 @@ from jonex_core.common.neo4j_client import get_neo4j_driver
 from jonex_core.common.object_storage import (
     build_asset_key,  # [jonex] §image-refs P2-2: 图片资产对象键
     build_object_key,
+    build_preview_key,  # [jonex] office 查看原文定位：preview.pdf 对象键
     get_object_storage,
     get_object_storage_for,
 )
 from jonex_core.common.tenant import require_tenant
 
+from . import ingest_backend  # [jonex] 入库后端（提交时定 / 查询时读粘性值）
+from . import task_intent  # [jonex] 第二个粘性值：这次是哪种操作（upload / reparse）
+from .kb_type_service import LLM_WIKI_TYPES  # [jonex] llm-wiki 子集 {openkb, jonex_wiki}
+
 from ..models import DocStatus, DocumentTag, KnowledgeDocument, OntologyStatus
 from ..models.data_source import KnowledgeDataSource
+from ..models.task_center import TaskCenterDocState, TaskCenterDocument
+from ..ontology_write_state import clear_ontology_write_state
 from ..repository import (
+    TASK_STATUS_FAILED,
+    TASK_STATUS_RUNNING,
+    TASK_TYPE_PARSE,
     FolderRepository,
     KnowledgeDocumentRepository,
     OntologyGraphRepository,
     UNCLASSIFIED_SENTINEL,
+    record_processing_task,
 )
+from ..repository.knowledge_info_repository import KnowledgeInfoRepository
+from ..repository.task_center_repository import TaskCenterDocumentRepository
 from ..dtos import (
     BatchMoveDocumentsRequest,
     DocumentListRequest,
@@ -48,6 +63,7 @@ from ..dtos import (
     SetDocumentFolderRequest,
 )
 from .quota_service import QuotaService
+from .rag_storage_lookup import find_rag_doc_ids
 from jonex_core.common.quota import classify_quota_category
 
 logger = logging.getLogger(__name__)
@@ -536,6 +552,16 @@ class DocumentService:
             )
             doc_id = doc.id
             doc_dict = doc.to_dict()
+            # [jonex] 数据运营二期：文件解析任务埋点（parse/running）。
+            # 不走 `set_status` —— 那里写成「仅状态变化才落」，而这里状态是
+            # INSERT 时就带的 PARSING（没有「旧值」可比），必须显式落一次开工。
+            # 与 INSERT 同事务，由 `record_processing_task` 内部吞异常。
+            await record_processing_task(
+                session, tenant_id,
+                asset_id=doc.id, task_type=TASK_TYPE_PARSE, status=TASK_STATUS_RUNNING,
+                doc_id=doc.id, kb_id=req.knowledge_base_id,
+                content_generation=doc.content_generation,
+            )
 
         uid = _audit_user_id(user_id)
         schedule_emit({
@@ -573,19 +599,37 @@ class DocumentService:
                     details={"storage_key": storage_key},
                 )
 
+        # ── [jonex] kb_type 分流：**提前到这里查** ───
+        # 它在下面被用两次、而且第二次比原来更早：① 决定这段要不要算 compiled schema；
+        # ② 决定走任务中心还是老路径。原来是挪到 schema 之后才查的，openkb 接进来之后
+        # 不够用了（见下）。
+        kb_type = await self._get_kb_type(tenant_id, req.knowledge_base_id)
+        # ── [jonex] 库级派单值（2026-10-09）：与 kb_type 同点取 ───
+        # 它是 `resolve_backend` 两层判据里更高的一层（之下是服务端开关 `KB_INGEST_BACKEND`）。
+        # 在这里取一次、供下面两处调用点共用 —— 一个请求只读一次，免得两次读之间
+        # 库上被改、同一份文档的「选链」与「粘性值」对不上。`None` = 跟随开关。
+        kb_backend = await self._get_kb_ingest_backend(tenant_id, req.knowledge_base_id)
+
         # Ensure compiled schema exists for this KB (non-blocking)
+        #
+        # [jonex] **llm-wiki 库（openkb / jonex_wiki）整段跳过**：它们不用 compiled schema，
+        # 而 `auto_compile=True` 有副作用（凭空生成一份 ontology schema）。`reparse_document`
+        # 那段早就有同样的守卫与注记，上传这段当初没加 —— 那时 llm-wiki 根本走不到
+        # 「进任务中心」这条路，够不到这里。openkb 接进来之后必须补上：否则一次 openkb
+        # 上传会顺手给这个库凭空造一份本体 schema（有副作用、且与它的产物口径无关）。
         schema = None
         schema_version = 0
-        try:
-            from .ontology_compiler import OntologyCompiler
-            compiler = OntologyCompiler()
-            schema = await compiler.get_compiled_schema(tenant_id, req.knowledge_base_id, auto_compile=True)
-            if schema is None:
-                logger.warning("No compiled schema available for KB %s after auto-compile", req.knowledge_base_id)
-            else:
-                schema_version = int(schema.get("schema_version", 0) or 0)
-        except Exception as exc:
-            logger.warning("Failed to ensure compiled schema for KB %s: %s", req.knowledge_base_id, exc)
+        if kb_type not in LLM_WIKI_TYPES:
+            try:
+                from .ontology_compiler import OntologyCompiler
+                compiler = OntologyCompiler()
+                schema = await compiler.get_compiled_schema(tenant_id, req.knowledge_base_id, auto_compile=True)
+                if schema is None:
+                    logger.warning("No compiled schema available for KB %s after auto-compile", req.knowledge_base_id)
+                else:
+                    schema_version = int(schema.get("schema_version", 0) or 0)
+            except Exception as exc:
+                logger.warning("Failed to ensure compiled schema for KB %s: %s", req.knowledge_base_id, exc)
 
         try:
             # 按文件类型解析该 KB 配置的解析器 preset。解析不到（类型不支持 / 未配置 /
@@ -597,15 +641,57 @@ class DocumentService:
             # [jonex] 主解析提示词下发：该类目关联了 prompt 配置则带上 prompt_ids
             prompt_ids = [prompt_config_id] if prompt_config_id else []
 
-            # ── [jonex] kb_type 分流 ───
-            kb_type = await self._get_kb_type(tenant_id, req.knowledge_base_id)
-            # [jonex] OpenKB KB 级互斥：openkb 文档只解析产出 markdown，不写 LightRAG/Neo4j
-            execution_mode = "parse_only" if kb_type == "openkb" else "full"
+            # ── [jonex] 接入任务中心的三类库 ───
+            # 这一类文档的「解析 → 编译」两步改由任务中心驱动：
+            # 这一步只登记接管行 + 提交任务，**下面整段老路径一个字节都不执行**
+            # （老路径那一次 `insert(...)` —— 解析（+ lightrag 的推切片）—— 现在由
+            # 编排第一步 `parse` 发，档位由运行方按库类型定）。
+            #
+            # ⚠️ 分叉点只能在这里：它同时满足两个前提 —— ① 所有会失败的校验（重复文件 /
+            # 配额 / storage_key 租户段 / COS 对象存在性 / preset 可解析）都已经跑完，
+            # 任务中心不会收到一条注定干不成的任务；② 目标 schema 版本已经算出来，
+            # 可以在同一处落库（任务中心链的 parse 步要读它做图写 fencing）。
+            #
+            # 集合只认**运行方那一份事实来源**（`SUPPORTED_KB_TYPES`）—— 在这里再抄一遍
+            # 字面量的话，将来接入新库类型时漏改这一处，症状是「新库静默走老链路」。
+            # 局部 import 是因为两模块互相依赖（`task_runner_service` 的 handler 反过来
+            # 要用 `DocumentService._resolve_parser_preset`），模块级 import 会成环。
+            from .task_runner_service import SUPPORTED_KB_TYPES
+
+            if kb_type in SUPPORTED_KB_TYPES:
+                return await self._upload_via_task_center(
+                    tenant_id,
+                    document_id=doc_id,
+                    knowledge_base_id=req.knowledge_base_id,
+                    # 库类型：与 `backend` 一起决定提交到哪条编排（两类 wiki 库各一条 wiki 链）。
+                    kb_type=kb_type,
+                    storage_backend=storage_backend,
+                    # 两类 wiki 库恒为 0（上面那段按 llm-wiki 跳过了 schema 计算）。
+                    schema_version=schema_version,
+                    # 走哪条编排：`rag` → 任务中心链（atomic-rag 解析 + 推切片）。
+                    # 取值（库级值优先，其次服务端开关）非法会在这里响亮抛错
+                    # （落进外层 except → 文档 FAILED，配置错不静默挑一条路走）。
+                    backend=ingest_backend.resolve_backend(kb_backend),
+                    # 任务名 = 文档名（用户定的）。空白名交给任务中心回落成编排定义名
+                    # —— 判据只有那一份，这里不做「是不是空的」判断。
+                    task_name=req.file_name,
+                    operator_id=user_id,
+                )
+
+            # [jonex] llm-wiki KB 级互斥：llm-wiki 文档只解析产出 markdown，不写 LightRAG/Neo4j
+            execution_mode = "parse_only" if kb_type in LLM_WIKI_TYPES else "full"
 
             # [jonex] R1：生成确定性幂等键，insert 响应丢失后重试拿回同一 task_id
             # [jonex] P2: 与对账侧 _build_idempotency_key 同口径，读 content_generation 而不硬编码 :0
             gen = getattr(doc, "content_generation", 0) or 0
             idempotency_key = f"insert:{tenant_id}:{req.knowledge_base_id}:{doc_id}:{gen}"
+
+            # ── [jonex] **提交时**定后端（库级值优先，其次 KB_INGEST_BACKEND）──
+            # 取值非法会在这里响亮抛错（落进外层 except → 文档 FAILED，配置错不静默挑路）。
+            # 定下来的值随后**写进文档行**，查询侧一律读它 ——
+            # 开关/库值翻转后，在途文档继续从它当初提交的后端取状态。
+            backend = ingest_backend.resolve_backend(kb_backend)
+
             rag_result = await get_rag_client().insert(
                 file_path=file_path,
                 tenant_id=tenant_id,
@@ -619,6 +705,7 @@ class DocumentService:
                 schema_version=schema_version,    # [jonex] P1-E：供对账写图前 fencing
                 execution_mode=execution_mode,    # [jonex] OpenKB parse_only 分流
                 idempotency_key=idempotency_key,  # [jonex] R1
+                kb_type=kb_type,                  # [jonex] llm-wiki 产物分支（openkb→content.md / jonex_wiki→content_list.json）
             )
         except Exception as exc:
             logger.exception("Knowledge document ingestion failed: %s", doc_id)
@@ -650,6 +737,14 @@ class DocumentService:
         async with get_db_session() as session:
             repo = KnowledgeDocumentRepository(session)
             doc = await repo.get_required(doc_id, tenant_id)
+            # ── [jonex] **粘性**：把提交时定的后端写进行上 ──
+            # 必须在 `set_status(rag_task_id=...)` **之前**、且在**同一次 session** 里：
+            # 中途崩溃不许留下「任务建了、却没记住它是从哪个后端起的」的文档 ——
+            # 那种行的 rag_task_id 在任何后端都不存在，只能等超时判死。
+            # ⚠ SQLAlchemy JSON 列不追踪原地改，必须整体重赋值（与 submit_started_at 同纪律）
+            meta = dict(doc.extra_metadata or {})
+            meta["ingest_backend"] = backend
+            doc.extra_metadata = meta
             status = DocStatus.READY if not rag_result.get("task_id") else DocStatus.PARSING
             await repo.set_status(
                 doc,
@@ -657,11 +752,14 @@ class DocumentService:
                 rag_task_id=rag_result.get("task_id"),
                 rag_doc_ids=rag_result.get("doc_ids") or rag_result.get("document_ids") or [],
             )
-            # [jonex] openkb KB 不抽本体：上传时直接标 ontology_status=READY，
+            # [jonex] llm-wiki KB 不抽本体：上传时直接标 ontology_status=READY，
             # 避免对账巡检前 30s 窗口内 ontology_status=PENDING（DB 默认值），
             # 导致前端显示误导的「知识抽取入库中」。
-            if kb_type == "openkb":
-                await repo.set_ontology_status(doc, OntologyStatus.READY)
+            if kb_type in LLM_WIKI_TYPES:
+                # [jonex] 数据运营二期：`emit_task=False` —— 这条路径**没有跑过
+                # 知识抽取**（wiki 类库两步只有「文件解析 → 知识编译」），
+                # 落一行 extract/success 会让「知识抽取任务数」凭空多出来。
+                await repo.set_ontology_status(doc, OntologyStatus.READY, emit_task=False)
             # [jonex] P1-E：记录本文档应归类到的目标 schema 版本
             if schema_version:
                 doc.ontology_target_schema_version = schema_version
@@ -685,6 +783,222 @@ class DocumentService:
             })
 
         return doc_dict
+
+    # ========================================================
+    # [jonex] Ontology 库接入任务中心：上传只负责「登记 + 提交」
+    # ========================================================
+
+    async def _upload_via_task_center(
+        self,
+        tenant_id: str,
+        *,
+        document_id: str,
+        knowledge_base_id: str,
+        kb_type: str,
+        storage_backend: str,
+        backend: str,
+        schema_version: int = 0,
+        task_name: Optional[str] = None,
+        operator_id: Optional[str] = None,
+    ) -> dict:
+        """**接入任务中心的库**（见 `SUPPORTED_KB_TYPES`）的上传：把整条链交给任务中心。
+
+        调用方（`upload_document`）已经按 `kb_type` 分过叉，走到这里的一律要进任务中心；
+        `kb_type` 与 `backend` 一起决定提交到哪条编排（见 `definition_for_kb_type`）。
+
+        ── `backend`（入库后端）──
+
+        `backend`（由调用方在分叉点定下，当前恒为 `rag`）决定**提交到哪条编排**：
+        `rag` → `definition-file-processing-ontology`（atomic-rag `full` / `reparse_strict`
+        解析+推切片，再到 `compile` 步的 `ontology_only`）。链是**两步**。
+        这个值**同时**写进文档行的粘性值 —— 运行方与看门狗都靠它决定「去问谁的状态」，
+        而且必须在**这一次提交**里落库（见下面「两件事实同一次提交」）。
+
+        ── 顺序是刻意定死的（先落库、后提交）──
+
+        1. **文档行已经落好了**（调用方在同一方法更早处 INSERT，`status=PARSING`），
+           而且所有会失败的校验都在那之前跑完（重复文件、配额、`storage_key` 租户段、
+           COS 对象存在性、preset 可解析）。这里只做「登记接管行 + 提交任务」，
+           **不再做任何业务校验** —— 反过来的顺序会把常见的失败变成有害的：任务中心的
+           后台循环恒开，`init_task` 一返回任务就是 `pending`，下一轮立刻派活；那时
+           文档行还不存在的话，handler 只能显式拒，**子任务直接终态 `failed`**，
+           留下一份删不掉的死任务（`tasks.id` 是全局主键、终身占用）。
+        2. **接管行先落库、再 `submit`**。反过来的话，「任务建成了、接管行没写」这种崩法
+           会留下一条我们**认不出来**的任务（`remove_task` 按 `task_id` 反查接管行，
+           查不到就什么也清不掉）。
+        3. **`submit` 失败不抛**。抛出去会被调用方的 `except` 把文档置 `FAILED` ——
+           而这一步的失败绝大多数是**瞬时**的（任务中心还没起来、Sidecar 正在重启）。
+           接管行留在 `submitting`，看门狗每 30 秒拿**同一个 `task_id`** 补交，直到
+           30 分钟窗口用完才判死。这条补偿就是「不做 submission outbox」的替代品。
+
+        ⚠️ **第 3 条的代价写在明处**：这份文档的失败最坏要等 30 分钟才可见。这是有意的
+        —— 拿「立刻可见」换掉「一次瞬时抖动 = 一份作废的上传」（`submit` 自己还带
+        3 次重试，真正落到这里的是「重试也没够着」）。
+
+        ── 任务名（`task_name`）──
+
+        任务实例名，调用方传**文档名**（用户定的）。它**只影响展示**（任务列表里那一列），
+        不进 `inputs`、不决定跑哪条编排、不参与任何判定 —— 所以传空是合法的（任务中心
+        会回落成编排定义名）。⚠️ 它在**任务诞生那一刻**定死：「重新解析 / 重新编译」走的是
+        「重跑某几步」、任务行不重建，名字不会跟着变。
+
+        ── 为什么 `space_id` 要回查知识库行 ──
+
+        `init_task` 会校验空间归属，而**看门狗补交那一帧没有请求上下文**、`TenantContext`
+        是空的。所以 `space_id` 必须落进接管行，那时唯一的来源就是这里查出来的这个值
+        （接管行模型的 `space_id` 注释写了同一条）。
+
+        拿不到空间是**数据/配置问题**（知识库行缺失、`space_id` 为空），重试换不来一个
+        空间 —— 所以这里**抛**，由调用方的 `except` 把文档置 `FAILED`，并且**不留下接管行**
+        （没有任何东西需要看门狗补交）。
+        """
+        # 局部 import：`task_runner_service` 反过来要在 handler 里用 `DocumentService`
+        # （解析 preset 那一处），模块级互相 import 会成环。
+        from .task_runner_service import submission_accepted, submit_ontology_task
+
+        # 任务 id 由**我们**生成：它是这条路唯一的重试前提（`submit` 只在自带 `task_id`
+        # 时重试），生成完立刻落到接管行上 —— 不等回包才知道写什么。
+        task_id = str(uuid4())
+
+        async with get_db_session() as session:
+            kb = await KnowledgeInfoRepository(session).get_by_id(knowledge_base_id, tenant_id)
+            space_id = (getattr(kb, "space_id", "") or "") if kb is not None else ""
+            if not space_id:
+                raise InvalidParameterError(
+                    message=translate(
+                        "err.kb.task_center.space_missing",
+                        params={"knowledge_base_id": knowledge_base_id},
+                        fallback=f"知识库 {knowledge_base_id} 没有可用空间，无法提交任务中心任务",
+                    ),
+                    details={"knowledge_base_id": knowledge_base_id},
+                )
+
+            await TaskCenterDocumentRepository(session).create(
+                TaskCenterDocument(
+                    document_id=document_id,
+                    tenant_id=tenant_id,
+                    knowledge_base_id=knowledge_base_id,
+                    space_id=space_id,
+                    task_id=task_id,
+                    operator_id=operator_id,
+                    state=TaskCenterDocState.SUBMITTING.value,
+                )
+            )
+            # ── 两件事实与接管行**同一次提交** ──
+            # 模型文件的模块 docstring 钉了同一条纪律（接管行与文档状态的写入必须在
+            # 同一个事务里）：分两次提交的话，中间崩一下就留下「任务已经被接管、
+            # 文档行却还看不出走的是哪条链」的残局 —— 而看门狗补交与 handler 都要读
+            # 这个值，读到空就只能按默认链走（文档走错链，且没有任何报错）。
+            #
+            #   ① 目标 schema 版本（P1-E 图写 fencing）：链的 `parse` 步从这列读它、
+            #      随 `insert` 传到 atomic-rag。与老路径同口径。
+            #   ② 走哪条编排的粘性值：运行方与看门狗都靠它分流（`backend_for_document`）。
+            #      ⚠ **整块替换** `extra_metadata`（SQLAlchemy 不追踪 JSONB 的就地修改，
+            #      老路径 `meta["ingest_backend"] = backend` 是同一条写法的另一处）。
+            #   ③ 这次是哪种操作的粘性值（`task_intent`）：此刻恒为 `upload` —— 写它是
+            #      为了让读取侧的回落（缺失 → `upload`）永远不成为承重结构：一份**重新
+            #      解析过**的文档也会带着 `reparse` 躺在那儿，靠回落去区分是不可能的。
+            #   ④ 库类型：运行方分派（`_prepare_step` 拿它进快照）、看门狗（`compile`
+            #      步按它决定看哪一列终态）、既有对账都读它。老路径在 `doc.extra_metadata`
+            #      里写的就是这个键（`…, "kb_type": kb_type}`），链条这条也照写 ——
+            #      否则每个读点都要回落成「再查一次 knowledge_info」。
+            repo = KnowledgeDocumentRepository(session)
+            doc = await repo.get_by_id(document_id, tenant_id)
+            if doc is not None:
+                if schema_version:
+                    doc.ontology_target_schema_version = schema_version
+                doc.extra_metadata = task_intent.with_intent(
+                    {
+                        **(doc.extra_metadata or {}),
+                        "ingest_backend": backend,
+                        "kb_type": kb_type,
+                    },
+                    task_intent.INTENT_UPLOAD,
+                )
+                # [jonex] **Wiki 类库不抽本体，任务中心这条路也要把它标成 READY。**
+                #
+                # 与老路径（本文件 `if kb_type in LLM_WIKI_TYPES: await repo.set_ontology_status(
+                # doc, OntologyStatus.READY)`）**同一个理由**，这里从前漏了 —— 代价是实测
+                # 7/7 份 openkb 文档全部停在 `ontology_status=failed`：
+                #
+                # 不标的话这一列会一直是 DB 默认的 `PENDING`，而看门狗在 `parse` 步收口时
+                # **只写 `status=READY`、一个字节都不碰这一列** → 于是产生
+                # 「**已 READY、但 ontology 仍 PENDING**」的窗口。本体对账的领取条件正好是
+                # 这个组合（`list_by_ontology_status_for_reconciliation`），而 `_retry_ontology_one`
+                # 的 docstring 明写它**没有** kb_type 守卫、理由是「完成时 `set_status(READY)`
+                # 与 `set_ontology_status(READY)` 在同一次 commit 里，没有这个窗口」——
+                # **那条假设对任务中心这条路不成立**（两列分别由看门狗与本体链写，
+                # 从来不在同一次 commit 里）。
+                #
+                # 后果链：对账给一个**不抽本体的 Wiki 库**去抽本体 → `get_compiled_schema(
+                # auto_compile=True)` 凭空造一份 schema（正是本文件上面那段拼命避免的副作用）
+                # → 投一个本体任务 → 最终落到 `FAILED`，前端显示误导性的「知识抽取失败」。
+                if kb_type in LLM_WIKI_TYPES:
+                    await repo.set_ontology_status(doc, OntologyStatus.READY)
+
+        # ── 提交（自带 task_id；失败只留痕、不抛，见 docstring 第 3 条）──
+        try:
+            result = await submit_ontology_task(
+                tenant_id=tenant_id,
+                space_id=space_id,
+                task_id=task_id,
+                document_id=document_id,
+                knowledge_base_id=knowledge_base_id,
+                # 走哪条编排：`kb_type` + `backend` 两件一起定（openkb 只有一条链；
+                # lightrag 由开关的粘性值分两条）。`backend` 用**这次提交时定下的粘性值**，
+                # **不要**重读开关（开关翻转过的话，这里重读会让「文档行粘性值」与
+                # 「提交到的定义」不一致 —— 而看门狗补交、handler 分流读的都是那个粘性值）。
+                kb_type=kb_type,
+                backend=backend,
+                task_name=task_name,
+                operator_id=operator_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # 连裁决都没拿到（装配错、租户收不出、报文非法）。留痕 + 计数，看门狗补交。
+            logger.warning(
+                "任务中心提交异常（看门狗将补交）: doc=%s task=%s err=%s",
+                document_id, task_id, exc,
+            )
+            await self._record_submit_failure(document_id, f"提交任务异常：{exc}")
+            return await self._current_doc_dict(document_id, tenant_id)
+
+        if submission_accepted(result):
+            async with get_db_session() as session:
+                await TaskCenterDocumentRepository(session).mark_managed(
+                    document_id, tenant_id=tenant_id, task_id=task_id,
+                )
+            logger.info(
+                "任务中心接管已提交: doc=%s kb=%s task=%s disposition=%s",
+                document_id, knowledge_base_id, task_id, result.disposition.value,
+            )
+        else:
+            logger.warning(
+                "任务中心未受理（看门狗将补交）: doc=%s task=%s disposition=%s message=%s",
+                document_id, task_id, result.disposition.value, result.message,
+            )
+            await self._record_submit_failure(
+                document_id, result.message or f"任务中心未受理（{result.disposition.value}）"
+            )
+
+        return await self._current_doc_dict(document_id, tenant_id)
+
+    async def _record_submit_failure(self, document_id: str, reason: str) -> None:
+        """记一次提交失败（`submit_attempts += 1` + 留痕）。
+
+        **只写接管行、不碰文档状态** —— 文档仍是 `PARSING`，这是「还没失败」的诚实表达：
+        看门狗还在补交，此刻判 `FAILED` 会把一次可自愈的提交抖动写成终局。
+        """
+        async with get_db_session() as session:
+            await TaskCenterDocumentRepository(session).bump_submit_attempt(
+                document_id, reason,
+            )
+
+    @staticmethod
+    async def _current_doc_dict(document_id: str, tenant_id: str) -> dict:
+        """回读文档行的对外快照 —— 上传接口的返回体形状与老路径保持一致。"""
+        async with get_db_session() as session:
+            doc = await KnowledgeDocumentRepository(session).get_by_id(document_id, tenant_id)
+            return doc.to_dict() if doc is not None else {"id": document_id, "tenant_id": tenant_id}
 
     async def generate_upload_url(
         self, tenant_id: str, kb_id: str, file_name: str, content_type: str | None = None,
@@ -754,6 +1068,31 @@ class DocumentService:
             )
         # 按文档自身的 storage_backend 选后端（混合数据时不能用全局 env 单例）
         backend = (doc.storage_backend or "local").strip().lower()
+        # [jonex] office 查看原文定位：office 文档返回解析侧持久化的 preview.pdf，
+        # 供前端 iframe + #page=N 定位（download=True 仍返回原始 office 文件）。
+        # preview 与图片资产同源——上传（OfficePreviewUploadStage）走全局后端
+        # get_object_storage()，查看侧必须同源，否则「后端从 local 切 cos 后
+        # reparse」会出现 preview 实际在全局后端、查看却按 doc 后端找的错配
+        # （与 get_asset_raw_location 的口径一致）。
+        if classify_media(doc.mime_type, doc.file_name) == "office" and not download:
+            preview_key = build_preview_key(tenant_id, doc.knowledge_base_id, doc.id)
+            preview_backend = os.getenv("OBJECT_STORAGE_BACKEND", "local").strip().lower()
+            preview_storage = get_object_storage()
+            if await self._office_preview_available(preview_storage, preview_key):
+                presigned = await preview_storage.presigned_url(
+                    preview_key, tenant_id, expires=300,
+                ) or ""
+                return {
+                    "storage_backend": preview_backend,
+                    "storage_key": preview_key,
+                    "mime_type": "application/pdf",
+                    "file_name": doc.file_name,
+                    "presigned_url": presigned,
+                }
+            # 存量 office 文档无 preview（入库早于本方案）→ 回退原始文件下载
+            logger.warning(
+                "office 文档 preview.pdf 缺失，回退原始文件: doc=%s", doc.id,
+            )
         presigned = ""
         if backend in ("cos", "s3"):
             disposition = None
@@ -771,6 +1110,27 @@ class DocumentService:
             "file_name": doc.file_name,
             "presigned_url": presigned or "",
         }
+
+    async def _office_preview_available(self, storage, key: str) -> bool:
+        """[jonex] office 查看原文定位：检测 preview.pdf 是否已上传。
+
+        COS/S3 的 presigned_url 是纯本地签名，不检查对象存在性，故须主动检测：
+        - local：fs_path 返回绝对路径，用 os.path.exists；
+        - cos：head_object；
+        - s3：无 head 能力，退化为尝试 get_bytes（对象不存在抛异常 → False）。
+        best-effort：检测异常一律按不存在处理，回退原始文件下载。
+        """
+        try:
+            fs_path = storage.fs_path(key) if hasattr(storage, "fs_path") else None
+            if fs_path:  # local 后端返回绝对路径
+                return os.path.exists(fs_path)
+            if hasattr(storage, "head_object"):  # cos
+                return bool(await storage.head_object(key))
+            await storage.get_bytes(key)  # s3 兜底
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("office preview 存在性检测失败（视为缺失）: %s", exc)
+            return False
 
     async def get_asset_raw_location(self, tenant_id: str, document_id: str,
                                      image_idx: int, ext: str = "",
@@ -922,10 +1282,10 @@ class DocumentService:
             repo = KnowledgeDocumentRepository(session)
             doc = await repo.get_required(document_id, tenant_id)
 
-        # ── [jonex] OpenKB 管线：不入 LightRAG，chunks 从共享卷 parsed markdown 读取 ──
+        # ── [jonex] llm-wiki 管线：不入 LightRAG，chunks 从共享卷 parsed 产物读取 ──
         kb_type = await self._get_kb_type(tenant_id, doc.knowledge_base_id)
-        if kb_type == "openkb":
-            return self._get_openkb_chunks(document_id)
+        if kb_type in LLM_WIKI_TYPES:
+            return self._get_llm_wiki_chunks(document_id, kb_type)
 
         result = await get_rag_client().get_doc_chunks(
             document_id=document_id,
@@ -959,36 +1319,51 @@ class DocumentService:
             "chunks": enriched,
         }
 
-    def _get_openkb_chunks(self, document_id: str) -> dict:
-        """[jonex] OpenKB 文档的 chunk 视图：读共享卷 parsed markdown 按块返回。
+    def _get_llm_wiki_chunks(self, document_id: str, kb_type: str) -> dict:
+        """[jonex] llm-wiki（openkb/jonex_wiki）文档的 chunk 视图：读共享卷 parsed 产物按块返回。
 
-        OpenKB 管线只解析产出 markdown（parse_only），不入 LightRAG，因此 chunks
-        不在 LightRAG。解析产物由 atomic-rag 写到共享卷 inputs/parsed/{doc}/content.md
-        （knowledge-base 亦挂载该卷于 KB_INPUT_DIR），这里直接读取并按空行分块返回，
-        与 LightRAG chunks 返回结构对齐（content + chunk_index + 位置占位）。
+        llm-wiki 管线只解析（parse_only），不入 LightRAG，因此 chunks 不在 LightRAG。
+        解析产物由 atomic-rag 写到共享卷 inputs/parsed/{doc}/（knowledge-base 亦挂载
+        该卷于 KB_INPUT_DIR），这里直接读取并按空行分块返回，与 LightRAG chunks 返回
+        结构对齐（content + chunk_index + 位置占位）。
+
+        产物形状随 kb_type 分派（见 ``llm_wiki_artifacts.load_llm_wiki_blocks``）：
+        - openkb      → ``content.md``（重组 markdown）；
+        - jonex_wiki  → ``content_list.json``（74b76989 起，MinerU 结构化数组，
+          对齐独立部署 parse task 的 MINERU 产物），兼容旧的 ``raw.md``/``content.md``。
+        content_list.json 按旧 content.md 的同一套规则投影成块，表格 ``table_body``
+        （HTML）原样保留，前端 MarkdownContent 渲染为表格形状。
+
+        kb_type 由调用方传入（openkb / jonex_wiki），回显到响应与 chunk_id 前缀，
+        避免 jonex_wiki 文档被误标为 openkb。
 
         [jonex] 回归修复（2026-08-14）：8697e5c1（rag-table 治理）误将此方法替换为
         scan_stale_chunks，而 get_document_chunks/get_chunk 的调用未同步——
-        openkb 文档 chunks 查询抛 AttributeError。恢复原实现。
+        llm-wiki 文档 chunks 查询抛 AttributeError。恢复原实现。
+
+        [jonex] 回归修复（2026-09-18）：74b76989 把 jonex_wiki 产物换成
+        content_list.json 后，本方法仍只认 content.md → 解析结果页恒为 total=0。
+        改为按 kb_type 分派 + 多产物兜底；存量产物无需 reparse 即可恢复显示。
         """
-        import os
-        from pathlib import Path
+        from .llm_wiki_artifacts import load_llm_wiki_blocks
 
-        inputs_root = os.getenv("KB_INPUT_DIR", "/app/inputs")
-        md_path = Path(inputs_root) / "parsed" / document_id / "content.md"
-        if not md_path.is_file():
-            return {"doc_id": document_id, "total": 0, "chunks": [], "kb_type": "openkb"}
+        blocks, _artifact = load_llm_wiki_blocks(kb_type, document_id)
+        if not blocks:
+            return {"doc_id": document_id, "total": 0, "chunks": [], "kb_type": kb_type}
 
-        text = md_path.read_text(encoding="utf-8")
-        blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
         chunks = [
             {
-                "chunk_id": f"{document_id}#openkb-{i}",
+                "chunk_id": f"{document_id}#{kb_type}-{i}",
                 "content": b,
                 # 与 LightRAG chunk 结构对齐：前端解析结果页依赖 content_summary/file_path
-                # （getChunkTitle 会读取二者）。OpenKB 无 file_source 锚点，file_path 置空串
+                # （getChunkTitle 会读取二者），标签行依赖 content_length。llm-wiki 无
+                # file_source 锚点/非 LightRAG chunk，file_path 置空串、tokens 等置 None
                 # 而非缺省，避免前端 `.match()` 到 undefined。
                 "content_summary": b,
+                "content_length": len(b),
+                "tokens": None,
+                "chunk_order_index": i,
+                "full_doc_id": None,
                 "file_path": f"doc={document_id}",
                 "chunk_index": i,
                 "time_start": None,
@@ -1003,7 +1378,7 @@ class DocumentService:
             "doc_id": document_id,
             "total": len(chunks),
             "chunks": chunks,
-            "kb_type": "openkb",
+            "kb_type": kb_type,
         }
 
     async def scan_stale_chunks(self, tenant_id: str, document_id: str) -> dict:
@@ -1097,47 +1472,6 @@ class DocumentService:
             "failed_chunk_ids": failed,
             "total": scan.get("total", 0),
         }
-        """[jonex] OpenKB 文档的 chunk 视图：读共享卷 parsed markdown 按块返回。
-
-        OpenKB 管线只解析产出 markdown（parse_only），不入 LightRAG，因此 chunks
-        不在 LightRAG。解析产物由 atomic-rag 写到共享卷 inputs/parsed/{doc}/content.md
-        （knowledge-base 亦挂载该卷于 KB_INPUT_DIR），这里直接读取并按空行分块返回，
-        与 LightRAG chunks 返回结构对齐（content + chunk_index + 位置占位）。
-        """
-        import os
-        from pathlib import Path
-
-        inputs_root = os.getenv("KB_INPUT_DIR", "/app/inputs")
-        md_path = Path(inputs_root) / "parsed" / document_id / "content.md"
-        if not md_path.is_file():
-            return {"doc_id": document_id, "total": 0, "chunks": [], "kb_type": "openkb"}
-
-        text = md_path.read_text(encoding="utf-8")
-        blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
-        chunks = [
-            {
-                "chunk_id": f"{document_id}#openkb-{i}",
-                "content": b,
-                # 与 LightRAG chunk 结构对齐：前端解析结果页 getChunkTitle 会读取
-                # content_summary 与 file_path，缺字段会 `.match()` 到 undefined 而崩页。
-                # OpenKB 无 file_source 锚点，file_path 仅给出 doc= 归属锚点。
-                "content_summary": b,
-                "file_path": f"doc={document_id}",
-                "chunk_index": i,
-                "time_start": None,
-                "time_end": None,
-                "page_no": None,
-                "char_start": None,
-                "char_end": None,
-            }
-            for i, b in enumerate(blocks)
-        ]
-        return {
-            "doc_id": document_id,
-            "total": len(chunks),
-            "chunks": chunks,
-            "kb_type": "openkb",
-        }
 
     async def get_chunk(self, tenant_id: str, document_id: str, chunk_id: str) -> dict:
         """按 chunk_id 精确直查单片内容（直连 LightRAG text_chunks，不拉整篇列表）。
@@ -1150,9 +1484,10 @@ class DocumentService:
             repo = KnowledgeDocumentRepository(session)
             doc = await repo.get_required(document_id, tenant_id)  # 租户+归属校验
 
-        # ── [jonex] OpenKB 管线：从共享卷 parsed markdown 取指定块 ──
-        if "#openkb-" in chunk_id:
-            listing = self._get_openkb_chunks(document_id)
+        # ── [jonex] llm-wiki 管线：从共享卷 parsed 产物取指定块（与列表视图同源）──
+        kb_type = await self._get_kb_type(tenant_id, doc.knowledge_base_id)
+        if kb_type in LLM_WIKI_TYPES:
+            listing = self._get_llm_wiki_chunks(document_id, kb_type)
             for c in listing.get("chunks", []):
                 if c["chunk_id"] == chunk_id:
                     return {"doc_id": document_id, "chunk_id": chunk_id,
@@ -1211,6 +1546,59 @@ class DocumentService:
         传 force=True 可绕过 hash 检查、强制重跑（适应解析配置变更、本体规则调整等场景）。
         """
         tenant_id = require_tenant(tenant_id)
+
+        # ── [jonex] 2026-09-30：**先确认源对象还在，再动任何库里的东西** ──
+        #
+        # 这道检查从前排在整段写入**之后**（武装接管行 → 提交 → 再查对象存储），于是
+        # 「源对象已经不在」（生命周期清理 / 桶或签名配错）这条路上会留下一张**没人回收的
+        # `managed` 卡**：程序回写 FAILED 就报错走了，可接管行还停在在途态 →
+        # `exists_active` 恒真 → **重新解析 / 重新抽取 / 整库重置三条路全被 1003 拒**，
+        # 最长到 `TC_NO_DISPATCH_SEC`（默认 30 分钟）才自愈，而**任务中心那边压根没有
+        # 任务在跑**（用户看到的是「报错之后这份文档什么都干不了，半小时后自己好了」）。
+        #
+        # 挪到最前面之后：检查不过就当场报错、**库里的接管行一个字都没动**，不存在要回收
+        # 的东西。两处顺带的变化，都是修：
+        #   · 从前那次「先回写 FAILED」现在**不需要了** —— 文档还没被置成 PARSING、不会
+        #     卡住；而且用户点的是「重新解析」、不是「这份文档坏了」，把一份**本来可用的**
+        #     文档改成 FAILED 反而是破坏（源对象没了这件事由错误消息讲清楚）；
+        #   · 从前那句 SUCCESS 审计排在检查之前，等于给一次**没做成的**操作记了成功 ——
+        #     现在检查不过就不会走到审计。
+        #
+        # 代价（有意接受）：这一趟多一次单行读，只为在开主事务之前拿到
+        # `storage_key` / `storage_backend`。
+        async with get_db_session() as session:
+            probe = await KnowledgeDocumentRepository(session).get_required(
+                document_id, tenant_id
+            )
+            probe_key = probe.storage_key
+            probe_backend = (probe.storage_backend or "local").strip().lower()
+        if probe_backend in ("cos", "s3"):
+            try:
+                exists = await get_object_storage().head_object(probe_key)
+            except Exception as exc:  # noqa: BLE001
+                # ⚠️ **「查不了」≠「不在」，一律放行**（与同一个方法里 `_compute_source_hash`
+                # 的 fail-open 同一条口径）：拦在这里，等于把一次**可能只是查不了**的重解析
+                # 直接做不到。两种成因：
+                #   · **本进程的存储后端没有 `head_object`** —— `LocalObjectStorage` 就没有；
+                #     「行上写着 `cos`、而 `OBJECT_STORAGE_BACKEND=local`」时必撞（老行 +
+                #     换过后端），这在从前会让整个 reparse 冒成 500「执行失败」；
+                #   · 存储侧抖了一下（超时 / 凭据过期）。
+                # 真要命的是**源对象确实不在**那一种 —— 它回来的是 `False`，照样拦住。
+                logger.warning(
+                    "reparse 前置的源对象探查没做成（按「查不了」放行）doc=%s key=%s: %s",
+                    document_id, probe_key, exc,
+                )
+                exists = True
+            if not exists:
+                raise ResourceNotFoundError(
+                    message=translate(
+                        "err.cos.object_deleted",
+                        params={"storage_key": probe_key},
+                        fallback=f"COS 对象不存在或已被删除: {probe_key}",
+                    ),
+                    details={"storage_key": probe_key},
+                )
+
         async with get_db_session() as session:
             repo = KnowledgeDocumentRepository(session)
             doc = await repo.get_required(document_id, tenant_id)
@@ -1220,6 +1608,20 @@ class DocumentService:
                 raise ResourceConflictError(message=translate("err.doc.parsing_or_cleaning", fallback="文档正在解析/入库中，请等待完成后再重新解析")  )  # 原消息)
             if doc.status == DocStatus.DELETING.value:
                 raise ResourceConflictError(message=translate("err.doc.deleting_cannot_reparse", fallback="文档正在删除中，无法重新解析")  )  # 原消息)
+            # ── [jonex] 任务中心接管中：**拦住用户、让他等**（§3.7）──
+            # 判据取**接管行**而不是文档状态：Ontology 库的文档在 `parsed` / `ready` 这些
+            # 「看着能操作」的稳定态上也可能正被链子推着（等下一步派活 / 等本体编译），
+            # 光看 `doc.status` 拦不住。放行的唯一出口是看门狗把接管行置 `released`
+            # （收口成功 / 判死）—— 所以「看到这句话」= 当前步骤还没结束。
+            # ⚠️ 与下面那条 in-flight 检查（查 `rag_task_id`）不是一回事：那条看的是
+            # **下游任务号**，本条在 `submitting` 阶段（还没派活、没有任务号）就得挡住。
+            if await TaskCenterDocumentRepository(session).exists_active(document_id, tenant_id):
+                raise ResourceConflictError(
+                    message=translate(
+                        "err.doc.task_center_managed",
+                        fallback="该文档正在由任务中心处理，请等当前步骤结束后再重新解析",
+                    )
+                )
             # [jonex] P1：检查是否已有 in-flight 的 RAG 解析任务，防止短时间内重复提交
             # 导致 old_ids 刚写入就被新 reparse 要求删除（cleanup ↔ index 竞争）。
             # 即使 KB 侧状态已是 READY/FAILED，只要 RAG 任务仍在跑就不允许新建第二个。
@@ -1264,7 +1666,7 @@ class DocumentService:
                 )
             )
             kb_type = _pt_row.scalar() or "lightrag"
-            is_openkb = kb_type == "openkb"
+            is_llm_wiki = kb_type in LLM_WIKI_TYPES
 
             # [jonex] R1-c：比对源文件内容 md5 + 解析配置指纹，两者都未变化才跳过。
             # 源文件或配置（preset/prompt/schema）任一变更 → 自动放行重解析，无需手动 force。
@@ -1303,7 +1705,7 @@ class DocumentService:
             # [jonex] openkb：源文件+配置未变也不能无条件 skip —— 若 parsed artifact 丢失
             # （卷被清理 / 产物开关曾关闭 / 手工删过），skip 会与「重新编译」的
             # "请先重新解析" 提示形成死循环，用户永远出不去。产物缺失时必须继续解析。
-            if can_skip and is_openkb:
+            if can_skip and is_llm_wiki:
                 from .openkb_service import openkb_artifact_exists
                 if not openkb_artifact_exists(document_id):
                     can_skip = False
@@ -1331,6 +1733,31 @@ class DocumentService:
                 })
                 return doc.to_dict()
 
+            # [jonex] **回滚快照**：下面这一整段改写（代次 +1 / `PARSING` / 清
+            # `rag_task_id` / 写 `tc_intent=reparse` …）与**接管行的武装是同一次提交**
+            # （刻意的，见下面 `tc_plan` 那段），所以它在「任务中心受理」之前就已经落库了。
+            # 任务中心**拒收**时（见下面 `retry_accepted` 那一段）光交还接管行是不够的，
+            # 得把这里记下的旧值原样写回去，否则一份本来 READY 的好文档会停在没有任务号的
+            # `parsing` 上、随后被既有对账按「RAG 任务确认丢失」连判 3 拍 → FAILED。
+            # ⚠️ **只在本方法这一条路上用**（那次提交之后、受理之前没有别的写者能进来：
+            # 接管行已在途，看门狗那几个入口都被「正在由任务中心处理」挡住）。
+            reparse_rollback = {
+                "content_generation": doc.content_generation,
+                "status": doc.status,
+                "ontology_status": doc.ontology_status,
+                "error_message": doc.error_message,
+                "ontology_retry_count": doc.ontology_retry_count,
+                "ontology_error": doc.ontology_error,
+                "rag_task_id": doc.rag_task_id,
+                "content_hash": doc.content_hash,
+                "llm_wiki_compile_status": doc.llm_wiki_compile_status,
+                "llm_wiki_compile_error": doc.llm_wiki_compile_error,
+                "llm_wiki_compile_warnings": doc.llm_wiki_compile_warnings,
+                "llm_wiki_task_id": doc.llm_wiki_task_id,
+                # 新 dict（不是同一引用）：JSONB 的原地改动 SQLAlchemy 认不出来
+                "extra_metadata": dict(doc.extra_metadata or {}),
+            }
+
             # [jonex] P0-I：原子递增 reparse 代次；重置状态（reparse 期间 ontology 置 PENDING，
             # 代次变化会 fencing 掉在途 ontology-only 结果，实现 reparse↔ontology-only 互斥）
             new_generation = (doc.content_generation or 0) + 1
@@ -1340,13 +1767,16 @@ class DocumentService:
             # 顺带清掉历史脏状态（分流上线前遗留的 PENDING/FAILED），
             # 避免被本体巡检当成待办反复扫。与对账 _handle_completed 的口径一致。
             doc.ontology_status = (
-                OntologyStatus.READY.value if is_openkb else OntologyStatus.PENDING.value
+                OntologyStatus.READY.value if is_llm_wiki else OntologyStatus.PENDING.value
             )
             doc.error_message = None
             # [jonex] reparse 是全量重来，本体重试计数与错误一并清零，
             # 否则历史 retry_count 会让对账在重解析后立刻撞上限失败。
             doc.ontology_retry_count = 0
             doc.ontology_error = None
+            # [jonex] reparse = 换任务，写图状态一并清零（否则被 Task 3 打了
+            # ontology_auto_retry_disabled 的文档在此路径下永久无法恢复）
+            doc.extra_metadata = clear_ontology_write_state(doc.extra_metadata)
             # [jonex] R1-c：持久化源文件 hash + 配置指纹到 extra_metadata，供后续 reparse 比对
             # [jonex] R2-a0: 清除旧 rag_task_id（防对账用旧 id 查到 not_found→判死）
             # + 写入提交锚点（宽限期从这一刻开始）
@@ -1367,7 +1797,7 @@ class DocumentService:
                 extra["config_fingerprint"] = cfg_hash
             # [jonex] openkb：reparse 开始时把编译结果标为 stale（旧 Wiki 已过期），
             # 避免页面显示旧编译结果。解析完成后由对账 _handle_completed → _dispatch_openkb_compile 自动重新编译。
-            if is_openkb:
+            if is_llm_wiki:
                 # 列化为主（migration 008）；JSONB 键仍写一份兼容旧读点（迁移期）
                 doc.llm_wiki_compile_status = "stale"
                 doc.llm_wiki_compile_error = None
@@ -1378,12 +1808,59 @@ class DocumentService:
                 extra["openkb_compile_status"] = "stale"
                 extra.pop("openkb_compile_error", None)
                 extra.pop("openkb_compile_warnings", None)
+            # ── [jonex] reparse 写回后端粘性值（下面走的是 `get_rag_client().retry`）──
+            # 这次重新解析由 atomic-rag 承接，行上的**粘性值按同一口径写回 `rag`**，
+            # 保证查询侧「这份任务是谁建的、状态就问谁」的判据始终成立。
+            extra["ingest_backend"] = "rag"
             # [jonex] R2-a0: 提交锚点（同 flush 写入，无额外 DB 写）
             # [jonex] P1-1: 统一用 datetime.now()（naive 本地时间），与 patrol 口径一致
             extra["submit_started_at"] = datetime.now().isoformat()
             # [jonex] P0-3: patrol 计时基准（与 upload_document 同口径）
             extra["parsing_started_at"] = datetime.now().isoformat()
+
+            # ── [jonex] 三类库：这次重新解析**改由任务中心重跑**（§4.2 ④）──
+            # 用户定的两条：① 只针对接了任务中心的库（`lightrag` 与 `openkb` 自 2026-09-29
+            # 起，`jonex_wiki` 自本轮起）；② **不是新起一个任务** —— 所以这里调的是任务中心
+            # 现成的批量口 `retry_subtasks`，把这条任务里的「解析」与「编译」两步原地重跑
+            # 一次。发起在下面的 `tc_plan` 分支里，那一步必须等本次提交落库之后才做
+            # （接管行得先是被重跑的状态）。
+            #
+            # ⚠️ 判据**只认「有没有接管行」**，不认按钮名之外的任何东西：
+            #   · 没有接管行 → 明确报错（老文档 / 任务被删过），**绝不偷偷新建一条任务**；
+            #   · 接管行在途 → 上面那道 `exists_active` 已经拦过（用户被要求「等」）。
+            #   · 两类 wiki 库**没有**「严格重解析」那一档（它们不推切片），它们的 `parse`
+            #     步照发 `parse_only` —— 分支条件因此不比 lightrag 更严，只是都走这条。
+            # 同样只认运行方那一份事实来源（`SUPPORTED_KB_TYPES`），不另抄字面量。
+            # 局部 import：`task_runner_service` 反过来要在 handler 里用 `DocumentService`
+            # （解析 preset 那一处），模块级互相 import 会成环。
+            from .task_runner_service import SUPPORTED_KB_TYPES, rearm_for_rerun
+
+            tc_plan: Optional[Dict[str, str]] = None
+            if kb_type in SUPPORTED_KB_TYPES:
+
+                tc_plan = await rearm_for_rerun(
+                    session,
+                    tenant_id=tenant_id,
+                    document_id=document_id,
+                    step_code="parse",
+                )
+                # 与接管行的武装**同一次提交**：分两次的话，中间崩一下就留下
+                # 「接管行说重跑解析、文档行还说这是上传的解析」—— 而运行方按后者
+                # 分派，会把一次「重新解析」干成「白解析一遍」（切片没重推、旧切片没删，
+                # 用户看到的是「点了没反应」）。
+                extra = task_intent.with_intent(extra, task_intent.INTENT_REPARSE)
             doc.extra_metadata = extra
+            # [jonex] 数据运营二期：reparse 的 parse/running 埋点。
+            # ⚠️ 必须带 **new_generation** —— `build_processing_task_id` 的键含代次，
+            # 用 0（文档初值）会与终态行（用的是行上的新代次）算出**不同的键**，
+            # 那行 running 就永远收不掉（僵尸，`pipeline_task_stats.running` 恒高）。
+            # 不走 `set_status`：本行是直写属性、不经它，且这里拿不到「改前」的旧值。
+            await record_processing_task(
+                session, tenant_id,
+                asset_id=document_id, task_type=TASK_TYPE_PARSE,
+                status=TASK_STATUS_RUNNING, doc_id=document_id,
+                kb_id=doc.knowledge_base_id, content_generation=new_generation,
+            )
             await session.flush()
             doc_dict = doc.to_dict()
 
@@ -1401,30 +1878,124 @@ class DocumentService:
             "resource_id": str(document_id),
         })
 
-        # 对象存储后端（cos/s3）：确认对象仍存在
-        if storage_backend in ("cos", "s3"):
-            exists = await get_object_storage().head_object(storage_key)
-            if not exists:
-                # [jonex] 文档此前已置 PARSING，这里直接 raise 会永久卡住（PARSING 又被
-                # 入口互斥拒绝，用户无法重试）。先回写 FAILED 再抛。
-                err = translate("err.cos.object_deleted", params={"storage_key": storage_key},
-                                fallback=f"COS 对象不存在或已被删除: {storage_key}")
-                try:
-                    async with get_db_session() as session:
-                        repo = KnowledgeDocumentRepository(session)
-                        _doc = await repo.get_required(document_id, tenant_id)
-                        await repo.set_status(_doc, DocStatus.FAILED, error_message=err)
-                except Exception:
-                    logger.warning("[jonex] COS 对象缺失但回写 FAILED 失败 doc=%s", document_id, exc_info=True)
-                raise ResourceNotFoundError(message=err, details={"storage_key": storage_key})
+        # 对象存储后端（cos/s3）的「源对象还在不在」这道检查**已挪到本方法最前面**
+        # （2026-09-30）：从前它排在这里 = 排在武装接管行与提交**之后**，检查不过就会
+        # 留下一张没人回收的 `managed` 卡，把这份文档的三个入口一起锁到 30 分钟兜底。
+        # **别再在这里加回来** —— 那正是要治的那个形状。
+
+        # ── [jonex] Ontology 库：把「解析 + 编译」两步**一次**交给任务中心重跑 ──
+        # 走到这里说明接管行已经武装好（`rearm_for_rerun`，与上面那些写入同一次提交）。
+        # 这一步**不再自己调引擎**：任务中心会把 `parse_1` 派回来，由 handler 按文档行上的
+        # `tc_intent=reparse` 发「严格重解析」，它成功之后再派 `compile_1` 抽本体
+        # （先后由任务中心写进依赖，见 `retry_subtasks_for_steps`）。
+        if tc_plan is not None:
+            from .task_runner_service import (
+                STEP_COMPILE,
+                STEP_PARSE,
+                retry_accepted,
+                retry_subtasks_for_steps,
+            )
+
+            retry_result = await retry_subtasks_for_steps(
+                tenant_id=tenant_id,
+                space_id=tc_plan["space_id"],
+                task_id=tc_plan["task_id"],
+                # ⚠️ **顺序就是执行顺序**（第 i 步等第 i-1 步成功）：先解析（重建切片）、
+                # 成功后再编译（按新切片抽本体）。写反了任务中心会**明确拒绝**（连成环），
+                # 不会静默跑错 —— 这正是「顺序有意义」的证明。
+                step_codes=(STEP_PARSE, STEP_COMPILE),
+                operator_id=user_id,
+            )
+            if not retry_accepted(retry_result):
+                err_msg = translate(
+                    "err.kb.task_center.reparse_not_accepted",
+                    params={"reason": retry_result.message or ""},
+                    fallback=f"任务中心未受理这次重新解析：{retry_result.message}",
+                )
+                # 没被受理 → **交还接管行 + 把文档行滚回去 + 显式报错**。
+                # 交还是必须的：留着那条在途行，用户会被「正在由任务中心处理」那道闸
+                # 一直挡住（文档还是 `parsing`，`patrol` 也救不了他），而看门狗要等满
+                # `TC_NO_DISPATCH_SEC`（默认 30 分钟）才放行。
+                # 报错也是必须的：用户点的是「重新解析」，不能显示成成功。
+                #
+                # ⚠️ **回滚文档行同样必须（2026-10-09 补）**：这次改写与接管行的武装是
+                # **同一次提交**、早就落库了。不回滚的话，一份本来 READY 的好文档会停在
+                # 「`parsing` 且没有 `rag_task_id`」上 —— 接管行已交还、这一行回到既有对账
+                # 手里，对账按「没有任务号」走 `_verify_chain(entry="null_task_id")`，
+                # 宽限过后若 storage 兜底也找不回旧切片，就连判 3 拍 → FAILED
+                # 「RAG 任务确认丢失…请重新上传」。用户看到的是「操作被拒」，
+                # 代价却是一份可用文档被标坏（重上传一遍）。
+                # 快照在**上面那次提交之前**取（`reparse_rollback`），这里按它写回。
+                async with get_db_session() as session:
+                    await TaskCenterDocumentRepository(session).mark_released(
+                        document_id,
+                        error_message=(
+                            f"任务中心未受理重新解析：{retry_result.message}"
+                        )[:2000],
+                    )
+                    rolled = await KnowledgeDocumentRepository(session).get_by_id(
+                        document_id, tenant_id
+                    )
+                    if rolled is not None:
+                        for _col, _old in reparse_rollback.items():
+                            setattr(rolled, _col, _old)
+                        # 埋点行一起收口：上面那次 `record_processing_task` 是按**新代次**
+                        # 落的一行 `running`，而本该收口它的解析管线不会再跑（任务中心
+                        # 没受理这一步）—— 不收它，数据运营的 KPI 上就留一个永久 running。
+                        await record_processing_task(
+                            session,
+                            tenant_id,
+                            asset_id=document_id,
+                            task_type=TASK_TYPE_PARSE,
+                            status=TASK_STATUS_FAILED,
+                            doc_id=document_id,
+                            kb_id=rolled.knowledge_base_id,
+                            content_generation=new_generation,
+                            error=err_msg[:1000],
+                        )
+                    else:
+                        logger.warning(
+                            "重新解析被拒后回滚时文档行已查不到（软删？）doc=%s",
+                            document_id,
+                        )
+                logger.warning(
+                    "重新解析未被任务中心受理: doc=%s task=%s disposition=%s message=%s",
+                    document_id, tc_plan["task_id"],
+                    retry_result.disposition.value, retry_result.message,
+                )
+                schedule_emit({
+                    "tenant_id": tenant_id,
+                    "user_id": uid,
+                    "username": username,
+                    "ip": ip,
+                    "log_type": "TASK",
+                    "action": "document.parse_failed",
+                    "outcome": "FAILED",
+                    "service_name": "knowledge_base",
+                    "resource": ResourceType.DOCUMENT.value,
+                    "resource_id": str(document_id),
+                    "error_message": err_msg[:1000],
+                })
+                raise ResourceConflictError(
+                    message=err_msg,
+                    details={
+                        "document_id": document_id,
+                        "task_id": tc_plan["task_id"],
+                    },
+                )
+            logger.info(
+                "重新解析已交任务中心重跑: doc=%s task=%s nodes=%s,%s",
+                document_id, tc_plan["task_id"], "parse_1", "compile_1",
+            )
+            return doc_dict
 
         # 确保 KB 编译 schema 存在（非阻塞）
         # 若已在指纹计算阶段解析过，优先复用缓存值
         schema = None
         # [jonex] openkb 不用 compiled schema；且 auto_compile=True 有副作用（凭空生成 schema），
         # 必须整段跳过，不能只是取了不传。
-        schema_version = _cached_schema_ver if (not is_openkb and _cached_schema_ver) else 0
-        if not is_openkb:
+        schema_version = _cached_schema_ver if (not is_llm_wiki and _cached_schema_ver) else 0
+        if not is_llm_wiki:
             try:
                 from .ontology_compiler import OntologyCompiler
                 schema = await OntologyCompiler().get_compiled_schema(tenant_id, kb_id, auto_compile=True)
@@ -1454,12 +2025,13 @@ class DocumentService:
                 storage_key=storage_key,
                 preset=preset,
                 prompt_ids=prompt_ids,
-                execution_mode="parse_only" if is_openkb else "reparse_strict",
-                strict_push=not is_openkb,
+                execution_mode="parse_only" if is_llm_wiki else "reparse_strict",
+                strict_push=not is_llm_wiki,
                 content_generation=new_generation,
                 schema_version=schema_version,     # openkb 下恒为 0
-                old_rag_doc_ids=[] if is_openkb else old_rag_doc_ids,
+                old_rag_doc_ids=[] if is_llm_wiki else old_rag_doc_ids,
                 idempotency_key=idempotency_key,  # [jonex] R1
+                kb_type=kb_type,                  # [jonex] llm-wiki 产物分支（openkb→content.md / jonex_wiki→content_list.json）
             )
         except Exception as exc:
             logger.exception("Knowledge document reparse failed: %s", document_id)
@@ -1515,7 +2087,7 @@ class DocumentService:
         # [jonex] openkb KB：编译 phase 按 llm_wiki_compile_status 过滤（_OPENKB_PHASE_PREDICATE），
         # 否则 ontology_status 恒 READY → compiled 全命中 / compiling、compile_failed 筛不到
         kb_type = await self._get_kb_type(tenant_id, req.knowledge_base_id)
-        predicates = _OPENKB_PHASE_PREDICATE if kb_type == "openkb" else _PHASE_PREDICATE
+        predicates = _OPENKB_PHASE_PREDICATE if kb_type in LLM_WIKI_TYPES else _PHASE_PREDICATE
 
         conditions = []
         phase_cond = _phase_condition(req.phase, predicates)
@@ -1572,7 +2144,7 @@ class DocumentService:
         # [jonex] openkb KB：四桶按 llm_wiki_compile_status 判定（ontology_status 恒 READY
         # 不可用）；lightrag 维持 ontology_status 语义。与 _OPENKB_PHASE_PREDICATE 同源。
         kb_type = await self._get_kb_type(tenant_id, req.knowledge_base_id)
-        is_openkb = kb_type == "openkb"
+        is_llm_wiki = kb_type in LLM_WIKI_TYPES
 
         async with get_db_session() as session:
             repo = KnowledgeDocumentRepository(session)
@@ -1582,7 +2154,7 @@ class DocumentService:
 
             # 互斥四桶（相加 = total）：每个文档恰好落进一桶，避免嵌套指标的对账困惑。
             # 处理中：待解析/解析中/入库中/待编译/编译中（还在跑）
-            if is_openkb:
+            if is_llm_wiki:
                 processing = await _count([
                     or_(
                         KnowledgeDocument.status.in_([
@@ -1739,6 +2311,30 @@ class DocumentService:
                 raise ResourceConflictError(message=translate("err.doc.deleting_in_progress", fallback="知识文档正在删除中")  )  # 原消息)
             if doc.status in (DocStatus.PENDING.value, DocStatus.PARSING.value, DocStatus.INGESTING.value):
                 raise ResourceConflictError(message=translate("err.doc.parsing_cannot_delete", fallback="知识文档正在解析/入库中，请等待完成后再删除")  )  # 原消息)
+            # ── [jonex] 2026-09-30（用户拍板）：**还有任务在跑就不许删** ──
+            #
+            # 上面那两道闸只看 `doc.status`，而任务中心接管中的文档**恰恰常常是「看着能操作」
+            # 的稳定态**（`parsed` / `ready`）：Ontology 库的文档在「解析已完成、正在抽本体」
+            # 那段就是 `ready` + 接管行在途。只看状态的话这段能删掉，而底下本体抽取的活
+            # 还在跑 —— 这就是 CLAUDE.md 那句「接管行存在时，重新解析 / 删除文档 / 整库重置
+            # 三个入口都会被拦」要表达的规则，此前这道闸只落在另外两个入口上。
+            #
+            # 判据与「重新解析」那道**同一个**（`exists_active`：`submitting` / `managed`
+            # 都算在途），消息也**共用同一条**：从用户视角看，两件事的答复是同一句
+            # 「它还在处理中，等它跑完」——真被卡住时的出口也一样（去任务页点「停止」，
+            # 收口之后接管行随即交还，最长几秒）。
+            #
+            # ⚠️ 顺序：**必须排在 `set_status(DELETING)` 之前** —— 它是本方法第一处写库，
+            # 排在它后面等于「已经改成删除中再拦」，那就白拦了。
+            if await TaskCenterDocumentRepository(session).exists_active(
+                document_id, tenant_id
+            ):
+                raise ResourceConflictError(
+                    message=translate(
+                        "err.doc.parsing_cannot_delete",
+                        fallback="知识文档正在解析/入库中，请等待完成后再删除",
+                    )
+                )
             await repo.set_status(doc, DocStatus.DELETING)
             rag_doc_ids = list(doc.rag_doc_ids or [])
             kb_id = doc.knowledge_base_id or ""
@@ -1756,6 +2352,10 @@ class DocumentService:
                 document_id=document_id,
             )
 
+        # [jonex] batch delete 失败的 doc 兜底重试清单；delete_batch 抛异常时
+        # 全部 doc 视为失败（批量删除未发生）。默认空，避免后续循环误删。
+        batch_failed: list[str] = []
+
         if rag_doc_ids:
             logger.info(
                 "Deleting %d LightRAG documents for doc %s: %s",
@@ -1771,18 +2371,19 @@ class DocumentService:
                     document_id=document_id,
                 )
                 accepted = result.get("accepted", [])
-                failed = result.get("failed", [])
+                batch_failed = result.get("failed", [])
                 if accepted:
                     logger.info(
                         "RAG batch delete accepted %d/%d doc_ids for doc %s",
                         len(accepted), len(rag_doc_ids), document_id,
                     )
-                if failed:
+                if batch_failed:
                     logger.warning(
                         "RAG batch delete failed %d doc_ids for doc %s: %s",
-                        len(failed), document_id, failed,
+                        len(batch_failed), document_id, batch_failed,
                     )
             except Exception:
+                batch_failed = list(rag_doc_ids)
                 logger.warning(
                     "RAG batch delete failed for doc %s", document_id, exc_info=True,
                 )
@@ -1806,8 +2407,24 @@ class DocumentService:
                 )
             except Exception:
                 logger.warning("Failed to remove OpenKB document %s", document_id, exc_info=True)
+        elif kb_type == "jonex_wiki":
+            # [jonex] 删除必须按 kb_type 分流到 jonex_wiki client,否则 openkb client
+            # 会去 openkb 引擎删一个不存在的 document_id,导致 jonex_wiki 引擎侧文档
+            # 与解析/编译产物残留,同名重传时报「同知识库已存在同名文档」。
+            from .jonex_wiki_service import JonexWikiService  # [jonex] lazy import 避免循环依赖
+            compiler = JonexWikiService()
+            try:
+                await compiler.remove_document(
+                    kb_name=kb_id, document_id=document_id,
+                    tenant_id=tenant_id, kb_id=kb_id,
+                )
+            except Exception:
+                logger.warning("Failed to remove Jonex Wiki document %s", document_id, exc_info=True)
         else:
-            for rag_doc_id in rag_doc_ids:
+            # [jonex] 仅对 batch delete 失败的 doc 逐条重试。此前无条件全量
+            # 逐条 delete，与 batch delete 重复——batch 已删的 doc 全部命中
+            # "Document not found"，纯冗余且污染 LightRAG 日志。
+            for rag_doc_id in batch_failed:
                 try:
                     await get_rag_client().delete(
                         rag_doc_id, tenant_id=tenant_id, knowledge_base_id=kb_id
@@ -1816,12 +2433,12 @@ class DocumentService:
                     logger.warning("Failed to delete RAG document %s", rag_doc_id, exc_info=True)
 
         # 清理 Neo4j 本体图谱中该文档关联的实体节点和关系
-        # [jonex] openkb 文档从不写 Neo4j（parse_only 管线），跳过——纯多余调用
+        # [jonex] llm-wiki 文档从不写 Neo4j（parse_only 管线），跳过——纯多余调用
         # （每次删除省一次 Neo4j 往返；Neo4j 不可用时也不再产生无关 warning）
-        if kb_type != "openkb":
+        if kb_type not in LLM_WIKI_TYPES:
             try:
                 gdao = OntologyGraphRepository(get_neo4j_driver())
-                await gdao.delete_by_document(tenant_id, document_id)
+                await gdao.delete_by_document(tenant_id, kb_id, document_id)
             except Exception:
                 logger.warning("Neo4j cleanup failed for document %s", document_id, exc_info=True)
 
@@ -2004,61 +2621,18 @@ class DocumentService:
     ) -> list[str]:
         """从 LightRAG 存储反查文档的实际 doc_ids。
 
-        用于 rag_doc_ids 为空时的兜底（insert 不返回 doc_ids，对账可能未及时补充）。
-        优先通过 file_path 中的 doc=<id> 匹配，再降级到 file_name 匹配。
+        用于 rag_doc_ids 为空时的兜底（insert 不返回 doc_ids、reparse 覆盖后对账
+        未及时补充）。分页与匹配统一在 `rag_storage_lookup` 内实现——此前本地副本
+        把 page_size 写成 500（LightRAG 约束 [10, 200]）、且读不存在的 `items` 键，
+        两处都让兜底恒失败，删除遂静默跳过 LightRAG 清理。
         """
-        import re
-
-        try:
-            result = await get_rag_client().get_storage_documents(
-                knowledge_base_id=knowledge_base_id,
-                tenant_id=tenant_id,
-                keyword=file_name,
-                page=1,
-                page_size=500,
-            )
-        except Exception as e:
-            logger.warning(
-                "Storage lookup failed for doc %s during delete: %s", document_id, e
-            )
-            return []
-
-        items = result.get("items", [])
-        total = result.get("total", len(items))
-        if total > len(items):
-            logger.warning(
-                "Storage fallback during delete: total %d exceeds page size for doc %s",
-                total, document_id,
-            )
-
-        matched = []
-        for item in items:
-            fp = item.get("file_path") or ""
-            m = re.search(r'doc=([a-f0-9-]+)\|', fp)
-            if m and m.group(1) == document_id:
-                matched.append(item)
-        if not matched:
-            matched = [
-                item for item in items
-                if (
-                    item.get("file_name") == file_name
-                    or (item.get("file_name") or "").endswith("_" + file_name)
-                )
-            ]
-
-        if not matched:
-            logger.info(
-                "Storage fallback miss during delete: doc_id=%s, file_name=%s, total=%d",
-                document_id, file_name, len(items),
-            )
-            return []
-
-        rag_doc_ids = [item["id"] for item in matched if item.get("id")]
-        logger.info(
-            "Storage fallback hit during delete: doc_id=%s, found %d LightRAG doc_ids",
-            document_id, len(rag_doc_ids),
+        return await find_rag_doc_ids(
+            get_rag_client,
+            tenant_id=tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            file_name=file_name,
+            document_id=document_id,
         )
-        return rag_doc_ids
 
     # ── [jonex] kb_type 查询 → 公共 helper ──
 
@@ -2066,6 +2640,15 @@ class DocumentService:
         """[jonex] 查询 KB 的 kb_type（转调 kb_type_service）。"""
         from .kb_type_service import get_kb_type
         return await get_kb_type(tenant_id, kb_id)
+
+    async def _get_kb_ingest_backend(self, tenant_id: str, kb_id: str) -> str | None:
+        """[jonex] 查询 KB 行的库级派单值（转调 kb_type_service，2026-10-09）。
+
+        `None` 是**合法值**（= 跟随服务端开关 `KB_INGEST_BACKEND`），不是「查不到」
+        —— 两者对 `resolve_backend` 是同一件事，所以不需要 or_none 那种二元 API。
+        """
+        from .kb_type_service import get_kb_ingest_backend
+        return await get_kb_ingest_backend(tenant_id, kb_id)
 
 
 __all__ = ["DocumentService"]

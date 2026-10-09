@@ -155,7 +155,12 @@ _EXT_CATEGORY: dict[str, str] = {
     # document
     ".pdf": "document", ".doc": "document", ".docx": "document",
     ".ppt": "document", ".pptx": "document",
+    # .txt/.md/.markdown/.json/.jsonl = text_parse 档声明的文本后缀集
+    # （引擎本地快路径的 TEXT_FORMATS）；本表是上传链**第一道门**，
+    # 缺一个后缀，上传就在 `check_upload_static` 被拒（other），
+    # 后面的解析器门与引擎快路径都到不了。
     ".txt": "document", ".md": "document", ".markdown": "document",
+    ".json": "document", ".jsonl": "document",
     # spreadsheet
     ".xls": "spreadsheet", ".xlsx": "spreadsheet", ".csv": "spreadsheet", ".ods": "spreadsheet",
     # image

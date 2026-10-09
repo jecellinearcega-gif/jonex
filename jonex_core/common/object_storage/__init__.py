@@ -66,6 +66,29 @@ def normalize_asset_ext(ext: str | None) -> str | None:
     return "png"
 
 
+# [jonex] §image-refs B1：图片资产规范 MIME 映射。jpg 的规范 MIME 是 image/jpeg
+#（非 image/jpg），浏览器不认非标准 MIME 会对预签名 URL 触发下载而非内联预览。
+# 与 Reference/Rag-anything image_transport.py 的 _CONTENT_TYPE_MAP 保持一致。
+_ASSET_EXT_MIME: dict[str, str] = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "bmp": "image/bmp",
+}
+
+
+def asset_content_type(ext: str | None) -> str:
+    """返回图片资产的规范 Content-Type（jpg → image/jpeg 等）。
+
+    白名单外 / 空值统一按 application/octet-stream（调用方应先经
+    normalize_asset_ext 白名单化；此函数只做 MIME 规范化，不再二次校验）。
+    """
+    name = normalize_asset_ext(ext)
+    return _ASSET_EXT_MIME.get(name or "", "application/octet-stream")
+
+
 def build_asset_key(
     tenant_id: str,
     knowledge_base_id: str,
@@ -95,6 +118,21 @@ def build_asset_key(
         f"{prefix}/kb/{tenant_id}/{knowledge_base_id}/{doc_id}"
         f"/assets/img_{idx}.{safe_ext}"
     )
+
+
+def build_preview_key(
+    tenant_id: str,
+    knowledge_base_id: str,
+    doc_id: str,
+) -> str:
+    """office 文档的预览 PDF 对象键（office-查看原文定位方案 A）。
+
+    形如 ``{COS_KEY_PREFIX}/kb/{tenant}/{kb}/{doc}/preview.pdf``
+    —— 与 build_object_key / build_asset_key 同前缀同层级，便于按文档前缀批量清理。
+    仅 office 文档在解析侧上传（OfficePreviewUploadStage），查看原文时据此取预签名 URL。
+    """
+    prefix = os.getenv("COS_KEY_PREFIX", "jonex").strip("/")
+    return f"{prefix}/kb/{tenant_id}/{knowledge_base_id}/{doc_id}/preview.pdf"
 
 
 @lru_cache(maxsize=1)
@@ -151,8 +189,10 @@ def get_object_storage_for(backend: str | None):
 
 
 __all__ = [
+    "asset_content_type",
     "build_asset_key",
     "build_object_key",
+    "build_preview_key",
     "get_object_storage",
     "get_object_storage_for",
     "normalize_asset_ext",

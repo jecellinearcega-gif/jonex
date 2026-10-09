@@ -27,6 +27,11 @@ from ..repository.knowledge_info_repository import KnowledgeInfoRepository
 # 这里 import 常量而非另写字面量 —— 原先本文件里散落着 ("kb_manager","editor","viewer")
 # 三处独立的元组/字典，加减层级时必然漏改。
 from .kb_permission_service import KB_MANAGER, KB_MEMBER, _KB_ROLE_RANK
+# [jonex] kb_type 常量模块级导入：create() 与 get() 两处都要用 LLM_WIKI_TYPES，
+# 不能只放在 create() 里做局部 import（get() 第 247 行会 NameError）。
+# ⚠ `VALID_KB_TYPES` 不在这里 import：create() 的校验已收敛进 `resolve_creatable_kb_type()`
+# （两级校验 + 两个错误码），本文件不再直接判集合，避免又出现第二个判定点。
+from .kb_type_service import LLM_WIKI_TYPES, resolve_creatable_kb_type
 
 
 class KnowledgeInfoService:
@@ -50,19 +55,12 @@ class KnowledgeInfoService:
             )
         kb_name = data["name"]
 
-        # [jonex] kb_type 白名单校验：裸 dict 透传无类型校验，非法值会静默降级
-        from .kb_type_service import DEFAULT_KB_TYPE, VALID_KB_TYPES
-        raw_kb_type = (data.get("kb_type") or "").strip() or DEFAULT_KB_TYPE
-        if raw_kb_type not in VALID_KB_TYPES:
-            from jonex_core.common.exceptions import InvalidParameterError
-            from jonex_core.common.i18n import translate
-            raise InvalidParameterError(
-                message=translate(
-                    "err.kb.invalid_kb_type",
-                    params={"value": raw_kb_type, "valid": ", ".join(sorted(VALID_KB_TYPES))},
-                    fallback=f"知识库类型不合法：{raw_kb_type}，可选值：{', '.join(sorted(VALID_KB_TYPES))}",
-                ),
-            )
+        # [jonex] kb_type 校验：裸 dict 透传无类型校验，非法值会静默降级。
+        # 两级、两个错误码，都在 `resolve_creatable_kb_type()` 里（单一判定点）：
+        #   ① 值**不认识**（调用方拼错）      → err.kb.invalid_kb_type
+        #   ② 值认识但**本部署禁用**（运维配置）→ err.kb.kb_type_disabled
+        # 缺省值也走同一道闸门 —— `kb_type` 创建后不可变，不能替用户改选。
+        raw_kb_type = resolve_creatable_kb_type(data.get("kb_type"))
 
         async with get_db_session() as session:
             repo = KnowledgeInfoRepository(session)
@@ -103,27 +101,30 @@ class KnowledgeInfoService:
 
             await session.commit()
 
-        # ── [jonex] openkb KB 创建一条龙（方案 §15，创建事务提交后执行）──
-        # ① init_kb（幂等：KB 目录 + AGENTS.md 内置模板落盘）
-        # ② 创建默认 LLM-Wiki Schema（DB）
-        # ③ 立即 apply_schema 投影（AGENTS.md/config.yaml/jonex_schema.json）
+        # ── [jonex] llm-wiki KB 创建一条龙（方案 §15，创建事务提交后执行）──
+        # ① init_kb：openkb 落盘 KB 目录 + AGENTS.md；jonex_wiki 无 init_kb（首次 ingest 即建）→ no-op + 日志
+        # ② 创建默认 LLM-Wiki Schema（DB）——两引擎都照做
+        # ③ 立即 apply_schema 投影（AGENTS.md/config.yaml/jonex_schema.json）——两引擎都照做
         # apply 失败不阻断 KB 创建（sync_status=apply_failed，下次编译/保存前补偿）
-        if raw_kb_type == "openkb":
+        if raw_kb_type in LLM_WIKI_TYPES:
             from .llm_wiki_schema_service import LlmWikiSchemaService
-            from .openkb_service import KnowledgeCompilerService
 
-            try:
-                await KnowledgeCompilerService().init_kb(
-                    kb_name=obj.id, tenant_id=tenant_id, kb_id=obj.id,
-                )
-            except Exception:
-                logger.warning("openkb init_kb 失败 kb=%s（创建不阻断）", obj.id, exc_info=True)
+            if raw_kb_type == "openkb":
+                from .openkb_service import KnowledgeCompilerService
+                try:
+                    await KnowledgeCompilerService().init_kb(
+                        kb_name=obj.id, tenant_id=tenant_id, kb_id=obj.id,
+                    )
+                except Exception:
+                    logger.warning("openkb init_kb 失败 kb=%s（创建不阻断）", obj.id, exc_info=True)
+            else:
+                logger.info("jonex_wiki KB 无 init_kb，首次 ingest 即建 kb=%s", obj.id)
             try:
                 await LlmWikiSchemaService().get_schema(
                     tenant_id, obj.id, auto_create=True,
                 )
             except Exception:
-                logger.warning("openkb 默认 schema 创建失败 kb=%s（创建不阻断）", obj.id, exc_info=True)
+                logger.warning("llm-wiki 默认 schema 创建失败 kb=%s（创建不阻断）", obj.id, exc_info=True)
 
         return obj.to_dict()
 
@@ -178,7 +179,8 @@ class KnowledgeInfoService:
         actual = str(row[0] or "").strip().lower().replace(" ", "_").replace("/", "_")
         return actual == parser_type
 
-    async def get(self, kb_id: str, tenant_id: str, user_id: str | None = None) -> dict:
+    async def get(self, kb_id: str, tenant_id: str, user_id: str | None = None,
+                  with_stats: bool = False) -> dict:
         tenant_id = require_tenant(tenant_id)
         async with get_db_session() as session:
             from ..models.space import Space
@@ -240,11 +242,25 @@ class KnowledgeInfoService:
                 or grant_role == KB_MANAGER
             )
 
-        # [jonex] openkb 管线：本体统计走 OpenKB Wiki（Neo4j 里恒空，读了会误报 0）
-        if data.get("kb_type") == "openkb":
-            from .openkb_service import KnowledgeCompilerService
+        # [jonex] 首屏提速：详情页（DomainKnowledgeBlank）只靠 kb_type + 基本信息判断渲染面板。
+        # 实体/关系统计按需加载：llm-wiki 库的图谱统计是跨容器全图扫描（jonex_wiki
+        # list_graph 实测 ~2.6s），首屏（with_stats=false）跳过；lightrag 库的 Neo4j 统计
+        # 快、且页头「本体/关系实例」标签依赖它，首屏保留（跳过了会误显示 0）。设置页
+        # 带 with_stats=true 拉全量。
+        if not with_stats and data.get("kb_type") in LLM_WIKI_TYPES:
+            return data
+
+        # [jonex] llm-wiki 管线：本体统计走 Wiki（Neo4j 里恒空，读了会误报 0）。
+        # 三分支显式派发：jonex_wiki 走 JonexWikiService（透传 list_graph），openkb 走 KnowledgeCompilerService。
+        if data.get("kb_type") in LLM_WIKI_TYPES:
+            if data.get("kb_type") == "jonex_wiki":
+                from .jonex_wiki_service import JonexWikiService
+                compiler = JonexWikiService()
+            else:
+                from .openkb_service import KnowledgeCompilerService
+                compiler = KnowledgeCompilerService()
             try:
-                graph = await KnowledgeCompilerService().get_graph(
+                graph = await compiler.get_graph(
                     kb_name=kb_id, tenant_id=tenant_id, kb_id=kb_id,
                 ) or {}
                 data["entity_count"] = len(graph.get("entities") or [])
@@ -276,18 +292,24 @@ class KnowledgeInfoService:
 
     async def list(self, tenant_id: str, space_id: str = None, status: str = None,
                    keyword: str = None, offset: int = 0, limit: int = 20,
-                   user_id: str | None = None) -> dict:
+                   user_id: str | None = None, scope: str = "manage") -> dict:
         tenant_id = require_tenant(tenant_id)
         # [jonex] 权限重构 B4（方案 §5 Gap 8 / 执行文档 §5.2）：
         # KB 列表可见范围 = **我管的空间下全部 KB ∪ 我被授权的 KB**。
         #
-        # ⚠️ 这里**故意不用** `get_visible_space_ids` —— 那是「检索 / 领域服务可见」口径。
+        # ⚠️ `scope="manage"`（默认）**故意不用** `get_visible_space_ids` —— 那是
+        #    「检索 / 领域服务可见」口径。
         #    两个口径的差别只在**空间 member**：
         #      · 检索口径含他所在的整个空间 → 他能检索到空间下全部 KB 的内容，
         #        并且能点开引用看原文（方案 D8 明确「能打开，只是看不到知识库」）；
         #      · 列表口径不含 → 他在领域知识库页看不到这些 KB。
         #    **不要把这两个口径合并成一个函数、也不要"顺手统一"** —— 合并即回归。
         #    检索侧在 `capability.py::_filter_search_kbs`，那段一行都没动。
+        #
+        # [jonex] `scope="search"` 是**新增的显式分支**，供检索面（搜索页 / 引用富化）
+        #    按检索口径取 KB：可见空间 ∪ 授权 KB。默认值不变，管理面行为完全不受影响。
+        #    起因：搜索页的「空间」维度原先只能走列表口径，纯空间 member 拿到 0 个 KB，
+        #    检索范围解析为空 → `handleSearch` 直接 return、请求发不出去。
         #
         # 副作用（已在方案 §6 决策不补发授权，需上线公告）：存量空间 member 的
         # KB 列表上线后会变空，直到有人把他加成 KB 成员。
@@ -313,18 +335,36 @@ class KnowledgeInfoService:
                 from .kb_permission_service import get_granted_kb_ids
 
                 granted = await get_granted_kb_ids(tenant_id, user_id)
-                # in_() 要 list；manage_ids 是 set。两边都空时整个 or_ 恒 false → 空列表，
-                # 这正是空间 member 无 KB 授权时期望的结果（total == 0）。
-                conditions.append(or_(
-                    KnowledgeInfo.space_id.in_(list(manage_ids)),
-                    KnowledgeInfo.id.in_(granted),
-                ))
                 # kb_manager 授权集合（KB 写权限与人员管理权限的共同来源，批量一次查询）
                 # [jonex] B3（N4）：原先分别查 editor 集合与 manager 集合，
                 # D1 收为两级后两者等价 —— 合并成一次查询，少一次 DB 往返。
                 # manage_ids is None 时两个布尔恒 True，这次查询纯属浪费，一并跳过。
                 from .kb_permission_service import get_granted_manager_kb_ids
                 manager_ids = await get_granted_manager_kb_ids(tenant_id, user_id)
+
+            # [jonex] 过滤条件按 scope 显式二选一（默认 manage，行为完全不变）：
+            #   manage = 我管的空间 ∪ 我授权的 KB（领域知识库页 / 管理面）
+            #   search = 可见空间   ∪ 我授权的 KB（搜索页 / 引用富化等检索面）
+            # 两者差别只在**空间 member**：他能检索到空间下全部 KB，却在知识库列表里看不到。
+            # ⚠️ 不要合并、也不要「顺手统一」—— 见上面长注释与方案 §5 Gap 8，合并即回归。
+            # 注：granted / manager_ids 在上方照常计算，行内的 grant_shared / can_write /
+            #     can_manage_permissions 三个字段因此不受本分支影响。
+            if scope == "search":
+                from .space_permission_service import get_visible_space_ids
+
+                visible = await get_visible_space_ids(tenant_id, user_id)
+                if visible is not None:      # None = 租户管理员/内部链路 → 不过滤
+                    conditions.append(or_(
+                        KnowledgeInfo.space_id.in_(visible),
+                        KnowledgeInfo.id.in_(granted),
+                    ))
+            elif manage_ids is not None:
+                # in_() 要 list；manage_ids 是 set。两边都空时整个 or_ 恒 false → 空列表，
+                # 这正是空间 member 无 KB 授权时期望的结果（total == 0）。
+                conditions.append(or_(
+                    KnowledgeInfo.space_id.in_(list(manage_ids)),
+                    KnowledgeInfo.id.in_(granted),
+                ))
             if status:
                 conditions.append(KnowledgeInfo.status == status)
 
@@ -409,16 +449,47 @@ class KnowledgeInfoService:
                     fallback="知识库类型创建后不可修改，如需更换请新建知识库",
                 ),
             )
+        # KB 授权路径（execute 兜底打标）：editor 禁改 space_id/owner_id（防搬迁提权）；
+        # 空间成员路径行为不变。
+        # [jonex] 白名单与值校验都放在**碰 DB 之前**（与上面的 kb_type 闸门同一条纪律：
+        # 非法值不去读库）。`ingest_backend`（2026-10-09 库级派单值）同样是提权面 ——
+        # 它决定这个库的文档派去哪个后端 —— 所以只在 admin 名单里，editor 不可改。
+        kb_granted = data.pop("_kb_granted", False)
+        updatable = {"name", "description", "data_source_types", "status", "space_id", "owner_id",
+                     "ingest_backend"}
+        if kb_granted:
+            updatable = {"name", "description", "data_source_types", "status"}
+        # [jonex] 库级派单值取值校验：None = 撤销（回到跟随服务端开关），其余必须是
+        # 本代码认识的值。只对「真要落的字段」校验 —— editor 的越权值照其它字段的
+        # 口径静默丢弃，不在这里炸。
+        if "ingest_backend" in updatable and data.get("ingest_backend") is not None:
+            from . import ingest_backend
+            from jonex_core.common.exceptions import InvalidParameterError
+            from jonex_core.common.i18n import translate
+            value = data["ingest_backend"]
+            if not isinstance(value, str) or value not in ingest_backend.VALID_BACKENDS:
+                raise InvalidParameterError(
+                    message=translate(
+                        "err.kb.ingest_backend_invalid",
+                        params={
+                            "value": value,
+                            "valid": ", ".join(ingest_backend.VALID_BACKENDS),
+                        },
+                        fallback=(
+                            f"入库后端取值不合法：{value}，可选值："
+                            f"{', '.join(ingest_backend.VALID_BACKENDS)}"
+                        ),
+                    ),
+                )
         async with get_db_session() as session:
             repo = KnowledgeInfoRepository(session)
             await repo.get_required(kb_id, tenant_id)
-            # KB 授权路径（execute 兜底打标）：editor 禁改 space_id/owner_id（防搬迁提权）；
-            # 空间成员路径行为不变
-            kb_granted = data.pop("_kb_granted", False)
-            updatable = {"name", "description", "data_source_types", "status", "space_id", "owner_id"}
-            if kb_granted:
-                updatable = {"name", "description", "data_source_types", "status"}
             values = {k: v for k, v in data.items() if k in updatable and v is not None}
+            # [jonex] `ingest_backend` 的显式 None 是**撤销**（回到跟随服务端开关）；
+            # 其余字段的 None 仍是「不更新」—— 不特判的话这个设置只能设不能撤，
+            # 撤销只能去改库，等于把它做成单向门。
+            if "ingest_backend" in updatable and data.get("ingest_backend", "missing") is None:
+                values["ingest_backend"] = None
             if values:
                 obj = await repo.update(kb_id, tenant_id, **values)
                 await session.commit()

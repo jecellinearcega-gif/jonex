@@ -17,11 +17,17 @@ from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 import httpx
-import jwt
 from fastapi import APIRouter, Body, Depends, File, Form, Header, Query, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 
 from api_gateway.deps import require_auth_header, raise_from_capability_result
+# 身份解析统一在 `api_gateway/identity.py`（原先这里和 business_domain.py 各抄了一份）。
+# 别名导入，是为了不动下面 20 多处既有的 `_extract_*` 调用点。
+from api_gateway.identity import (
+    extract_impersonation as _extract_impersonation,
+    extract_user_id as _extract_user_id,
+    extract_username as _extract_username,
+)
 from jonex_core.common.crypto import generate_view_token, verify_view_token
 from pydantic.v1 import BaseModel
 
@@ -41,8 +47,10 @@ from capabilities.knowledge_base.dtos import (
     OntologyNeighborRequest,
     OntologyRelationListRequest,
     OntologyRetryRequest,
+    JonexWikiSearchRequest,
     LlmWikiSearchRequest,
     MixSearchRequest,
+    NativeOntologyExtractRequest,
     OntologySearchRequest,
     OntologyStatsRequest,
     DeepSearchRequest,
@@ -110,63 +118,24 @@ def _safe_inline_media_type(mime: str | None) -> str:
 
 
 
-def _extract_user_id(request: Request) -> str | None:
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        return None
-    token = auth[7:]
-    config = get_config()
-    try:
-        payload = jwt.decode(token, config.JWT_SECRET, algorithms=[config.JWT_ALGORITHM])
-        return payload.get("sub") or None
-    except jwt.PyJWTError:
-        return None
+def _capability_error_keys(capability_id: str) -> tuple[str, str]:
+    """能力错误 i18n 键分流:atomic-rag 与 knowledge-base 各用一套文案。"""
+    if capability_id == "atomic.rag.lightrag.v1":
+        return "err.capability.rag_timeout", "err.capability.rag_unavailable"
+    return "err.capability.kb_timeout", "err.capability.kb_unavailable"
 
 
-def _extract_username(request: Request) -> str | None:
-    """从请求 Authorization 头的 JWT 中提取 username。"""
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        return None
-    token = auth[7:]
-    config = get_config()
-    try:
-        payload = jwt.decode(token, config.JWT_SECRET, algorithms=[config.JWT_ALGORITHM])
-        return payload.get("username") or None
-    except jwt.PyJWTError:
-        return None
-
-
-def _extract_impersonation(request: Request) -> tuple[bool, list[str], str | None]:
-    """从请求 Authorization 头的 JWT 中提取模拟态上下文（impersonated/perms/original_tenant_id）。
-
-    invoke 链路用 X-API-Key 走 Sidecar apikey 认证，用户 JWT 不会到达 Sidecar，
-    故由 Gateway 解出模拟态上下文放进 invoke payload 透传。
-    """
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        return False, [], None
-    token = auth[7:]
-    config = get_config()
-    try:
-        payload = jwt.decode(token, config.JWT_SECRET, algorithms=[config.JWT_ALGORITHM])
-    except jwt.PyJWTError:
-        return False, [], None
-    return (
-        bool(payload.get("impersonated")),
-        payload.get("perms") or [],
-        payload.get("original_tenant_id"),
-    )
-
-
-async def _call_kb_capability(
+async def _invoke_sidecar_capability(
     request: Request,
     action: str,
     payload: dict[str, Any],
     *,
+    capability_id: str = "business.knowledge_base.v1",
     user_id: Optional[str] = None,
     tenant_id: Optional[str] = None,
+    timeout: Optional[float] = None,
 ) -> dict:
+    """经 Sidecar invoke 转发到指定能力服务(Gateway 唯一能力调用出口)。"""
     config = get_config()
     tenant_id = tenant_id or extract_tenant_id(request)
     request_id = getattr(request.state, "request_id", "")
@@ -175,7 +144,7 @@ async def _call_kb_capability(
     _impersonated, _perms, _original_tenant_id = _extract_impersonation(request)
 
     sidecar_payload: dict[str, Any] = {
-        "capability_id": "business.knowledge_base.v1",
+        "capability_id": capability_id,
         "payload": {"action": action, "data": payload},
         "tenant_id": tenant_id,
     }
@@ -201,7 +170,7 @@ async def _call_kb_capability(
     max_retries = int(os.getenv("GATEWAY_SIDECAR_RETRIES", "2"))
     base_delay = float(os.getenv("GATEWAY_SIDECAR_BASE_DELAY", "1.0"))
     max_delay = float(os.getenv("GATEWAY_SIDECAR_MAX_DELAY", "8.0"))
-    timeout = float(os.getenv("GATEWAY_SIDECAR_TIMEOUT", "180"))
+    timeout = timeout if timeout is not None else float(os.getenv("GATEWAY_SIDECAR_TIMEOUT", "180"))
 
     last_exc: BaseException | None = None
     for attempt in range(max_retries + 1):
@@ -217,9 +186,10 @@ async def _call_kb_capability(
                 raise_from_capability_result(result)
             return result.get("data") or {}
         except httpx.TimeoutException:
+            timeout_key, _ = _capability_error_keys(capability_id)
             raise CapabilityInvokeError(
-                message=translate("err.capability.kb_timeout", fallback="知识库能力调用超时"),
-                details={"action": action},
+                message=translate(timeout_key, fallback="能力调用超时"),
+                details={"action": action, "capability_id": capability_id},
             )
         except httpx.TransportError as e:
             last_exc = e
@@ -227,30 +197,73 @@ async def _call_kb_capability(
                 delay = min(base_delay * (2 ** attempt), max_delay)
                 jitter = random.uniform(0, delay)
                 logger.warning(
-                    "Knowledge Base Sidecar 调用 %s 瞬断 (attempt %s/%s)，"
+                    "Sidecar 调用 %s/%s 瞬断 (attempt %s/%s)，"
                     "%.1fs 后重试: %s",
-                    action, attempt + 1, max_retries + 1, jitter, e,
+                    capability_id, action, attempt + 1, max_retries + 1, jitter, e,
                 )
                 await asyncio.sleep(jitter)
             else:
                 logger.error(
-                    "Knowledge Base Sidecar 调用 %s 失败，已重试 %s 次: %s",
-                    action, max_retries, e,
+                    "Sidecar 调用 %s/%s 失败，已重试 %s 次: %s",
+                    capability_id, action, max_retries, e,
                 )
+                _, unavailable_key = _capability_error_keys(capability_id)
                 raise CapabilityInvokeError(
-                    message=translate("err.capability.kb_unavailable", fallback="知识库能力不可用"),
-                    details={"action": action},
+                    message=translate(unavailable_key, fallback="能力不可用"),
+                    details={"action": action, "capability_id": capability_id},
                 )
         except JonexException:
             raise
         except Exception as exc:
             if hasattr(exc, "code") and hasattr(exc, "status_code"):
                 raise
-            logger.error("Knowledge Base capability call failed: action=%s error=%s", action, exc)
-            raise CapabilityInvokeError(
-                message=translate("err.capability.kb_unavailable", fallback="知识库能力不可用"),
-                details={"action": action},
+            logger.error(
+                "Sidecar capability call failed: capability_id=%s action=%s error=%s",
+                capability_id, action, exc,
             )
+            _, unavailable_key = _capability_error_keys(capability_id)
+            raise CapabilityInvokeError(
+                message=translate(unavailable_key, fallback="能力不可用"),
+                details={"action": action, "capability_id": capability_id},
+            )
+
+
+async def _call_kb_capability(
+    request: Request,
+    action: str,
+    payload: dict[str, Any],
+    *,
+    user_id: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+) -> dict:
+    """知识库能力 invoke 转发(向后兼容委托,capability_id 固定 business.knowledge_base.v1)。"""
+    return await _invoke_sidecar_capability(
+        request, action, payload,
+        capability_id="business.knowledge_base.v1",
+        user_id=user_id, tenant_id=tenant_id,
+    )
+
+
+async def _call_rag_capability(
+    request: Request,
+    action: str,
+    payload: dict[str, Any],
+    *,
+    user_id: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+) -> dict:
+    """atomic-rag 能力 invoke 转发(独立本体抽取等)。
+
+    LLM 抽取耗时远高于普通 CRUD(60 chunk ≈ 30+ 次 LLM 调用),单独放宽超时;
+    注意 Sidecar 侧 SIDECAR_PROXY_TIMEOUT 为全局 env,慢上游时需同步调大。
+    """
+    timeout = float(os.getenv("GATEWAY_RAG_EXTRACT_TIMEOUT", "600"))
+    return await _invoke_sidecar_capability(
+        request, action, payload,
+        capability_id="atomic.rag.lightrag.v1",
+        user_id=user_id, tenant_id=tenant_id,
+        timeout=timeout,
+    )
 
 
 @router.post("/documents/upload", summary="上传知识文档")
@@ -291,7 +304,7 @@ async def upload_document(
         # 否则 S3 部署下直传确认会把文档标成 cos，后续取原文用错客户端。
         _env_backend = (os.getenv("OBJECT_STORAGE_BACKEND", "local") or "local").strip().lower()
         payload["storage_backend"] = storage_backend or (
-            _env_backend if _env_backend in ("cos", "s3") else "cos"
+            _env_backend if _env_backend in ("cos", "s3") else "local"
         )
         if mime_type:
             payload["mime_type"] = mime_type
@@ -775,6 +788,18 @@ async def search_llmwiki(request: Request, payload: LlmWikiSearchRequest):
     result = await _call_kb_capability(
         request,
         "search_llmwiki",
+        _schema_payload(payload),
+        user_id=_extract_user_id(request),
+    )
+    return success_response(data=result)
+
+
+@router.post("/search/jonex_wiki", summary="jonex_wiki 管线检索（只查 jonex_wiki 管线）")
+async def search_jonex_wiki(request: Request, payload: JonexWikiSearchRequest):
+    """只查 jonex_wiki 编译产物的检索端点。含 lightrag/openkb KB 时显式报错，指路对应端点。"""
+    result = await _call_kb_capability(
+        request,
+        "search_jonex_wiki",
         _schema_payload(payload),
         user_id=_extract_user_id(request),
     )
@@ -1369,17 +1394,126 @@ async def get_parse_result_wiki_page(
     return success_response(data=result)
 
 
+@router.get("/wiki/compilation", summary="读取 Wiki 编译状态")
+async def get_wiki_compilation_state(
+    request: Request,
+    knowledge_base_id: str = Query(..., min_length=1, max_length=128),
+):
+    result = await _call_kb_capability(request, "get_wiki_compilation_state",
+                                       {"knowledge_base_id": knowledge_base_id})
+    return success_response(data=result)
+
+
+@router.post("/wiki/compilation/pause", summary="暂停 Wiki 编译并保留结果")
+async def pause_wiki_compilation(request: Request, payload: ParseResultScopeRequest = Body(...)):
+    result = await _call_kb_capability(request, "pause_wiki_compilation", _schema_payload(payload))
+    return success_response(data=result)
+
+
+@router.post("/wiki/compilation/resume", summary="恢复 Wiki 编译")
+async def resume_wiki_compilation(request: Request, payload: ParseResultScopeRequest = Body(...)):
+    result = await _call_kb_capability(request, "resume_wiki_compilation", _schema_payload(payload))
+    return success_response(data=result)
+
+
 @router.get("/parse-results/wiki-contents", summary="列出 OpenKB Wiki 页面树（按文档过滤，缺省=KB 级）")
 async def get_parse_result_wiki_contents(
     request: Request,
     knowledge_base_id: str = Query(..., min_length=1, max_length=128, description="知识库 ID"),
     document_id: Optional[str] = Query(default=None, max_length=64, description="文档 ID；缺省/空=KB 级全库 Wiki"),
+    view: Optional[str] = Query(default=None, max_length=16,
+                                description='视图：counts=只回三类页数（统计卡/tab 计数用），缺省=页面条目'),
 ):
-    """列出 Wiki 页面树（摘要/实体/概念三组）：document_id 缺省 = KB 级全库（compile-results 页）。"""
+    """列出 Wiki 页面树（摘要/实体/概念三组）：document_id 缺省 = KB 级全库（compile-results 页）。
+
+    ``view=counts`` 时只返回 ``{summaries, concepts, entities}`` 三个数字加
+    ``document_id``——给「只要条数」的调用方（编译资产 tab 的统计卡与 tab 计数），
+    避免为三个数字搬运上千个页面对象。
+    """
     payload: dict = {"knowledge_base_id": knowledge_base_id}
     if document_id:
         payload["document_id"] = document_id
+    if view:
+        payload["view"] = view
     result = await _call_kb_capability(request, "list_wiki_contents", payload)
+    return success_response(data=result)
+
+
+# ── [jonex] Wiki 阅读目录（jonex_wiki：Topic/Section/Entry，LLM 起草 + LLM 调整）──
+# 目录是**纯展示投影**：落引擎库（jonex_wiki.wiki_outlines，目录功能已下沉引擎），不参与检索。
+# 查询参数式风格与上方 wiki 阅读接口保持一致。
+
+
+@router.get("/wiki/outline", summary="读取 Wiki 阅读目录 + 页面清单")
+async def get_wiki_outline(
+    request: Request,
+    knowledge_base_id: str = Query(..., min_length=1, max_length=128, description="知识库 ID"),
+    document_id: Optional[str] = Query(
+        None, max_length=64,
+        description="文档 ID：非空则返回该文档的页面子集与目录投影（文档详情页的 Wiki 界面）",
+    ),
+):
+    """返回目录（未生成时 outline=null）与扁平页面清单（阅读页/搜索/链接校验共用）。"""
+    payload: dict[str, Any] = {"knowledge_base_id": knowledge_base_id}
+    if document_id:
+        payload["document_id"] = document_id
+    result = await _call_kb_capability(request, "get_wiki_outline", payload)
+    return success_response(data=result)
+
+
+@router.post("/wiki/outline/draft", summary="LLM 起草 Wiki 阅读目录")
+async def draft_wiki_outline(
+    request: Request,
+    payload: dict[str, Any] = Body(..., description="DraftWikiOutlineRequest"),
+):
+    """按页面清单让 LLM 起草主题→小节→页面目录并留档（覆盖旧 active 版本）。"""
+    result = await _call_kb_capability(request, "draft_wiki_outline", payload)
+    return success_response(data=result)
+
+
+@router.post("/wiki/outline/adjust", summary="LLM 按指令调整 Wiki 阅读目录")
+async def adjust_wiki_outline(
+    request: Request,
+    payload: dict[str, Any] = Body(..., description="AdjustWikiOutlineRequest"),
+):
+    """按自然语言要求调整现有目录（未提及部分保持原样；覆盖率暴跌则整次失败不落库）。"""
+    result = await _call_kb_capability(request, "adjust_wiki_outline", payload)
+    return success_response(data=result)
+
+
+# ── [jonex] Wiki 阅读侧：反向链接（链入本页）/ claim 级溯源审计（列式视图）──
+
+
+@router.get("/wiki/backlinks", summary="读取 Wiki 页面的链入来源（反向链接）")
+async def get_wiki_backlinks(
+    request: Request,
+    knowledge_base_id: str = Query(..., min_length=1, max_length=128, description="知识库 ID"),
+    path: str = Query(..., min_length=1, max_length=256, description="页面 canonical 路径，如 corporate-governance/audit-committee.md"),
+    document_id: Optional[str] = Query(default=None, max_length=64, description="仅统计来自该文档的页面"),
+):
+    """「链入本页」：frontmatter 页间链接 + 正文首次提及（与正文蓝链同口径）。"""
+    payload: dict = {"knowledge_base_id": knowledge_base_id, "path": path}
+    if document_id:
+        payload["document_id"] = document_id
+    result = await _call_kb_capability(request, "get_wiki_backlinks", payload)
+    return success_response(data=result)
+
+
+@router.get("/wiki/claims", summary="读取 claim 级溯源明细（列式视图·溯源审计）")
+async def get_wiki_claims(
+    request: Request,
+    knowledge_base_id: str = Query(..., min_length=1, max_length=128, description="知识库 ID"),
+    path: Optional[str] = Query(default=None, max_length=256, description="页面 canonical 路径（按页面审计）"),
+    document_id: Optional[str] = Query(default=None, max_length=64, description="来源文档 ID（按文档审计）"),
+    limit: int = Query(default=500, ge=1, le=500, description="返回条数上限"),
+):
+    """按页面或来源文档取 claim 明细：断言 + 摘录 + 字符区间 + 支持状态。"""
+    payload: dict = {"knowledge_base_id": knowledge_base_id, "limit": limit}
+    if path:
+        payload["path"] = path
+    if document_id:
+        payload["document_id"] = document_id
+    result = await _call_kb_capability(request, "get_wiki_claims", payload)
     return success_response(data=result)
 
 
@@ -1518,6 +1652,26 @@ async def get_quota_view(
 # 知识库信息管理（KnowledgeInfo CRUD）
 # ════════════════════════════════════════════════════════════
 
+@router.get("/kb-types", summary="可创建的知识库类型（部署级配置）")
+async def get_kb_type_options(request: Request):
+    """本部署允许**创建**哪些知识库类型（由 env `KB_ENABLED_TYPES` 控制）。
+
+    前端「新建知识库」弹窗据此过滤类型选项。返回**只有 code**、不带文案 ——
+    i18n 的 label/description 留在前端（`locales/{zh,en}.json` 本来就有一份）::
+
+        {"kb_types": ["lightrag", "jonex_wiki"], "default": "lightrag"}
+
+    ⚠ 三条边界：
+    * 只管「能造哪些」。被禁类型的**存量库照常出现在列表里、照常可读可检索可上传**，
+      本接口不参与任何「隐藏老库」的判定。
+    * 这是**下发口**，不是闸门。真正的拦截在 `KnowledgeInfoService.create()`
+      （`resolve_creatable_kb_type`）—— 直接 POST 一个被禁类型照样会被拒。
+    * 变量未设置/留空 = 三种全开（升级零影响）。
+    """
+    result = await _call_kb_capability(request, "get_kb_type_options", {})
+    return success_response(data=result)
+
+
 @router.get("/knowledge-info", summary="知识库列表")
 async def list_knowledge_info(
     request: Request,
@@ -1526,10 +1680,11 @@ async def list_knowledge_info(
     keyword: Optional[str] = Query(None, description="搜索关键词"),
     offset: int = Query(0, ge=0, description="偏移量"),
     limit: int = Query(20, ge=1, le=100, description="每页条数"),
+    scope: Optional[str] = Query("manage", description="manage=管理视角 | search=检索视角"),
 ):
     result = await _call_kb_capability(request, "list_knowledge_info", {
         "space_id": space_id, "status": status, "keyword": keyword,
-        "offset": offset, "limit": limit,
+        "offset": offset, "limit": limit, "scope": scope,
     })
     return success_response(data=result)
 
@@ -1541,8 +1696,11 @@ async def create_knowledge_info(request: Request, payload: dict = Body(...)):
 
 
 @router.get("/knowledge-info/{kb_id}", summary="知识库详情")
-async def get_knowledge_info(request: Request, kb_id: str):
-    result = await _call_kb_capability(request, "get_knowledge_info", {"kb_id": kb_id})
+async def get_knowledge_info(request: Request, kb_id: str,
+                             with_stats: bool = Query(False)):
+    result = await _call_kb_capability(request, "get_knowledge_info", {
+        "kb_id": kb_id, "with_stats": with_stats,
+    })
     return success_response(data=result)
 
 
@@ -1759,6 +1917,119 @@ async def search_service(
 ):
     """在指定领域服务中搜索"""
     result = await _call_kb_capability(request, "search_service", {"service_id": service_id, "query": query})
+    return success_response(data=result)
+
+
+# ════════════════════════════════════════════════════════════
+# 独立本体抽取（native ontology extraction，§5.2 外部调用契约）
+# ════════════════════════════════════════════════════════════
+
+# options 白名单与上限：封死 LLM 调用放大面（gleaning/sample_runs 均翻倍调用成本）
+_OPTION_SPECS: dict[str, tuple[str, tuple]] = {
+    "batch_size": ("int", (1, 64)),
+    "gleaning": ("int", (0, 2)),
+    "sample_runs": ("int", (1, 3)),
+    "max_tokens": ("int", (1, 16384)),
+    "temperature": ("float", (0.0, 1.5)),
+    "json_mode": ("bool", ()),
+    "table_objects_handled": ("bool", ()),
+}
+
+
+def _validate_native_extract_request(payload: "NativeOntologyExtractRequest") -> None:
+    """Gateway 预校验（不浪费 LLM 调用）：chunks 完整性 / tbox 可用性 / options 白名单。
+
+    口径与 NativeOntologyExtractor.extract 的 falsy 判定精确对齐：
+    tbox 需含非空 entity_types 或 relation_types（缺失时抽取器 ok=false）。
+    """
+    chunks = payload.chunks
+    for index, chunk in enumerate(chunks):
+        if not isinstance(chunk, dict):
+            raise InvalidParameterError(
+                message=translate(
+                    "err.kb.ontology_extract_chunk_invalid",
+                    params={"index": index, "field": "dict"},
+                    fallback=f"chunks 第 {index} 项必须是对象",
+                )
+            )
+        for field in ("chunk_id", "content"):
+            value = (chunk.get(field) or "").strip()
+            if not value:
+                raise InvalidParameterError(
+                    message=translate(
+                        "err.kb.ontology_extract_chunk_invalid",
+                        params={"index": index, "field": field},
+                        fallback=f"chunks 第 {index} 项缺少 {field} 字段",
+                    )
+                )
+
+    tbox = payload.tbox or {}
+    if not tbox.get("entity_types") and not tbox.get("relation_types"):
+        raise InvalidParameterError(
+            message=translate(
+                "err.kb.ontology_extract_tbox_required",
+                fallback="tbox 缺少 entity_types 或 relation_types 定义，无法抽取",
+            )
+        )
+
+    options = payload.options or {}
+    unknown = set(options.keys()) - set(_OPTION_SPECS.keys())
+    if unknown:
+        raise InvalidParameterError(
+            message=translate(
+                "err.kb.ontology_extract_options_invalid",
+                params={"detail": f"未知参数: {', '.join(sorted(unknown))}"},
+                fallback=f"options 参数非法: 未知参数 {', '.join(sorted(unknown))}",
+            )
+        )
+    for key, value in options.items():
+        kind, bounds = _OPTION_SPECS[key]
+        type_ok = isinstance(value, bool) if kind == "bool" else (
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+        )
+        if not type_ok:
+            raise InvalidParameterError(
+                message=translate(
+                    "err.kb.ontology_extract_options_invalid",
+                    params={"detail": f"{key} 类型必须为 {kind}"},
+                    fallback=f"options 参数非法: {key} 类型必须为 {kind}",
+                )
+            )
+        if bounds and not (bounds[0] <= value <= bounds[1]):
+            raise InvalidParameterError(
+                message=translate(
+                    "err.kb.ontology_extract_options_invalid",
+                    params={"detail": f"{key} 超出范围 {bounds}"},
+                    fallback=f"options 参数非法: {key} 超出范围 {bounds}",
+                )
+            )
+
+
+@router.post("/ontology/extract", summary="独立本体抽取（chunk + TBox → 本体实体/关系，不入库）")
+async def native_ontology_extract(request: Request, payload: NativeOntologyExtractRequest):
+    """给定 chunk 原文与 TBox 定义，返回本体实体/关系抽取结果（纯计算、不写任何存储）。
+
+    链路：Sidecar invoke → atomic-rag action `native_ontology_extract`。
+    注意：extractor 运行期 ok=false（如全部为表格 chunk）时经 500 返回；
+    超时由 GATEWAY_RAG_EXTRACT_TIMEOUT（默认 600s）控制。
+    """
+    _validate_native_extract_request(payload)
+    tenant_id = extract_tenant_id(request)
+    data = {
+        "chunks": payload.chunks,
+        "tbox": payload.tbox,
+        "scope": {
+            "tenant_id": tenant_id,
+            "knowledge_base_id": payload.knowledge_base_id or "",
+            "document_id": payload.document_id or "",
+            "trace_id": getattr(request.state, "request_id", ""),
+        },
+        "options": payload.options or {},
+    }
+    result = await _call_rag_capability(
+        request, "native_ontology_extract", data,
+        user_id=_extract_user_id(request),
+    )
     return success_response(data=result)
 
 
@@ -1993,9 +2264,10 @@ async def list_ontology_relations(
 async def list_ontology_entity_types(
     request: Request,
     knowledge_base_id: str = Query(..., min_length=1, max_length=128, description="知识库 ID"),
+    document_id: Optional[str] = Query(None, description="按来源文档过滤计数"),
 ):
     """获取知识库实体类型定义及其对应的 Neo4j 实例计数"""
-    payload = OntologyStatsRequest(knowledge_base_id=knowledge_base_id)
+    payload = OntologyStatsRequest(knowledge_base_id=knowledge_base_id, document_id=document_id)
     result = await _call_kb_capability(request, "list_ontology_entity_types", _schema_payload(payload))
     return success_response(data=result)
 
@@ -2004,9 +2276,10 @@ async def list_ontology_entity_types(
 async def list_ontology_relation_types(
     request: Request,
     knowledge_base_id: str = Query(..., min_length=1, max_length=128, description="知识库 ID"),
+    document_id: Optional[str] = Query(None, description="按来源文档过滤计数"),
 ):
     """获取知识库关系类型定义及其对应的 Neo4j 关系计数"""
-    payload = OntologyStatsRequest(knowledge_base_id=knowledge_base_id)
+    payload = OntologyStatsRequest(knowledge_base_id=knowledge_base_id, document_id=document_id)
     result = await _call_kb_capability(request, "list_ontology_relation_types", _schema_payload(payload))
     return success_response(data=result)
 
@@ -2038,6 +2311,7 @@ async def expand_ontology_neighbors(
     entity_type: str = Query(..., min_length=1, max_length=128, description="实体类型"),
     canonical_name: str = Query(..., min_length=1, max_length=512, description="实体规范名"),
     limit: int = Query(50, ge=1, le=200, description="邻居数量上限"),
+    document_id: Optional[str] = Query(None, description="按来源文档过滤邻居节点"),
 ):
     """展开指定实体的一跳邻居，返回邻居节点与连接边，用于前端双击节点增量扩展"""
     payload = OntologyNeighborRequest(
@@ -2045,6 +2319,7 @@ async def expand_ontology_neighbors(
         entity_type=entity_type,
         canonical_name=canonical_name,
         limit=limit,
+        document_id=document_id,
     )
     result = await _call_kb_capability(request, "expand_ontology_neighbors", _schema_payload(payload))
     return success_response(data=result)
@@ -2551,3 +2826,107 @@ async def get_raw_document_asset(
         content_disposition_type="inline",
         headers={"X-Content-Type-Options": "nosniff"},
     )
+
+
+# ════════════════════════════════════════════════════════════
+# 数据运营 /api/v1/knowledge-base/data-operations
+# ════════════════════════════════════════════════════════════
+
+@router.get("/data-operations/overview", summary="数据运营总览")
+async def get_data_operations_overview(
+    request: Request,
+    domain_space_id: Optional[str] = Query(None, max_length=64, description="领域空间 ID（空表示租户级全量）"),
+    days: int = Query(7, ge=1, le=365, description="统计窗口天数"),
+):
+    result = await _call_kb_capability(
+        request,
+        "get_data_operations_overview",
+        {"domain_space_id": domain_space_id, "days": days},
+        user_id=_extract_user_id(request),
+    )
+    return success_response(data=result)
+
+
+@router.get("/data-operations/data-assets", summary="数据资产分析")
+async def get_data_assets_analytics(
+    request: Request,
+    domain_space_id: Optional[str] = Query(None, max_length=64, description="领域空间 ID（空表示租户级全量）"),
+    days: int = Query(7, ge=1, le=365, description="统计窗口天数"),
+    unused_threshold_days: int = Query(30, ge=1, le=365, description="长期未使用阈值天数"),
+    kb_id: Optional[str] = Query(None, max_length=64, description="知识库 ID（空表示空间/租户全量）"),
+):
+    result = await _call_kb_capability(
+        request,
+        "get_data_assets_analytics",
+        {
+            "domain_space_id": domain_space_id,
+            "days": days,
+            "unused_threshold_days": unused_threshold_days,
+            "kb_id": kb_id,
+        },
+        user_id=_extract_user_id(request),
+    )
+    return success_response(data=result)
+
+
+@router.get("/data-operations/knowledge-assets", summary="知识资产分析")
+async def get_knowledge_assets_analytics(
+    request: Request,
+    domain_space_id: Optional[str] = Query(None, max_length=64, description="领域空间 ID（空表示租户级全量）"),
+    days: int = Query(7, ge=1, le=365, description="统计窗口天数"),
+    unused_threshold_days: int = Query(30, ge=1, le=365, description="长期未使用阈值天数"),
+):
+    result = await _call_kb_capability(
+        request,
+        "get_knowledge_assets_analytics",
+        {"domain_space_id": domain_space_id, "days": days, "unused_threshold_days": unused_threshold_days},
+        user_id=_extract_user_id(request),
+    )
+    return success_response(data=result)
+
+
+@router.get("/data-operations/search-analytics", summary="检索分析")
+async def get_search_analytics(
+    request: Request,
+    domain_space_id: Optional[str] = Query(None, max_length=64, description="领域空间 ID（空表示租户级全量）"),
+    days: int = Query(7, ge=1, le=365, description="统计窗口天数"),
+):
+    result = await _call_kb_capability(
+        request,
+        "get_search_analytics",
+        {"domain_space_id": domain_space_id, "days": days},
+        user_id=_extract_user_id(request),
+    )
+    return success_response(data=result)
+
+
+@router.get("/data-operations/abnormal-assets", summary="异常资产下钻（分页）")
+async def get_abnormal_assets_analytics(
+    request: Request,
+    domain_space_id: Optional[str] = Query(None, max_length=64, description="领域空间 ID（空表示租户级全量）"),
+    kb_id: Optional[str] = Query(None, max_length=64, description="知识库 ID（空表示空间/租户全量）"),
+    stage: Optional[str] = Query(None, max_length=64,
+                                description="阶段筛选，逗号分隔：parse,extract,compile（空表示全部）"),
+    handled: bool = Query(False, description="是否已处置：false=未处置（默认），true=已处置"),
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页条数"),
+):
+    """异常资产（按失败任务计数）。
+
+    ⚠️ 与页 1 的 `abnormal_summary` 一样**不受 `days` 限制**：这是待人工复核的队列，
+    按窗口过滤会把久未处置的失败藏起来（它们可能发生在窗口之前，但仍然有待处置）。
+    """
+    result = await _call_kb_capability(
+        request,
+        "get_abnormal_assets_analytics",
+        {
+            "domain_space_id": domain_space_id,
+            "kb_id": kb_id,
+            "stage": stage,
+            "handled": handled,
+            "page": page,
+            "page_size": page_size,
+        },
+        user_id=_extract_user_id(request),
+    )
+    return success_response(data=result)
