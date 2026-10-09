@@ -10,7 +10,6 @@
 import os
 from typing import Optional
 
-import jwt
 from fastapi import APIRouter, Body, Depends, File, Query, Request, UploadFile
 
 from jonex_core.common import (
@@ -26,55 +25,17 @@ from jonex_core.common import (
 from jonex_core.common.tenant import extract_tenant_id
 from jonex_core.common.i18n import translate
 from api_gateway.deps import require_auth_header, raise_from_capability_result
+# 身份解析统一在 `api_gateway/identity.py`（原先这里和 knowledge_base.py 各抄了一份）。
+# 用别名导入是为了不动下面 20 多处既有的 `_extract_*` 调用点 —— 换名字只是噪音。
+from api_gateway.identity import (
+    extract_impersonation as _extract_impersonation,
+    extract_user_id as _extract_user_id,
+    extract_username as _extract_username,
+)
 
 logger = get_logger("api_business_domain")
 
 ecosystem_router = APIRouter(prefix="/api/v1/ecosystem", dependencies=[Depends(require_auth_header)])
-
-def _extract_user_id(request: Request) -> str | None:
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        return None
-    token = auth[7:]
-    config = get_config()
-    try:
-        payload = jwt.decode(token, config.JWT_SECRET, algorithms=[config.JWT_ALGORITHM])
-        return payload.get("sub")
-    except jwt.PyJWTError:
-        return None
-
-
-def _extract_username(request: Request) -> str | None:
-    """从请求 Authorization 头的 JWT 中提取 username。"""
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        return None
-    token = auth[7:]
-    config = get_config()
-    try:
-        payload = jwt.decode(token, config.JWT_SECRET, algorithms=[config.JWT_ALGORITHM])
-        return payload.get("username") or None
-    except jwt.PyJWTError:
-        return None
-
-
-def _extract_impersonation(request: Request) -> tuple[bool, list[str], str | None]:
-    """从请求 Authorization 头的 JWT 中提取模拟态上下文（invoke 链路透传用）。"""
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        return False, [], None
-    token = auth[7:]
-    config = get_config()
-    try:
-        payload = jwt.decode(token, config.JWT_SECRET, algorithms=[config.JWT_ALGORITHM])
-    except jwt.PyJWTError:
-        return False, [], None
-    return (
-        bool(payload.get("impersonated")),
-        payload.get("perms") or [],
-        payload.get("original_tenant_id"),
-    )
-
 
 async def _call_bd_capability(request: Request, action: str, payload: dict):
     import asyncio

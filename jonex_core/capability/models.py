@@ -50,18 +50,25 @@ class CapabilityRequest:
 
 @dataclass
 class CapabilityResponse:
-    """能力调用响应"""
+    """能力调用响应。
+
+    `data` 是 `Any`：设计文档 §4.3 明确它可以**是对象也可以是列表**（不设分页的接口
+    直接回裸数组）。这里是 `@dataclass`、不做运行期校验，写窄了不会当场炸，但会让
+    照着标注写代码的人以为「只能回对象」——Sidecar 那张 Pydantic 模型就是这么被带窄、
+    进而把列表响应拦成 500 的。标注与契约保持一致。
+    """
+
     request_id: str
     success: bool
     code: int
     message: str
-    data: Optional[Dict[str, Any]] = None
+    data: Optional[Any] = None
     metadata: Optional[Dict[str, Any]] = None
     details: Optional[Dict[str, Any]] = None
     params: Optional[Dict[str, Any]] = None
 
     @classmethod
-    def ok(cls, request_id: str, data: Dict[str, Any] = None, message: str = "success") -> "CapabilityResponse":
+    def ok(cls, request_id: str, data: Any = None, message: str = "success") -> "CapabilityResponse":
         """成功响应"""
         return cls(request_id=request_id, success=True, code=0, message=message, data=data)
 

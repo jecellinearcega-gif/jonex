@@ -11,3 +11,28 @@ atomic:
   openkb:
     mode: remote
     # endpoint 留空走 SIDECAR_URL 默认值
+  jonex_wiki:
+    mode: remote
+    # endpoint 留空走 SIDECAR_URL 默认值
+# ============================================================
+# 业务能力
+# ============================================================
+# ⚠️ 这两条**必须声明成 remote**，少一条都会让 Ontology 库接入任务中心整条链失效：
+#
+# - `business.task_center.v1` —— 知识库**调任务中心**（`runtime.submit` /
+#   `report_terminal`）走它。不声明的话 `get_spec` 会兜底成 LOCAL
+#   （`jonex_core/capability/locator.py`），`LocalTaskCenterClient` 去**本进程**的
+#   能力注册中心里找任务中心 —— 本容器不注册它、找不到 → 回 1002 →
+#   SDK 判 `PERMANENT_REJECTED` → **每次上传都建不了任务**。
+# - `business.knowledge_base.v1` —— 任务中心**派活回知识库**（RunnerAdapter 按
+#   `task_catalog_steps.runner_code = 'knowledge_base'` 查 `runner_definitions`
+#   拿到这个 capability_id）要按它决定送到哪。同样不能是 LOCAL：发送侧在本进程里
+#   找不到这个 capability（它自己就是 knowledge_base，注册中心里没有「调用自己」
+#   这条能力）→ 每次都判 `REJECTED` → 子任务直接终态 failed。
+business:
+  business.task_center.v1:
+    mode: remote
+    # endpoint 留空走 SIDECAR_URL 默认值
+  business.knowledge_base.v1:
+    mode: remote
+    # endpoint 留空走 SIDECAR_URL 默认值

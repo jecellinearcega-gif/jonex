@@ -19,6 +19,9 @@ from .search_service import SearchService
 from .search_feedback_service import SearchFeedbackService
 from .search_history_service import SearchHistoryService
 from .space_service import SpaceService
+from .execution_registry import PostgresExecutionRegistry
+from .task_runner_service import TaskRunnerService
+from .task_watch_service import TaskWatchService
 
 __all__ = [
     "AnswerFeedbackService",
@@ -34,9 +37,12 @@ __all__ = [
     "OntologyService",
     "OntologySynonymService",
     "ParseResultService",
+    "PostgresExecutionRegistry",
     "ReasoningCollector",
     "ReconciliationService",
     "SearchFeedbackService",
     "SearchService",
     "SpaceService",
+    "TaskRunnerService",
+    "TaskWatchService",
 ]

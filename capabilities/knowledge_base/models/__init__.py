@@ -31,9 +31,27 @@ from .parser_setting import KnowledgeParserSetting
 from .answer_feedback import KnowledgeAnswerFeedback, KnowledgeAnswerFeedbackEvent
 from .search_feedback import KnowledgeSearchFeedback
 from .search_history import KnowledgeSearchHistory, build_query_hash, normalize_query
+from .search_event import (
+    AssetStatusEvent,
+    ProcessingTaskEvent,
+    SearchAdoptionEvent,
+    SearchHitEvent,
+    SearchRequestEvent,
+    SearchStepEvent,
+)
 from .space import Space, SpacePermission
+# [jonex] 任务中心接入表（接管行 + 执行登记）。按本模块 docstring 的契约，模型只有
+# 在这里被 import 才算注册进元数据 —— 别只靠「某个 repository 恰好 import 了它」。
+from .task_center import (
+    ACTIVE_STATES,
+    TaskCenterDocState,
+    TaskCenterDocument,
+    TaskExecutionRegistry,
+)
 
 __all__ = [
+    "ACTIVE_STATES",
+    "AssetStatusEvent",
     "DocStatus",
     "DocumentTag",
     "DomainService",
@@ -50,11 +68,19 @@ __all__ = [
     "KbPermission",
     "OntologyStatus",
     "OntologySynonym",
+    "ProcessingTaskEvent",
+    "SearchAdoptionEvent",
+    "SearchHitEvent",
+    "SearchRequestEvent",
+    "SearchStepEvent",
     "ServiceApiKey",
     "ServiceConfig",
     "ServiceKnowledgeBase",
     "Space",
     "SpacePermission",
+    "TaskCenterDocState",
+    "TaskCenterDocument",
+    "TaskExecutionRegistry",
     "build_query_hash",
     "normalize_query",
 ]

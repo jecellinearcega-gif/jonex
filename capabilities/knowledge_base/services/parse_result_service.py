@@ -14,14 +14,16 @@ from ..dtos import (
     ParseResultScopeRequest,
 )
 from .document_service import _payload
+from .kb_type_service import LLM_WIKI_TYPES  # [jonex] llm-wiki 子集 {openkb, jonex_wiki}
 
 
 class ParseResultService:
     async def get_summary(self, tenant_id: str, request: ParseResultScopeRequest | dict) -> dict:
         tenant_id = require_tenant(tenant_id)
         req = ParseResultScopeRequest(**_payload(request))
-        if await self._get_kb_type(tenant_id, req.knowledge_base_id) == "openkb":
-            return await self._openkb_summary(tenant_id, req.knowledge_base_id)
+        kb_type = await self._get_kb_type(tenant_id, req.knowledge_base_id)
+        if kb_type in LLM_WIKI_TYPES:
+            return await self._openkb_summary(tenant_id, req.knowledge_base_id, kb_type)
         return await get_rag_client().get_storage_summary(req.knowledge_base_id, tenant_id)
 
     async def list_documents(
@@ -31,11 +33,12 @@ class ParseResultService:
     ) -> dict:
         tenant_id = require_tenant(tenant_id)
         req = ParseResultDocumentListRequest(**_payload(request))
-        # ── [jonex] OpenKB 管线：解析文档列表来自 PG（knowledge_documents），非 LightRAG ──
-        if await self._get_kb_type(tenant_id, req.knowledge_base_id) == "openkb":
+        # ── [jonex] llm-wiki 管线：解析文档列表来自 PG（knowledge_documents），非 LightRAG ──
+        kb_type = await self._get_kb_type(tenant_id, req.knowledge_base_id)
+        if kb_type in LLM_WIKI_TYPES:
             return await self._openkb_documents_page(
                 tenant_id, req.knowledge_base_id, req.page, req.page_size,
-                req.keyword, req.status,
+                req.keyword, req.status, kb_type,
             )
         return await get_rag_client().get_storage_documents(
             knowledge_base_id=req.knowledge_base_id,
@@ -53,13 +56,14 @@ class ParseResultService:
     ) -> dict:
         tenant_id = require_tenant(tenant_id)
         req = ParseResultEntityListRequest(**_payload(request))
-        # ── [jonex] OpenKB 管线：实体来自 Wiki entities/concepts，非 LightRAG ──
-        if await self._get_kb_type(tenant_id, req.knowledge_base_id) == "openkb":
+        # ── [jonex] llm-wiki 管线：实体来自 Wiki entities/concepts，非 LightRAG ──
+        kb_type = await self._get_kb_type(tenant_id, req.knowledge_base_id)
+        if kb_type in LLM_WIKI_TYPES:
             graph = await self._openkb_graph(
                 tenant_id, req.knowledge_base_id, document_id=req.document_id or "",
             )
             return self._openkb_entities_page(
-                graph, req.page, req.page_size, req.keyword, req.entity_type,
+                graph, req.page, req.page_size, req.keyword, req.entity_type, kb_type,
             )
         return await get_rag_client().get_storage_entities(
             knowledge_base_id=req.knowledge_base_id,
@@ -79,14 +83,15 @@ class ParseResultService:
     ) -> dict:
         tenant_id = require_tenant(tenant_id)
         req = ParseResultRelationshipListRequest(**_payload(request))
-        # ── [jonex] OpenKB 管线：关系来自 Wiki 页面 [[wikilinks]] ──
-        if await self._get_kb_type(tenant_id, req.knowledge_base_id) == "openkb":
+        # ── [jonex] llm-wiki 管线：关系来自 Wiki 页面 [[wikilinks]] ──
+        kb_type = await self._get_kb_type(tenant_id, req.knowledge_base_id)
+        if kb_type in LLM_WIKI_TYPES:
             graph = await self._openkb_graph(
                 tenant_id, req.knowledge_base_id, document_id=req.document_id or "",
             )
             return self._openkb_relationships_page(
                 graph, req.page, req.page_size, req.keyword,
-                req.source_entity, req.target_entity,
+                req.source_entity, req.target_entity, kb_type,
             )
         return await get_rag_client().get_storage_relationships(
             knowledge_base_id=req.knowledge_base_id,
@@ -107,23 +112,25 @@ class ParseResultService:
     ) -> dict:
         tenant_id = require_tenant(tenant_id)
         req = ParseResultScopeRequest(**_payload(request))
-        if await self._get_kb_type(tenant_id, req.knowledge_base_id) == "openkb":
+        kb_type = await self._get_kb_type(tenant_id, req.knowledge_base_id)
+        if kb_type in LLM_WIKI_TYPES:
             graph = await self._openkb_graph(tenant_id, req.knowledge_base_id)
             n_ent = len(graph.get("entities", []))
             n_rel = len(graph.get("relationships", []))
             return {"entities_count": n_ent, "relations_count": n_rel,
-                    "relationships_count": n_rel, "kb_type": "openkb"}
+                    "relationships_count": n_rel, "kb_type": kb_type}
         return await get_rag_client().get_storage_graph_summary(req.knowledge_base_id, tenant_id)
 
     async def get_graph(self, tenant_id: str, request: ParseResultGraphRequest | dict) -> dict:
         tenant_id = require_tenant(tenant_id)
         req = ParseResultGraphRequest(**_payload(request))
-        if await self._get_kb_type(tenant_id, req.knowledge_base_id) == "openkb":
-            # [jonex] document_id 可选：给则文档级子图（OpenKB 容器源头过滤）
+        kb_type = await self._get_kb_type(tenant_id, req.knowledge_base_id)
+        if kb_type in LLM_WIKI_TYPES:
+            # [jonex] document_id 可选：给则文档级子图（llm-wiki 容器源头过滤）
             graph = await self._openkb_graph(
                 tenant_id, req.knowledge_base_id, document_id=req.document_id or "",
             )
-            return self._openkb_graph_view(graph, req.limit, req.keyword)
+            return self._openkb_graph_view(graph, req.limit, req.keyword, kb_type)
         return await get_rag_client().get_storage_graph(
             knowledge_base_id=req.knowledge_base_id,
             tenant_id=tenant_id,
@@ -156,12 +163,25 @@ class ParseResultService:
         from .kb_type_service import get_kb_type
         return await get_kb_type(tenant_id, kb_id)
 
+    @staticmethod
+    def _wiki_compiler(kb_type: str):
+        """[jonex] 按 kb_type 返回对应的 llm-wiki 编译服务（openkb/jonex_wiki）。"""
+        if kb_type == "jonex_wiki":
+            from .jonex_wiki_service import JonexWikiService
+            return JonexWikiService()
+        from .openkb_service import KnowledgeCompilerService
+        return KnowledgeCompilerService()
+
     async def _openkb_graph(self, tenant_id: str, kb_id: str,
                             document_id: str = "") -> dict:
-        """拉取 OpenKB Wiki 的 entities/concepts + 关系（文档级过滤可选）。异常降级为空图。"""
-        from .openkb_service import KnowledgeCompilerService
+        """拉取 llm-wiki 的 entities/concepts + 关系（文档级过滤可选）。异常降级为空图。
+
+        openkb 走 KnowledgeCompilerService；jonex_wiki 走 JonexWikiService，
+        引擎把 Wiki 页面与页间 links 投影为 entities/relationships。
+        """
+        kb_type = await self._get_kb_type(tenant_id, kb_id)
         try:
-            return await KnowledgeCompilerService().get_graph(
+            return await self._wiki_compiler(kb_type).get_graph(
                 kb_name=kb_id, tenant_id=tenant_id, kb_id=kb_id,
                 document_id=document_id,
             ) or {}
@@ -169,24 +189,184 @@ class ParseResultService:
             return {"entities": [], "relationships": []}
 
     async def get_wiki_page(self, tenant_id: str, kb_id: str, path: str) -> dict:
-        """[jonex] openkb 管线：读取 Wiki 页面内容（编译结果阅读模式）。"""
-        if await self._get_kb_type(tenant_id, kb_id) != "openkb":
+        """[jonex] llm-wiki 管线：读取 Wiki 页面内容（编译结果阅读模式）。
+
+        页面级 References（溯源到源文档）由引擎适配器给出 document_id 与摘录；
+        文档显示名/媒体类型是**平台库**信息，在这里用一次 SELECT 补齐——
+        前端据此直接打开原始文档查看器（维基百科 References 的对应物）。
+        """
+        kb_type = await self._get_kb_type(tenant_id, kb_id)
+        if kb_type not in LLM_WIKI_TYPES:
             raise InvalidParameterError(message=translate("err.kb.not_openkb", fallback="仅 LLM Wiki 知识库支持 Wiki 页面读取"))
-        from .openkb_service import KnowledgeCompilerService
-        return await KnowledgeCompilerService().read_page(
+        page = await self._wiki_compiler(kb_type).read_page(
             kb_name=kb_id, tenant_id=tenant_id, kb_id=kb_id, path=path,
         ) or {}
+        refs = page.get("references")
+        if isinstance(refs, list) and refs:
+            await self._attach_document_meta(tenant_id, refs)
+        return page
 
-    async def get_wiki_contents(self, tenant_id: str, kb_id: str,
-                                document_id: str = "") -> dict:
-        """[jonex] openkb 管线：Wiki 页面树（文档级过滤可选）。"""
-        if await self._get_kb_type(tenant_id, kb_id) != "openkb":
-            raise InvalidParameterError(message=translate("err.kb.not_openkb", fallback="仅 LLM Wiki 知识库支持 Wiki 页面树"))
-        from .openkb_service import KnowledgeCompilerService
-        return await KnowledgeCompilerService().list_wiki_contents(
-            kb_name=kb_id, tenant_id=tenant_id, kb_id=kb_id,
+    @staticmethod
+    async def _attach_document_meta(tenant_id: str, references: list) -> None:
+        """就地补齐 References 的源文档显示信息（file_name / mime_type）。
+
+        引擎只认 document_id；文件名在平台库。查不到（文档已删除）时保留
+        document_id —— 前端降级展示短 id，不隐藏这条溯源。
+        """
+        from sqlalchemy import select
+
+        from jonex_core.common.database import get_db_session
+
+        from ..models import KnowledgeDocument
+
+        doc_ids = [
+            str(r.get("document_id"))
+            for r in references
+            if isinstance(r, dict) and r.get("document_id")
+        ]
+        if not doc_ids:
+            return
+        try:
+            async with get_db_session() as session:
+                rows = (
+                    await session.execute(
+                        select(
+                            KnowledgeDocument.id,
+                            KnowledgeDocument.file_name,
+                            KnowledgeDocument.mime_type,
+                        ).where(
+                            KnowledgeDocument.tenant_id == tenant_id,
+                            KnowledgeDocument.id.in_(doc_ids),
+                        )
+                    )
+                ).all()
+        except Exception:  # noqa: BLE001 — 元数据补齐失败不影响页面阅读
+            return
+        meta = {row[0]: (row[1], row[2]) for row in rows}
+        for ref in references:
+            if not isinstance(ref, dict):
+                continue
+            info = meta.get(str(ref.get("document_id")))
+            ref["file_name"] = info[0] if info else ""
+            ref["mime_type"] = (info[1] if info else "") or ""
+
+    async def get_wiki_backlinks(self, tenant_id: str, kb_id: str, path: str,
+                                 document_id: str = "") -> dict:
+        """[jonex] 「链入本页」：谁链接到了这一页（维基百科 What links here）。
+
+        边来自引擎适配器的全库链接索引（frontmatter links + 正文首次提及，
+        识别门槛与前端正文蓝链同口径），按 published mtime 缓存。
+        """
+        kb_type = await self._get_kb_type(tenant_id, kb_id)
+        if kb_type not in LLM_WIKI_TYPES:
+            raise InvalidParameterError(message=translate("err.kb.not_openkb", fallback="仅 LLM Wiki 知识库支持 Wiki 页面读取"))
+        return await self._wiki_compiler(kb_type).get_wiki_backlinks(
+            kb_name=kb_id, tenant_id=tenant_id, kb_id=kb_id, path=path,
             document_id=document_id,
         ) or {}
+
+    async def get_wiki_claims(self, tenant_id: str, kb_id: str, path: str = "",
+                              document_id: str = "", limit: int = 500) -> dict:
+        """[jonex] claim 级溯源明细（列式视图「溯源审计」）。
+
+        与页面级 References 的分工：References 回答「这页证据来自哪几份文档」，
+        claim 明细回答「哪一条断言、原文哪一段」，并补上来源文档显示名。
+        """
+        kb_type = await self._get_kb_type(tenant_id, kb_id)
+        if kb_type not in LLM_WIKI_TYPES:
+            raise InvalidParameterError(message=translate("err.kb.not_openkb", fallback="仅 LLM Wiki 知识库支持 Wiki 页面读取"))
+        result = await self._wiki_compiler(kb_type).get_wiki_claims(
+            kb_name=kb_id, tenant_id=tenant_id, kb_id=kb_id, path=path,
+            document_id=document_id, limit=limit,
+        ) or {}
+        items = result.get("items")
+        if isinstance(items, list) and items:
+            await self._attach_claim_document_meta(tenant_id, items)
+        return result
+
+    @staticmethod
+    async def _attach_claim_document_meta(tenant_id: str, claims: list) -> None:
+        """给 claim 明细补来源文档显示名（与 References 同一套平台库信息）。"""
+        from sqlalchemy import select
+
+        from jonex_core.common.database import get_db_session
+
+        from ..models import KnowledgeDocument
+
+        doc_ids = sorted({
+            str(doc_id)
+            for claim in claims if isinstance(claim, dict)
+            for doc_id in (claim.get("document_ids") or [])
+            if doc_id
+        })
+        if not doc_ids:
+            return
+        try:
+            async with get_db_session() as session:
+                rows = (
+                    await session.execute(
+                        select(
+                            KnowledgeDocument.id,
+                            KnowledgeDocument.file_name,
+                            KnowledgeDocument.mime_type,
+                        ).where(
+                            KnowledgeDocument.tenant_id == tenant_id,
+                            KnowledgeDocument.id.in_(doc_ids),
+                        )
+                    )
+                ).all()
+        except Exception:  # noqa: BLE001 — 元数据补齐失败不影响审计表
+            return
+        meta = {row[0]: (row[1], row[2]) for row in rows}
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            docs = []
+            for doc_id in (claim.get("document_ids") or []):
+                name, mime = meta.get(str(doc_id), ("", ""))
+                docs.append({
+                    "document_id": str(doc_id),
+                    "file_name": name or "",
+                    "mime_type": mime or "",
+                })
+            claim["documents"] = docs
+
+    async def get_wiki_contents(self, tenant_id: str, kb_id: str,
+                                document_id: str = "", view: str = "") -> dict:
+        """[jonex] llm-wiki 管线：Wiki 页面树（文档级过滤可选）。
+
+        view="counts"：只返回三类页数，不返回页面条目（编译资产 tab 用）。
+        """
+        kb_type = await self._get_kb_type(tenant_id, kb_id)
+        if kb_type not in LLM_WIKI_TYPES:
+            raise InvalidParameterError(message=translate("err.kb.not_openkb", fallback="仅 LLM Wiki 知识库支持 Wiki 页面树"))
+        return await self._wiki_compiler(kb_type).list_wiki_contents(
+            kb_name=kb_id, tenant_id=tenant_id, kb_id=kb_id,
+            document_id=document_id, view=view,
+        ) or {}
+
+    async def compilation_state(self, tenant_id: str, kb_id: str, paused=None) -> dict:
+        if await self._get_kb_type(tenant_id, kb_id) != "jonex_wiki":
+            raise InvalidParameterError(message="仅 Jonex Wiki 支持编译暂停和恢复")
+        from jonex_core.capability.atomic.jonex_wiki.client import get_jonex_wiki_client
+        from sqlalchemy import select, func
+        from jonex_core.common.database import get_db_session
+        from ..models import KnowledgeDocument
+        state = await get_jonex_wiki_client().compilation_state(tenant_id, kb_id, paused)
+        async with get_db_session() as session:
+            counts = (await session.execute(select(
+                KnowledgeDocument.status, KnowledgeDocument.llm_wiki_compile_status, func.count()
+            ).where(KnowledgeDocument.tenant_id == tenant_id,
+                    KnowledgeDocument.knowledge_base_id == kb_id,
+                    KnowledgeDocument.is_deleted == 0).group_by(
+                KnowledgeDocument.status, KnowledgeDocument.llm_wiki_compile_status))).all()
+        state["pending_source_count"] = sum(n for status, _, n in counts
+                                            if status in {"pending", "parsing", "ingesting"})
+        state["waiting_source_count"] = sum(n for status, compile_status, n in counts
+                                            if status == "ready" and compile_status in {"stale", "pending", None, ""})
+        state["failed_source_count"] = sum(n for status, compile_status, n in counts
+                                           if status == "failed" or compile_status == "failed")
+        return state
 
     @staticmethod
     def _page_slice(items: list, page: int, page_size: int) -> tuple[list, int]:
@@ -196,7 +376,7 @@ class ParseResultService:
         start = (page - 1) * size
         return items[start:start + size], total
 
-    def _openkb_entities_page(self, graph, page, page_size, keyword, entity_type) -> dict:
+    def _openkb_entities_page(self, graph, page, page_size, keyword, entity_type, kb_type: str) -> dict:
         from collections import Counter
         ents = graph.get("entities", []) or []
         rels = graph.get("relationships", []) or []
@@ -225,9 +405,9 @@ class ParseResultService:
             })
         items, total = self._page_slice(mapped, page, page_size)
         return {"items": items, "total": total, "page": page, "page_size": page_size,
-                "scope_mode": "knowledge_base", "scope_warning": None, "kb_type": "openkb"}
+                "scope_mode": "knowledge_base", "scope_warning": None, "kb_type": kb_type}
 
-    def _openkb_relationships_page(self, graph, page, page_size, keyword, source_entity, target_entity) -> dict:
+    def _openkb_relationships_page(self, graph, page, page_size, keyword, source_entity, target_entity, kb_type: str) -> dict:
         rels = graph.get("relationships", []) or []
         # [jonex] 语言适配：关系的 source/target 底层是 slug（图按 id 匹配），
         # 列表展示用实体显示名（正文 H1 中文标题），无映射则退回 slug。
@@ -256,9 +436,9 @@ class ParseResultService:
             })
         items, total = self._page_slice(mapped, page, page_size)
         return {"items": items, "total": total, "page": page, "page_size": page_size,
-                "scope_mode": "knowledge_base", "scope_warning": None, "kb_type": "openkb"}
+                "scope_mode": "knowledge_base", "scope_warning": None, "kb_type": kb_type}
 
-    def _openkb_graph_view(self, graph, limit, keyword) -> dict:
+    def _openkb_graph_view(self, graph, limit, keyword, kb_type: str) -> dict:
         ents = graph.get("entities", []) or []
         rels = graph.get("relationships", []) or []
         kw = (keyword or "").lower()
@@ -279,7 +459,7 @@ class ParseResultService:
             "source_entity": r.get("source", ""), "target_entity": r.get("target", ""),
         } for r in rels if r.get("source") in keep and r.get("target") in keep]
         return {"nodes": nodes, "edges": edges, "entities": nodes, "relationships": edges,
-                "kb_type": "openkb"}
+                "kb_type": kb_type}
 
     async def _openkb_docs(self, tenant_id: str, kb_id: str) -> list[dict]:
         """从 PG 取该 KB 的文档（openkb 文档权威来源）。"""
@@ -296,7 +476,7 @@ class ParseResultService:
             )).scalars().all()
         return [d.to_dict() for d in rows]
 
-    async def _openkb_summary(self, tenant_id: str, kb_id: str) -> dict:
+    async def _openkb_summary(self, tenant_id: str, kb_id: str, kb_type: str) -> dict:
         docs = await self._openkb_docs(tenant_id, kb_id)
         graph = await self._openkb_graph(tenant_id, kb_id)
         total = len(docs)
@@ -319,7 +499,7 @@ class ParseResultService:
         return {
             "knowledge_base_id": kb_id,
             "tenant_id": tenant_id,
-            "source": "openkb",
+            "source": kb_type,
             "scope_mode": "knowledge_base",
             "scope_warning": None,
             "status": "processed",
@@ -333,10 +513,10 @@ class ParseResultService:
             "compile_versions_count": 0,
             "last_updated_at": last,
             "storage_files": {},
-            "kb_type": "openkb",
+            "kb_type": kb_type,
         }
 
-    async def _openkb_documents_page(self, tenant_id, kb_id, page, page_size, keyword, status) -> dict:
+    async def _openkb_documents_page(self, tenant_id, kb_id, page, page_size, keyword, status, kb_type: str) -> dict:
         docs = await self._openkb_docs(tenant_id, kb_id)
         kw = (keyword or "").lower()
         items = []
@@ -371,7 +551,7 @@ class ParseResultService:
             "page_size": page_size,
             "scope_mode": "knowledge_base",
             "scope_warning": None,
-            "kb_type": "openkb",
+            "kb_type": kb_type,
         }
 
 

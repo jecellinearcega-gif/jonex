@@ -2,6 +2,7 @@ import React from 'react';
 import { Input, Button, Table, Tag, Select } from 'antd';
 import { SearchOutlined, PlusOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 
 const taskDefs = [
   { id: 'financialRisk', status: 'running', lastRun: '2026-05-22 02:00', nextRun: '2026-05-23 02:00' },
@@ -54,29 +55,35 @@ export default function TaskSchedule() {
   ];
 
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1>{t('taskSchedule.title')}</h1>
-      </div>
-      <div className="yx-card">
-        <div className="yx-toolbar">
-          <Input prefix={<SearchOutlined />} placeholder={t('common.search')} style={{ width: 240 }} />
-          <Select
-            defaultValue={t('status.allStatus')}
-            style={{ width: 120 }}
-            options={[
-              { value: 'all', label: t('status.allStatus') },
-              { value: 'running', label: t('status.running') },
-              { value: 'paused', label: t('status.paused') },
-              { value: 'completed', label: t('status.completed') },
-            ]}
+    <>
+      <PageHeader title={t('taskSchedule.title')} />
+      <PageContent showCard={false}>
+        <div className="yx-card">
+          <div className="yx-toolbar">
+            <Input prefix={<SearchOutlined />} placeholder={t('common.search')} style={{ width: 240 }} />
+            <Select
+              defaultValue={t('status.allStatus')}
+              style={{ width: 120 }}
+              options={[
+                { value: 'all', label: t('status.allStatus') },
+                { value: 'running', label: t('status.running') },
+                { value: 'paused', label: t('status.paused') },
+                { value: 'completed', label: t('status.completed') },
+              ]}
+            />
+            <Button type="primary" icon={<PlusOutlined />}>
+              {t('taskSchedule.newTask')}
+            </Button>
+          </div>
+          <Table
+            columns={columns}
+            dataSource={tasks}
+            rowKey="id"
+            pagination={{ total: 9, pageSize: 10 }}
+            size="middle"
           />
-          <Button type="primary" icon={<PlusOutlined />}>
-            {t('taskSchedule.newTask')}
-          </Button>
         </div>
-        <Table columns={columns} dataSource={tasks} rowKey="id" pagination={{ total: 9, pageSize: 10 }} size="middle" />
-      </div>
-    </div>
+      </PageContent>
+    </>
   );
 }

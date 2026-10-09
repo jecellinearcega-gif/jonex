@@ -1,4 +1,4 @@
-# [jonex] Jonex新增文件 — OpenKB 编译服务
+# [jonex] 新增文件 — OpenKB 编译服务
 """knowledge_base 侧 OpenKB 编译/查询/删除编排服务。
 
 通过 RemoteOpenKBClient → Sidecar /invoke 调用 OpenKB 容器。
@@ -13,6 +13,13 @@ from jonex_core.capability.atomic.openkb.client import get_openkb_client
 from jonex_core.common.database import get_db_session
 from jonex_core.common.exceptions import ResourceConflictError, ResourceNotFoundError
 from jonex_core.common.i18n import translate
+
+from ..repository import (
+    TASK_STATUS_RUNNING,
+    TASK_TYPE_COMPILE,
+    record_compile_task,
+    record_processing_task,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -107,11 +114,15 @@ class KnowledgeCompilerService:
         )
 
     async def list_wiki_contents(self, kb_name: str, tenant_id: str, kb_id: str,
-                                 document_id: str = "") -> dict:
-        """列出 Wiki 页面树（新 action list_wiki_contents），文档级过滤可选。"""
+                                 document_id: str = "", view: str = "") -> dict:
+        """列出 Wiki 页面树（新 action list_wiki_contents），文档级过滤可选。
+
+        view="counts"：只返回三类页数（编译资产 tab 的统计卡与 tab 计数），
+        不返回页面条目。
+        """
         return await self._client.list_wiki_contents(
             kb_name=kb_name, tenant_id=tenant_id, kb_id=kb_id,
-            document_id=document_id,
+            document_id=document_id, view=view,
         )
 
     async def recompile_document(
@@ -166,26 +177,66 @@ class KnowledgeCompilerService:
 
     # ── [jonex] 重新编译编排（从 ontology_service.retry_extract 调用）──
 
+    async def _current_doc_status(self, tenant_id: str, document_id: str) -> str:
+        """读文档行当前状态（给「链上来的」那一档判 `DELETING` 用）。
+
+        查不到（含已软删）回空串：调用方只拿它比 `DELETING`，空值不拦 —— 与
+        `get_by_id` 的既定语义一致（软删也算「没了」），后面 claim / 产物校验会兜住。
+        """
+        from ..repository import KnowledgeDocumentRepository
+
+        async with get_db_session() as session:
+            doc = await KnowledgeDocumentRepository(session).get_by_id(
+                document_id, tenant_id
+            )
+        return (getattr(doc, "status", "") or "") if doc is not None else ""
+
     async def recompile_openkb(
         self, tenant_id: str, document_id: str, kb_id: str,
-        *, doc_status: str, source_file_path: str = "", title: str = "",
+        *, doc_status: str = "", source_file_path: str = "", title: str = "",
+        from_task_chain: bool = False,
     ) -> dict:
         """[jonex] openkb「重新编译」：按共享卷已有产物重跑 OpenKB 编译。
 
         任务化语义：claim（列）→ 提交编译任务（容器内后台执行）→ task_id 写列
         → 立即返回。终态由对账巡检 patrol_openkb_compile 轮询回写。
+
+        ── `from_task_chain`：这次是任务中心派的 `compile` 步 ──
+
+        为真时**跳过解析期的忙校验**（`PARSING` / `PENDING` / `INGESTING`），只拦
+        `DELETING`（那个是真危险：删到一半再编译，产物随时会消失）。
+
+        为什么链上可以跳：链上这一步**只可能在解析步成功之后才跑到**（先后由编排的
+        `depends_on` 保证），而那条忙校验防的是**用户手点**撞上 MinerU 正在覆盖写
+        `content.md`。不跳会被一个很窄的窗误伤 —— 看门狗是「先上报、后把文档置 READY」，
+        任务中心消化完上报就派这一步，那一刻文档行可能还停在 `parsing`，忙校验会把一个
+        其实已经解析成功的活**当场拒掉**（这一步被判失败，而解析明明好好的）。
+
+        ⚠️ 链上这一档**必须由调用方显式传**（默认为假）：它是「我是任务中心那条路」的
+        声明，与 `OntologyService.retry_extract` 的 `strict` 是同性质的东西 —— 判据同源，
+        别加第二个开关。
         """
         from ..models import DocStatus
 
-        # ── 忙碌校验：避免与 MinerU 覆盖写 content.md 竞争 ──
-        busy = {DocStatus.PARSING.value, DocStatus.PENDING.value,
-                DocStatus.INGESTING.value, DocStatus.DELETING.value}
-        if doc_status in busy:
-            raise ResourceConflictError(
-                message=translate("err.openkb.doc_busy",
-                                  fallback="文档正在解析/入库/删除中，请等待完成后再重新编译"),
-                details={"document_id": document_id, "status": doc_status},
-            )
+        if from_task_chain:
+            # 链上来的：只读一次当前状态，只拦「正在删除」。
+            status_now = await self._current_doc_status(tenant_id, document_id)
+            if status_now == DocStatus.DELETING.value:
+                raise ResourceConflictError(
+                    message=translate("err.openkb.doc_busy",
+                                      fallback="文档正在解析/入库/删除中，请等待完成后再重新编译"),
+                    details={"document_id": document_id, "status": status_now},
+                )
+        else:
+            # ── 忙碌校验：避免与 MinerU 覆盖写 content.md 竞争 ──
+            busy = {DocStatus.PARSING.value, DocStatus.PENDING.value,
+                    DocStatus.INGESTING.value, DocStatus.DELETING.value}
+            if doc_status in busy:
+                raise ResourceConflictError(
+                    message=translate("err.openkb.doc_busy",
+                                      fallback="文档正在解析/入库/删除中，请等待完成后再重新编译"),
+                    details={"document_id": document_id, "status": doc_status},
+                )
 
         # ── 产物前置校验：缺失时立即报错，不 claim、不投任务（避免假成功）──
         if not openkb_artifact_exists(document_id):
@@ -272,6 +323,7 @@ class KnowledgeCompilerService:
                    AND tenant_id = :tenant_id
                    AND is_deleted = 0
                    AND coalesce(llm_wiki_compile_status, '') <> 'compiling'
+                RETURNING knowledge_base_id, content_generation
             """)
             params: dict = {
                 "doc_id": document_id,
@@ -291,6 +343,7 @@ class KnowledgeCompilerService:
                    AND tenant_id = :tenant_id
                    AND is_deleted = 0
                    AND coalesce(llm_wiki_compile_status, '') <> 'compiling'
+                RETURNING knowledge_base_id, content_generation
             """)
             params = {
                 "doc_id": document_id,
@@ -299,8 +352,26 @@ class KnowledgeCompilerService:
             }
         async with get_db_session() as session:
             result = await session.execute(sql, params)
+            # `RETURNING` 而不是 `rowcount`：kb_id / content_generation 要跟着
+            # 落到埋点行上 —— **content_generation 必须与终态行一致**，否则
+            # `build_processing_task_id` 算出的键不同，开工行与收工行是两行，
+            # 那行 running 永远收不掉（僵尸，`pipeline_task_stats.running` 恒高）。
+            row = result.first()
+            if row is None:
+                await session.commit()
+                return False
+            # [jonex] 数据运营二期：知识编译任务埋点（compile/running）。
+            # 判据是抢占**成功**（没抢到说明别人在编，落一行新开工会重复计数），
+            # 且与抢占 UPDATE **同事务**（commit 之前）—— 另开会话会与外层争
+            # 同一行锁 → 死锁（`processing_task_repository` 的事务纪律）。
+            await record_processing_task(
+                session, tenant_id,
+                asset_id=document_id, task_type=TASK_TYPE_COMPILE,
+                status=TASK_STATUS_RUNNING, doc_id=document_id,
+                kb_id=row[0], content_generation=row[1],
+            )
             await session.commit()
-            return (result.rowcount or 0) > 0
+            return True
 
     async def set_task_id(self, tenant_id: str, document_id: str, task_id: str) -> None:
         """[jonex] 提交任务后把容器 task_id 写列（patrol 按它轮询）。"""
@@ -362,6 +433,13 @@ class KnowledgeCompilerService:
                 if status == "compiled":
                     fresh.llm_wiki_compiled_at = datetime.utcnow()
                 session.add(fresh)
+                # [jonex] 数据运营二期：知识编译任务埋点（compile 终态）。
+                # 与状态回写同事务（commit 之前）；`stale` 由薄封装挡下不落事件。
+                await record_compile_task(
+                    session, tenant_id, document_id=document_id,
+                    compile_status=status, kb_id=fresh.knowledge_base_id,
+                    content_generation=fresh.content_generation, error=error or None,
+                )
                 await session.commit()
         except Exception:
             logger.warning("[jonex] 记录 LLM-Wiki 编译状态失败 doc=%s", document_id, exc_info=True)

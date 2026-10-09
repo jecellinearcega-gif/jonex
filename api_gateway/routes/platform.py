@@ -61,7 +61,12 @@ async def _proxy_platform(request: Request, path: str):
             except Exception:
                 detail = {"message": e.response.text}
             if isinstance(detail, dict) and "success" in detail:
-                raise_from_capability_result(detail)
+                # 平台 REST 透传响应走 StandardResponse 序列化，结构化详情键名是
+                # error_details；而 raise_from_capability_result 读的是 invoke 契约的
+                # details。此处归一，否则详情在 Gateway 静默丢失（前端拿不到失败原因）。
+                raise_from_capability_result(
+                    {**detail, "details": detail.get("error_details")}
+                )
             raise_from_capability_result(
                 {"code": e.response.status_code,
                  "message": detail.get("message", f"平台服务错误: HTTP {e.response.status_code}")}
@@ -272,6 +277,21 @@ async def get_frontend_manifest(request: Request):
     return await _proxy_platform(request, "frontend/apps")
 
 
+# ==================== 前端外壳 UI 开关 ====================
+
+@router.get("/frontend/ui-config", summary="前端外壳 UI 开关")
+async def get_frontend_ui_config(request: Request):
+    """外壳 UI 开关（顶栏「任务中心」按钮显隐；值来自部署级 env `HIDE_TASK_CENTER`）。
+
+    ⚠ 网关对 platform 是**逐条登记**的（不像 sidecar 有 `/platform/{path:path}` 兜底），
+    所以 platform 侧每加一个对外口，**这里必须同步加一条** —— 漏了就是 404，而前端
+    `fetchUiConfig` 会静默回落成「不隐藏」，表现成「配了开关却还看得见」这种最难查的形态。
+    `tests/unit/test_hide_task_center.py` 里有一条**通用**对照测试钉这件事
+    （platform 全部路由 − 网关两个模块登记 = 一份写明原因的白名单）。
+    """
+    return await _proxy_platform(request, "frontend/ui-config")
+
+
 @router.get("/applications", summary="获取应用列表")
 async def list_applications(request: Request):
     """获取已注册的应用列表"""
@@ -445,7 +465,7 @@ async def delete_mcp_key(key_id: str, request: Request):
 
 @router.get("/mcp-services", summary="获取 MCP 服务列表")
 async def list_mcp_services(request: Request):
-    """E6: 获取领域服务列表（含 MCP 发布状态、关联 KB 数量）"""
+    """获取领域服务列表（含 MCP 发布状态、关联 KB 数量）"""
     return await _proxy_platform(request, "mcp-services")
 
 
@@ -465,13 +485,13 @@ async def get_mcp_service_authorized_keys(service_id: str, request: Request):
 
 @router.post("/mcp-services/{service_id}/publish", summary="发布 MCP 服务")
 async def publish_service(service_id: str, request: Request):
-    """E7: 发布领域服务标记为 MCP 可见"""
+    """发布领域服务标记为 MCP 可见"""
     return await _proxy_platform(request, f"mcp-services/{service_id}/publish")
 
 
 @router.post("/mcp-services/{service_id}/unpublish", summary="取消发布 MCP 服务")
 async def unpublish_service(service_id: str, request: Request):
-    """E8: 取消发布领域服务"""
+    """取消发布领域服务"""
     return await _proxy_platform(request, f"mcp-services/{service_id}/unpublish")
 
 
@@ -489,5 +509,52 @@ async def start_service(service_id: str, request: Request):
 
 @router.put("/mcp-services/{service_id}/tool", summary="保存领域服务 Tool 配置")
 async def save_tool_config(service_id: str, request: Request):
-    """DS-03: 保存领域服务的 MCP Tool 配置（tool 名称 + 描述）"""
+    """保存领域服务的 MCP Tool 配置（tool 名称 + 描述）"""
     return await _proxy_platform(request, f"mcp-services/{service_id}/tool")
+
+
+# ==================== 企业身份集成 ====================
+
+
+@router.get("/identity-integration", summary="查询企业身份集成统一展示")
+async def get_identity_integration(request: Request):
+    """查询统一展示（SSO 状态 + 主数据源 + 最近同步记录摘要）"""
+    return await _proxy_platform(request, "identity-integration")
+
+
+@router.put("/identity-integration", summary="更新企业身份集成配置")
+async def update_identity_integration(request: Request):
+    """更新配置（SSO 子配置 + 主数据源子配置）"""
+    return await _proxy_platform(request, "identity-integration")
+
+
+@router.post("/identity-integration/test-connection", summary="测试企业身份集成连接")
+async def test_identity_integration_connection(request: Request):
+    """测试连接（target=sso 或 datasource）"""
+    return await _proxy_platform(request, "identity-integration/test-connection")
+
+
+@router.get("/identity-integration/sso-realm", summary="获取 SSO Realm 只读展示")
+async def get_sso_realm(request: Request):
+    """tenant_realm_map 只读展示（服务地址/Realm/Client ID/回调地址）。"""
+    return await _proxy_platform(request, "identity-integration/sso-realm")
+
+
+@router.post("/identity-integration/sync", summary="立即同步企业用户")
+async def trigger_identity_sync(request: Request):
+    """立即同步（mode=incremental/full）"""
+    return await _proxy_platform(request, "identity-integration/sync")
+
+
+@router.get("/identity-integration/sync-records", summary="获取企业身份同步记录列表")
+async def list_identity_sync_records(request: Request):
+    """同步记录列表（分页）"""
+    return await _proxy_platform(request, "identity-integration/sync-records")
+
+
+@router.get(
+    "/identity-integration/sync-records/{record_id}", summary="获取企业身份同步记录详情"
+)
+async def get_identity_sync_record(record_id: int, request: Request):
+    """同步记录详情（含失败明细）"""
+    return await _proxy_platform(request, f"identity-integration/sync-records/{record_id}")
