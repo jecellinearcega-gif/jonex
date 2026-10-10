@@ -240,6 +240,51 @@ docker exec jonex-atomic-rag python -c "import torch; print(torch.cuda.is_availa
 
 GPU 生效后 MinerU 解析器自动使用 CUDA，atomic-rag CPU 内存占用显著下降。
 
+## 文档解析服务 MinerU（可选）
+
+`deploy/.env.example` 默认 `RAG_PARSER=mineru_selfhost`，它要求一个外部 **mineru-api** 服务
+（`POST /tasks` 提交解析 + `GET /health` 健康检查，官方 MinerU 的 `mineru-api` 服务即此契约）。
+仓库默认不启动该服务，下面是从零启用路径；三种解析方式的取舍见 `deploy/.env.example` §13。
+
+### 1. 准备镜像
+
+官方**不发布**预构建镜像，需自行构建（模型在构建时固化进镜像，产物约 12–30 GB）：
+
+```bash
+git clone https://github.com/opendatalab/MinerU.git && cd MinerU
+docker build -t mineru:latest -f docker/china/Dockerfile .    # 国内源（DaoCloud + 阿里云 pip + ModelScope 模型）
+# docker build -t mineru:latest -f docker/global/Dockerfile . # 国外源（HuggingFace 模型）
+```
+
+已在他处构建过该镜像的机器可直接复用：`docker save mineru:latest | gzip > mineru.tgz` →
+目标机 `docker load`。镜像名不同时在 `deploy/.env` 写 `MINERU_IMAGE=<你的镜像名>`。
+
+### 2. 启动（compose profile：mineru）
+
+```bash
+cd deploy
+docker compose --profile mineru up -d mineru-api                          # CPU
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml \
+  --profile mineru up -d mineru-api                                       # GPU（推荐）
+```
+
+### 3. 接线与验证
+
+```bash
+# deploy/.env
+MINERU_SELFHOST_BASE_URL=http://mineru-api:8000   # 容器间按服务名寻址
+```
+
+```bash
+docker compose up -d atomic-rag    # env_file 变更须重建容器，restart 不重读
+# 容器内验证端点可达（200 即通）
+docker exec jonex-atomic-rag python -c "import urllib.request; print(urllib.request.urlopen('http://mineru-api:8000/health', timeout=5).status)"
+```
+
+- 默认 8000 端口只在容器网络内暴露；本机 curl 调试可在 `docker-compose.yml` 的 `mineru-api` 段打开注释掉的 `ports:`。
+- 排障：`docker logs jonex-mineru-api`；解析报 `MinerU self-host request failed` 见「故障排查」。
+- 可配合瘦身 atomic-rag 镜像使用（`RAG_PROFILE=slim docker compose build atomic-rag`，去 torch/CUDA/mineru 省 ~3.9 GB）——slim 只支持 online/selfhost，正好适配外部 mineru-api。
+
 ## 本体知识引擎运维
 
 文档解析 + LightRAG 入库完成后，可选开启 Stage 4 本体抽取。当前职责划分：
@@ -441,6 +486,20 @@ docker exec jonex-postgres pg_isready -U jonex
 docker stats                            # 容器资源占用
 make logs-sidecar
 make logs-service SERVICE=knowledge-base-service
+```
+
+文档解析失败（`MinerU self-host request failed: ... Connection refused`）：
+
+- 原因：`deploy/.env` 的 `RAG_PARSER=mineru_selfhost` 需要一个真实可达的 mineru-api 服务，报 Connection refused 即端点不可达。常见两种：没有部署该服务（仓库内置可选服务，但默认不启动，见「文档解析服务 MinerU（可选）」），或 `MINERU_SELFHOST_BASE_URL` 写成了 `127.0.0.1`——在容器里这是**容器自身**，不是宿主机（除非服务与 atomic-rag 同机且走 host 网络）。
+- 处置（三选一）：
+  1. 改用本地解析（full 镜像自带依赖与模型，无需外部服务）：`RAG_PARSER=mineru`；
+  2. 改用云 API：`RAG_PARSER=mineru_online` + `MINERU_API_TOKEN`（需外网）；
+  3. 起一个 mineru-api：用仓库内置的可选服务一键启动（见「文档解析服务 MinerU（可选）」），或自备服务并把 `MINERU_SELFHOST_BASE_URL` 指向容器可达的地址（宿主机上的服务写宿主机 IP）。
+- 改 `deploy/.env` 后必须重建 atomic-rag（`env_file` 变更不吃 `restart`）：`docker compose up -d atomic-rag`。
+- 验证端点可达（200 即通）：
+
+```bash
+docker exec jonex-atomic-rag python -c "import urllib.request; print(urllib.request.urlopen('<你的地址>/health', timeout=5).status)"
 ```
 
 ## 快速部署步骤

@@ -1074,6 +1074,49 @@ services:
     # Mac 本地开发请叠加 docker-compose.mac.yml 降低资源占用。
 
   # ============================================================
+  # mineru-api - MinerU 文档解析服务（可选，profiles 隔离）
+  # 为 RAG_PARSER=mineru_selfhost 提供外部解析端点（POST /tasks +
+  # GET /health，与官方 MinerU 的 mineru-api 服务同契约）。
+  # 默认不随 make up 起；镜像构建与完整接线步骤见
+  # deploy/README.md「文档解析服务 MinerU（可选）」：
+  #   docker compose --profile mineru up -d mineru-api
+  #   （GPU 再叠 -f docker-compose.gpu.yml；启用后须把 .env 的
+  #     MINERU_SELFHOST_BASE_URL 指向 http://mineru-api:8000，并重建 atomic-rag）
+  # ============================================================
+  mineru-api:
+    # 官方不发布预构建镜像，需按官方 Dockerfile 自建（见 README），或 docker load 复用别处镜像
+    image: ${MINERU_IMAGE:-mineru:latest}
+    container_name: jonex-mineru-api
+    hostname: mineru-api
+    profiles: ["mineru"]
+    networks:
+      - jonex-network
+    expose:
+      - "8000"                    # 仅容器网络内；atomic-rag 按服务名寻址
+    # ports:
+    #   - "127.0.0.1:8000:8000"   # 仅本机 curl 调试用（注意宿主机 8000 端口占用）
+    environment:
+      TZ: Asia/Shanghai
+      # 官方镜像构建时已固化模型（china 版来自 ModelScope），local=只读内置模型；
+      # 换用未内置模型的镜像时改为 modelscope（首次启动现场下载）
+      MINERU_MODEL_SOURCE: local
+    # 官方镜像 ENTRYPOINT 不带 CMD，须显式给服务命令（同官方 compose 用法）
+    entrypoint: mineru-api
+    command: ["--host", "0.0.0.0", "--port", "8000"]
+    # command 末尾追加 "--allow-public-http-client" 可允许提交公网 URL 文档（有 SSRF 风险，默认关闭）
+    ipc: host                     # 官方推荐：共享内存供模型推理
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s          # 首次启动加载模型可能较慢
+    restart: unless-stopped
+
+  # ============================================================
   # openkb - 知识库 Wiki 编译服务
   # ============================================================
   # 容器内运行 deploy/start_capability.py（Jonex Atomic Capability），提供：

@@ -1,12 +1,23 @@
 # ============================================================
 # GPU 加速覆盖配置
 # 基础 docker-compose.yml 不默认启用 GPU。叠加本文件可启用
-# NVIDIA GPU 加速 MinerU 文档解析。
+# NVIDIA GPU 加速 MinerU 文档解析（atomic-rag 内置解析链路；
+# 以及启用 profile: mineru 时的 mineru-api 服务）。
 # 使用: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
 # ============================================================
 
 services:
   atomic-rag:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # 仅在 --profile mineru 启动时生效；其余情况本段无影响
+  mineru-api:
     deploy:
       resources:
         reservations:
