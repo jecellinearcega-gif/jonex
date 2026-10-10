@@ -1,16 +1,61 @@
+// 知识库详情：Tabs 撑满卡片剩余高度（Table 有自己的滚动，这里不滚）。
+// antd 的 .ant-tabs-content-holder 默认是块级，不加这几条 tabpane 拿不到确定高度。
+.kb-detail-tabs {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+
+  > .ant-tabs-nav {
+    flex-shrink: 0;
+    margin-bottom: 16px;
+  }
+
+  > .ant-tabs-content-holder {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+
+  > .ant-tabs-content-holder > .ant-tabs-content {
+    flex: 1;
+    min-width: 0;
+  }
+
+  // .ant-tabs-content 是块级，tabpane 拿不到父级高度，这里补上百分比
+  > .ant-tabs-content-holder > .ant-tabs-content > .ant-tabs-tabpane {
+    height: 100%;
+  }
+}
+
+.kb-detail-tab-pane {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+// 编译资产 / 情况追踪 tab：内容是纵向长流（子 tab + 表格，都是直接落在页面上、不再套卡片），
+// 不用 .kb-detail-tab-pane——那个是撑满 + flex column，给文档库的表格自己滚用的。
+.kb-assets-tab-pane,
+.kb-tracking-tab-pane {
+  height: 100%;
+  overflow-y: auto;
+}
+
+// 编译资产面板的子 tab 栏：下边距归零（antd 默认 16px，页签与内容之间会多出一道缝）。
+// 限定直接子级：tabpane 内部还有自己的 tab（如列式浏览），不能连带改掉
+.kb-compile-assets-tabs > .ant-tabs-nav {
+  margin-bottom: 0;
+}
+
 .doc-library {
   display: flex;
-  gap: 16px;
   height: 100%;
 
-  // 左侧目录 sidebar
+  // 左侧目录 sidebar：白底与圆角交给外层卡片，这里只留一条竖线分区
   &-sidebar {
     width: 220px;
     flex-shrink: 0;
-    background: #fff;
-    border-radius: 12px;
-    border: 1px solid #eef2f6;
-    padding: 16px 0;
+    border-right: 1px solid #eef2f6;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -97,14 +142,11 @@
     }
   }
 
-  // 右侧表格区域
+  // 右侧表格区域：同上，白底与圆角交给外层卡片，这里只留与竖线的间距
   &-main {
     flex: 1;
     min-width: 0;
-    background: #fff;
-    border-radius: 12px;
-    border: 1px solid #eef2f6;
-    padding: 16px;
+    padding-left: 16px;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -116,62 +158,67 @@
     background: #f8fafc;
   }
 
-  &-toolbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 16px;
-    gap: 12px;
-    flex-wrap: wrap;
-    flex-shrink: 0;
-  }
-
-  // Table 自适应填充
-  &-table {
+  // 表格宿主：承接 main 的剩余高度，内部滚动交给 antd 的固定表头结构
+  &-table-host {
     flex: 1;
-    overflow: hidden;
-
-    .ant-spin-nested-loading {
-      height: 100%;
-
-      .ant-spin-container {
-        height: 100%;
-        display: flex;
-        flex-direction: column;
-
-        .ant-table {
-          flex: 1;
-          overflow: hidden;
-
-          .ant-table-container {
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-
-            .ant-table-header {
-              flex-shrink: 0;
-            }
-
-            .ant-table-body {
-              flex: 1;
-              overflow-y: auto !important;
-              overflow-x: auto !important;
-            }
-          }
-        }
-
-        .ant-pagination {
-          flex-shrink: 0;
-          padding-top: 12px;
-          margin: 0 !important;
-        }
-      }
-    }
+    min-height: 0;
   }
 
-  // 搜索框宽度
-  &-search-input {
-    width: 240px;
+  // 这个 class 挂在 CommonTable 的**根容器**上（筛选区 + 表格的 flex column），不是 antd Table。
+  // 表格自适应填充的链路比过去多一层：根容器是 flex 子项，Table 是根容器里筛选区之后的那个
+  // flex 子项。当前 antd 渲染的是 .ant-table-wrapper > .ant-spin > .ant-spin-container，没有
+  // .ant-spin-nested-loading 这一层；必须逐层给确定高度，表体才会在容器内滚、分页钉底。
+  // 每条都限定在 > .ant-table-wrapper 内，免得误伤筛选区里可能出现的 spin。
+  &-table {
+    height: 100%;
+
+    > .ant-form {
+      flex-shrink: 0;
+    }
+
+    > .ant-table-wrapper {
+      flex: 1;
+      min-height: 0;
+    }
+
+    > .ant-table-wrapper .ant-spin {
+      height: 100%;
+    }
+
+    > .ant-table-wrapper .ant-spin-container {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    > .ant-table-wrapper .ant-table {
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    > .ant-table-wrapper .ant-table-container {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+    }
+
+    > .ant-table-wrapper .ant-table-header {
+      flex-shrink: 0;
+    }
+
+    > .ant-table-wrapper .ant-table-body {
+      flex: 1;
+      overflow-y: auto !important;
+      overflow-x: auto !important;
+    }
+
+    > .ant-table-wrapper .ant-pagination {
+      flex-shrink: 0;
+      padding-top: 12px;
+      margin: 0 !important;
+    }
   }
 }
 

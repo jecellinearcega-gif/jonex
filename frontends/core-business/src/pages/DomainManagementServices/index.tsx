@@ -15,6 +15,7 @@ import copy from 'copy-to-clipboard';
 import { useTranslation } from 'react-i18next';
 import { useStore } from '@/store';
 import { SPACE_URL_PARAM } from '@jonex/shell-sdk';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 import type { ColumnsType } from 'antd/es/table';
 import {
   listServices,
@@ -300,9 +301,7 @@ const DomainManagementServices = function DomainManagementServices() {
       render: (v: string, _r: DomainServiceItem) => {
         const cfg = getServiceStatusMap(t)[v];
         if (!cfg) return <Tag>{v}</Tag>;
-        return (
-          <Tag color={v === 'active' ? 'success' : v === 'testing' ? 'warning' : 'error'}>{cfg.label}</Tag>
-        );
+        return <Tag color={v === 'active' ? 'success' : v === 'testing' ? 'warning' : 'error'}>{cfg.label}</Tag>;
       },
     },
     {
@@ -340,9 +339,7 @@ const DomainManagementServices = function DomainManagementServices() {
             <a
               className="yx-table-action"
               style={
-                canManageServices
-                  ? { color: '#dc2626' }
-                  : { color: '#dc2626', opacity: 0.4, cursor: 'not-allowed' }
+                canManageServices ? { color: '#dc2626' } : { color: '#dc2626', opacity: 0.4, cursor: 'not-allowed' }
               }
               title={canManageServices ? undefined : t('domainSpace.noManagePermission')}
               onClick={() => canManageServices && setDeleteTarget(r)}
@@ -380,189 +377,196 @@ const DomainManagementServices = function DomainManagementServices() {
   }
 
   return (
-    <div className="yx-domain-management-page">
-      {/* Page Header */}
-      <div className="yx-page-header">
-        <h1 className="yx-page-title">{t('domainManagementServices.title')}</h1>
-        <p className="yx-page-desc">{t('domainManagementServices.description')}</p>
-      </div>
-
-      {/* Card */}
-      <div className="yx-card">
-        <div className="yx-toolbar">
-          <Input
-            prefix={<SearchOutlined style={{ color: '#94a3b8', fontSize: 14 }} />}
-            placeholder={t('domainManagementServices.searchPlaceholder')}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{ width: 240 }}
-          />
-          <Select value={typeFilter} onChange={setTypeFilter} style={{ width: 140 }} options={typeOptions} />
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            disabled={!canManageServices}
-            title={canManageServices ? undefined : t('domainSpace.noManagePermission')}
-            onClick={() => serviceFormRef.current?.openCreate()}
-          >
-            {t('domainManagementServices.createService')}
-          </Button>
-        </div>
-
-        <Table<DomainServiceItem>
-          columns={columns}
-          dataSource={filtered}
-          rowKey="id"
-          pagination={{
-            total: filtered.length,
-            pageSize: 10,
-            showTotal: (total, range) => t('common.totalItemsRange', { total, from: range[0], to: range[1] }),
-          }}
-          size="middle"
-          locale={{ emptyText: t('domainManagement.empty') }}
-        />
-      </div>
-
-      <ServiceFormModal
-        ref={serviceFormRef}
-        spaceId={global.currentSpaceId}
-        availableKbs={availableKbs}
-        onSaved={loadServices}
-      />
-
-      {/* ===== Delete Confirm Modal ===== */}
-      <Modal
-        wrapClassName="yx-domain-space-modal"
-        title={
-          <span>
-            <StopOutlined style={{ color: '#ef4444', marginRight: 8 }} />
-            {t('common.confirmDeleteTitle')}
-          </span>
-        }
-        open={!!deleteTarget}
-        onCancel={() => setDeleteTarget(null)}
-        footer={
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 12 }}>
-            <Button onClick={() => setDeleteTarget(null)}>{t('common.cancel')}</Button>
-            <Button danger type="primary" loading={submitting} onClick={handleDelete}>
-              {t('common.okText')}
-            </Button>
-          </div>
-        }
-        width={420}
-      >
-        <div style={{ textAlign: 'center', padding: '12px 0' }}>
-          <DeleteOutlined style={{ fontSize: 48, color: '#ef4444', marginBottom: 16, display: 'block' }} />
-          <p style={{ fontSize: 16, color: '#1e293b', fontWeight: 500 }}>
-            {t('common.confirmDeleteContent', { name: deleteTarget?.name || '' })}
+    <>
+      <PageHeader title={t('domainManagementServices.title')} style={{ marginBottom: 4 }} />
+      <PageContent showCard={false}>
+        <div className="yx-domain-management-page">
+          <p className="yx-page-desc" style={{ marginBottom: 24 }}>
+            {t('domainManagementServices.description')}
           </p>
-          <p style={{ fontSize: 13, color: '#94a3b8', marginTop: 8 }}>{t('common.deleteWarning')}</p>
-        </div>
-      </Modal>
 
-      {/* ===== Service Config Modal (API Keys) ===== */}
-      <Modal
-        wrapClassName="yx-domain-space-modal"
-        title={
-          <span>
-            <KeyOutlined style={{ color: '#f97316', marginRight: 8 }} />
-            {t('domainManagement.srvConfigTitle')}
-          </span>
-        }
-        open={srvConfigOpen}
-        onCancel={() => setSrvConfigOpen(false)}
-        footer={<Button onClick={() => setSrvConfigOpen(false)}>{t('common.cancel')}</Button>}
-        width={760}
-      >
-        <p style={{ fontSize: 14, color: '#475569', marginBottom: 16 }}>
-          {t('domainManagement.srvConfigDesc', { name: srvConfigTarget?.name || '' })}
-        </p>
-        <div style={{ textAlign: 'right', marginBottom: 12 }}>
-          <Button type="primary" size="small" icon={<PlusOutlined />} loading={creatingKey} onClick={handleCreateKey}>
-            {t('domainManagement.addApiKey')}
-          </Button>
-        </div>
-        {apiKeysLoading ? (
-          <div style={{ textAlign: 'center', padding: 24 }}>
-            <Spin />
+          {/* Card */}
+          <div className="yx-card">
+            <div className="yx-toolbar">
+              <Input
+                prefix={<SearchOutlined style={{ color: '#94a3b8', fontSize: 14 }} />}
+                placeholder={t('domainManagementServices.searchPlaceholder')}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                style={{ width: 240 }}
+              />
+              <Select value={typeFilter} onChange={setTypeFilter} style={{ width: 140 }} options={typeOptions} />
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                disabled={!canManageServices}
+                title={canManageServices ? undefined : t('domainSpace.noManagePermission')}
+                onClick={() => serviceFormRef.current?.openCreate()}
+              >
+                {t('domainManagementServices.createService')}
+              </Button>
+            </div>
+
+            <Table<DomainServiceItem>
+              columns={columns}
+              dataSource={filtered}
+              rowKey="id"
+              pagination={{
+                total: filtered.length,
+                pageSize: 10,
+                showTotal: (total, range) => t('common.totalItemsRange', { total, from: range[0], to: range[1] }),
+              }}
+              size="middle"
+              locale={{ emptyText: t('domainManagement.empty') }}
+            />
           </div>
-        ) : (
-          <Table<ServiceApiKeyItem>
-            columns={[
-              {
-                title: t('domainManagement.apiKey'),
-                dataIndex: 'key_encrypted',
-                key: 'key_encrypted',
-                width: 360,
-                render: (val: string, record: ServiceApiKeyItem) => (
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <span className="yx-key-text">{val || '—'}</span>
-                    {val && (
-                      <Button
-                        type="text"
-                        className={`yx-copy-btn${copiedKeyId === record.id ? ' copied' : ''}`}
-                        title={copiedKeyId === record.id ? t('common.copySuccess') : t('domainManagement.copyApiKey')}
-                        onClick={() => handleCopyKey(record.id, val)}
-                      >
-                        {copiedKeyId === record.id ? <CheckOutlined /> : <CopyOutlined />}
-                      </Button>
-                    )}
-                  </span>
-                ),
-              },
-              {
-                title: t('domainManagement.keyPrefix'),
-                dataIndex: 'key_prefix',
-                key: 'key_prefix',
-                width: 130,
-                render: (val: string) => (val ? <Typography.Text code>{val}</Typography.Text> : '—'),
-              },
-              {
-                title: t('domainManagement.expiresAt'),
-                dataIndex: 'expires_at',
-                key: 'expires_at',
-                width: 120,
-                render: (val: string | null) => formatDate(val),
-              },
-              {
-                title: t('domainManagement.createdAt'),
-                dataIndex: 'created_at',
-                key: 'created_at',
-                width: 120,
-                render: (val: string | null) => formatDate(val),
-              },
-              {
-                title: t('domainManagement.status'),
-                dataIndex: 'is_active',
-                key: 'is_active',
-                width: 90,
-                render: (v: number) =>
-                  v === 1 ? (
-                    <Tag color="success">{t('status.active')}</Tag>
-                  ) : (
-                    <Tag>{t('status.inactive')}</Tag>
-                  ),
-              },
-              {
-                title: t('domainManagement.srvConfigActions'),
-                key: 'actions',
-                width: 100,
-                render: (_: unknown, record: ServiceApiKeyItem) => (
-                  <Button type="text" danger onClick={() => handleDeleteKey(record.id)}>
-                    <DeleteOutlined /> {t('common.delete')}
-                  </Button>
-                ),
-              },
-            ]}
-            dataSource={apiKeys}
-            rowKey="id"
-            pagination={false}
-            size="small"
-            locale={{ emptyText: t('common.noApiKey') }}
+
+          <ServiceFormModal
+            ref={serviceFormRef}
+            spaceId={global.currentSpaceId}
+            availableKbs={availableKbs}
+            onSaved={loadServices}
           />
-        )}
-      </Modal>
-    </div>
+
+          {/* ===== Delete Confirm Modal ===== */}
+          <Modal
+            wrapClassName="yx-domain-space-modal"
+            title={
+              <span>
+                <StopOutlined style={{ color: '#ef4444', marginRight: 8 }} />
+                {t('common.confirmDeleteTitle')}
+              </span>
+            }
+            open={!!deleteTarget}
+            onCancel={() => setDeleteTarget(null)}
+            footer={
+              <div style={{ display: 'flex', justifyContent: 'center', gap: 12 }}>
+                <Button onClick={() => setDeleteTarget(null)}>{t('common.cancel')}</Button>
+                <Button danger type="primary" loading={submitting} onClick={handleDelete}>
+                  {t('common.okText')}
+                </Button>
+              </div>
+            }
+            width={420}
+          >
+            <div style={{ textAlign: 'center', padding: '12px 0' }}>
+              <DeleteOutlined style={{ fontSize: 48, color: '#ef4444', marginBottom: 16, display: 'block' }} />
+              <p style={{ fontSize: 16, color: '#1e293b', fontWeight: 500 }}>
+                {t('common.confirmDeleteContent', { name: deleteTarget?.name || '' })}
+              </p>
+              <p style={{ fontSize: 13, color: '#94a3b8', marginTop: 8 }}>{t('common.deleteWarning')}</p>
+            </div>
+          </Modal>
+
+          {/* ===== Service Config Modal (API Keys) ===== */}
+          <Modal
+            wrapClassName="yx-domain-space-modal"
+            title={
+              <span>
+                <KeyOutlined style={{ color: '#f97316', marginRight: 8 }} />
+                {t('domainManagement.srvConfigTitle')}
+              </span>
+            }
+            open={srvConfigOpen}
+            onCancel={() => setSrvConfigOpen(false)}
+            footer={<Button onClick={() => setSrvConfigOpen(false)}>{t('common.cancel')}</Button>}
+            width={760}
+          >
+            <p style={{ fontSize: 14, color: '#475569', marginBottom: 16 }}>
+              {t('domainManagement.srvConfigDesc', { name: srvConfigTarget?.name || '' })}
+            </p>
+            <div style={{ textAlign: 'right', marginBottom: 12 }}>
+              <Button
+                type="primary"
+                size="small"
+                icon={<PlusOutlined />}
+                loading={creatingKey}
+                onClick={handleCreateKey}
+              >
+                {t('domainManagement.addApiKey')}
+              </Button>
+            </div>
+            {apiKeysLoading ? (
+              <div style={{ textAlign: 'center', padding: 24 }}>
+                <Spin />
+              </div>
+            ) : (
+              <Table<ServiceApiKeyItem>
+                columns={[
+                  {
+                    title: t('domainManagement.apiKey'),
+                    dataIndex: 'key_encrypted',
+                    key: 'key_encrypted',
+                    width: 360,
+                    render: (val: string, record: ServiceApiKeyItem) => (
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <span className="yx-key-text">{val || '—'}</span>
+                        {val && (
+                          <Button
+                            type="text"
+                            className={`yx-copy-btn${copiedKeyId === record.id ? ' copied' : ''}`}
+                            title={
+                              copiedKeyId === record.id ? t('common.copySuccess') : t('domainManagement.copyApiKey')
+                            }
+                            onClick={() => handleCopyKey(record.id, val)}
+                          >
+                            {copiedKeyId === record.id ? <CheckOutlined /> : <CopyOutlined />}
+                          </Button>
+                        )}
+                      </span>
+                    ),
+                  },
+                  {
+                    title: t('domainManagement.keyPrefix'),
+                    dataIndex: 'key_prefix',
+                    key: 'key_prefix',
+                    width: 130,
+                    render: (val: string) => (val ? <Typography.Text code>{val}</Typography.Text> : '—'),
+                  },
+                  {
+                    title: t('domainManagement.expiresAt'),
+                    dataIndex: 'expires_at',
+                    key: 'expires_at',
+                    width: 120,
+                    render: (val: string | null) => formatDate(val),
+                  },
+                  {
+                    title: t('domainManagement.createdAt'),
+                    dataIndex: 'created_at',
+                    key: 'created_at',
+                    width: 120,
+                    render: (val: string | null) => formatDate(val),
+                  },
+                  {
+                    title: t('domainManagement.status'),
+                    dataIndex: 'is_active',
+                    key: 'is_active',
+                    width: 90,
+                    render: (v: number) =>
+                      v === 1 ? <Tag color="success">{t('status.active')}</Tag> : <Tag>{t('status.inactive')}</Tag>,
+                  },
+                  {
+                    title: t('domainManagement.srvConfigActions'),
+                    key: 'actions',
+                    width: 100,
+                    render: (_: unknown, record: ServiceApiKeyItem) => (
+                      <Button type="text" danger onClick={() => handleDeleteKey(record.id)}>
+                        <DeleteOutlined /> {t('common.delete')}
+                      </Button>
+                    ),
+                  },
+                ]}
+                dataSource={apiKeys}
+                rowKey="id"
+                pagination={false}
+                size="small"
+                locale={{ emptyText: t('common.noApiKey') }}
+              />
+            )}
+          </Modal>
+        </div>
+      </PageContent>
+    </>
   );
 };
 

@@ -2,6 +2,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Input, Card, Table, Button } from 'antd';
 import { SearchOutlined, PlusOutlined, CheckCircleFilled, CloseCircleFilled } from '@ant-design/icons';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 
 const permissions = [
   { roleKey: 'domainPermission.roleAdmin', read: true, write: true, manage: true, delete: true },
@@ -55,35 +56,35 @@ export default function DomainSpacePermission() {
     },
   ];
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1>{t('domainPermission.title')}</h1>
-      </div>
-      <Card className="yx-card">
-        <div className="yx-toolbar">
-          <Input
-            prefix={<SearchOutlined />}
-            placeholder={t('domainPermission.searchPlaceholder')}
-            style={{ width: 240 }}
-          />
-          <Button type="primary" icon={<PlusOutlined />}>
-            {t('domainPermission.addRole')}
-          </Button>
-        </div>
-        <Table columns={columns} dataSource={permissionRows} rowKey="roleKey" pagination={false} size="middle" />
-        <div
-          style={{
-            marginTop: 16,
-            padding: '10px 14px',
-            background: '#eff6ff',
-            borderRadius: 8,
-            fontSize: 13,
-            color: '#64748b',
-          }}
-        >
-          {t('domainPermission.noteText')}
-        </div>
-      </Card>
-    </div>
+    <>
+      <PageHeader title={t('domainPermission.title')} />
+      <PageContent showCard={false}>
+        <Card className="yx-card">
+          <div className="yx-toolbar">
+            <Input
+              prefix={<SearchOutlined />}
+              placeholder={t('domainPermission.searchPlaceholder')}
+              style={{ width: 240 }}
+            />
+            <Button type="primary" icon={<PlusOutlined />}>
+              {t('domainPermission.addRole')}
+            </Button>
+          </div>
+          <Table columns={columns} dataSource={permissionRows} rowKey="roleKey" pagination={false} size="middle" />
+          <div
+            style={{
+              marginTop: 16,
+              padding: '10px 14px',
+              background: '#eff6ff',
+              borderRadius: 8,
+              fontSize: 13,
+              color: '#64748b',
+            }}
+          >
+            {t('domainPermission.noteText')}
+          </div>
+        </Card>
+      </PageContent>
+    </>
   );
 }

@@ -3,18 +3,32 @@ import { useTranslation } from 'react-i18next';
 import { Input, Select, Button, Card, Switch, InputNumber, Divider, Dropdown, Modal } from 'antd';
 import { SearchOutlined, StopOutlined, SettingOutlined, DownOutlined } from '@ant-design/icons';
 import classNames from 'classnames';
-import type { KnowledgeSearchDomain, KnowledgeSearchStrictConfig } from '@/types/knowledgeSearch';
-import { DEFAULT_FAST_STRICT_CONFIG, DEFAULT_DEEP_STRICT_CONFIG } from '@/api/knowledgeSearch';
+import type { KnowledgeSearchDomain, KnowledgeSearchStrictConfig, KnowledgeSearchUiMode } from '@/types/knowledgeSearch';
+import { DEFAULT_FAST_STRICT_CONFIG, DEFAULT_DEEP_STRICT_CONFIG, DEFAULT_WIKI_STRICT_CONFIG } from '@/api/knowledgeSearch';
 import styles from './SearchPanel.module.scss';
+
+/** 档位元数据：label/desc 的 i18n key + 是否支持严格模式配置 */
+const MODE_META: { mode: KnowledgeSearchUiMode; labelKey: string; descKey: string; configurable: boolean }[] = [
+  { mode: 'fast', labelKey: 'knowledgeSearch.fastSearch', descKey: 'knowledgeSearch.fastSearchDesc', configurable: true },
+  { mode: 'deep', labelKey: 'knowledgeSearch.deepSearch', descKey: 'knowledgeSearch.deepSearchDesc', configurable: true },
+  // Wiki 检索：走 jonex_wiki 专用端点，该端点不接受严格模式参数，故不给配置入口
+  { mode: 'wiki', labelKey: 'knowledgeSearch.wikiSearch', descKey: 'knowledgeSearch.wikiSearchDesc', configurable: false },
+];
+
+const DEFAULT_CONFIG_BY_MODE: Record<KnowledgeSearchUiMode, KnowledgeSearchStrictConfig> = {
+  fast: DEFAULT_FAST_STRICT_CONFIG,
+  deep: DEFAULT_DEEP_STRICT_CONFIG,
+  wiki: DEFAULT_WIKI_STRICT_CONFIG,
+};
 
 interface SearchPanelProps {
   selectedDomain: string;
   visibleDomains: KnowledgeSearchDomain[];
   query: string;
   isSearching: boolean;
-  /** 是否深度检索（打开时调用 /search/deep 接口） */
-  deepSearch: boolean;
-  onDeepSearchChange: (value: boolean) => void;
+  /** 检索模式：快速 / 深度 / Wiki（Wiki 走 /search/jonex_wiki 专用端点） */
+  searchMode: KnowledgeSearchUiMode;
+  onSearchModeChange: (mode: KnowledgeSearchUiMode) => void;
   /** 严格模式配置 */
   strictConfig: KnowledgeSearchStrictConfig;
   onStrictConfigChange: (config: KnowledgeSearchStrictConfig) => void;
@@ -47,8 +61,8 @@ export default function SearchPanel({
   visibleDomains,
   query,
   isSearching,
-  deepSearch,
-  onDeepSearchChange,
+  searchMode,
+  onSearchModeChange,
   onStrictConfigChange,
   onDomainChange,
   onQueryChange,
@@ -57,40 +71,40 @@ export default function SearchPanel({
 }: SearchPanelProps) {
   const { t } = useTranslation();
 
-  const [fastConfig, setFastConfig] = useState<KnowledgeSearchStrictConfig>(DEFAULT_FAST_STRICT_CONFIG);
-  const [deepConfig, setDeepConfig] = useState<KnowledgeSearchStrictConfig>(DEFAULT_DEEP_STRICT_CONFIG);
+  // [jonex] 各档位各自保留一份严格模式配置：切档位时把该档位的配置回传给页面（当前生效配置）
+  const [modeConfigs, setModeConfigs] =
+    useState<Record<KnowledgeSearchUiMode, KnowledgeSearchStrictConfig>>(DEFAULT_CONFIG_BY_MODE);
   const [modalOpen, setModalOpen] = useState(false);
-  const [editingMode, setEditingMode] = useState<'fast' | 'deep'>('fast');
-  const [draftConfig, setDraftConfig] = useState<KnowledgeSearchStrictConfig>(fastConfig);
+  const [editingMode, setEditingMode] = useState<KnowledgeSearchUiMode>('fast');
+  const [draftConfig, setDraftConfig] = useState<KnowledgeSearchStrictConfig>(DEFAULT_FAST_STRICT_CONFIG);
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
-  const activeModeLabel = deepSearch ? t('knowledgeSearch.deepSearch') : t('knowledgeSearch.fastSearch');
-  const editingModeLabel = editingMode === 'deep' ? t('knowledgeSearch.deepSearch') : t('knowledgeSearch.fastSearch');
+  const activeMeta = MODE_META.find((m) => m.mode === searchMode) ?? MODE_META[0];
+  const activeModeLabel = t(activeMeta.labelKey);
+  const editingMeta = MODE_META.find((m) => m.mode === editingMode) ?? MODE_META[0];
+  const editingModeLabel = t(editingMeta.labelKey);
 
-  const switchMode = (nextDeep: boolean) => {
-    onDeepSearchChange(nextDeep);
-    onStrictConfigChange(nextDeep ? deepConfig : fastConfig);
+  const switchMode = (next: KnowledgeSearchUiMode) => {
+    if (next === searchMode) {
+      setDropdownOpen(false);
+      return;
+    }
+    onSearchModeChange(next);
+    onStrictConfigChange(modeConfigs[next]);
     setDropdownOpen(false);
   };
 
-  const openConfigModal = (mode: 'fast' | 'deep') => {
+  const openConfigModal = (mode: KnowledgeSearchUiMode) => {
     setEditingMode(mode);
-    setDraftConfig(mode === 'deep' ? deepConfig : fastConfig);
+    setDraftConfig(modeConfigs[mode]);
     setModalOpen(true);
     setDropdownOpen(false);
   };
 
   const saveConfig = () => {
-    if (editingMode === 'deep') {
-      setDeepConfig(draftConfig);
-      if (deepSearch) {
-        onStrictConfigChange(draftConfig);
-      }
-    } else {
-      setFastConfig(draftConfig);
-      if (!deepSearch) {
-        onStrictConfigChange(draftConfig);
-      }
+    setModeConfigs((prev) => ({ ...prev, [editingMode]: draftConfig }));
+    if (editingMode === searchMode) {
+      onStrictConfigChange(draftConfig);
     }
     setModalOpen(false);
   };
@@ -101,51 +115,35 @@ export default function SearchPanel({
 
   const dropdownContent = (
     <div className={styles.modeDropdown}>
-      <div
-        className={classNames(styles.modeOption, { [styles.modeOptionActive]: !deepSearch })}
-        onClick={() => switchMode(false)}
-        role="button"
-        tabIndex={0}
-      >
-        <div className={styles.modeOptionContent}>
-          <div className={styles.modeOptionTitle}>{t('knowledgeSearch.fastSearch')}</div>
-          <div className={styles.modeOptionDesc}>{t('knowledgeSearch.fastSearchDesc')}</div>
-        </div>
-        <Button
-          type="text"
-          size="small"
-          icon={<SettingOutlined />}
-          className={styles.modeOptionSetting}
-          onClick={(e) => {
-            e.stopPropagation();
-            openConfigModal('fast');
-          }}
-          title={t('knowledgeSearch.strictConfigTitle')}
-        />
-      </div>
-      <Divider style={{ margin: 0 }} />
-      <div
-        className={classNames(styles.modeOption, { [styles.modeOptionActive]: deepSearch })}
-        onClick={() => switchMode(true)}
-        role="button"
-        tabIndex={0}
-      >
-        <div className={styles.modeOptionContent}>
-          <div className={styles.modeOptionTitle}>{t('knowledgeSearch.deepSearch')}</div>
-          <div className={styles.modeOptionDesc}>{t('knowledgeSearch.deepSearchDesc')}</div>
-        </div>
-        <Button
-          type="text"
-          size="small"
-          icon={<SettingOutlined />}
-          className={styles.modeOptionSetting}
-          onClick={(e) => {
-            e.stopPropagation();
-            openConfigModal('deep');
-          }}
-          title={t('knowledgeSearch.strictConfigTitle')}
-        />
-      </div>
+      {MODE_META.map((item, index) => (
+        <React.Fragment key={item.mode}>
+          {index > 0 && <Divider style={{ margin: 0 }} />}
+          <div
+            className={classNames(styles.modeOption, { [styles.modeOptionActive]: searchMode === item.mode })}
+            onClick={() => switchMode(item.mode)}
+            role="button"
+            tabIndex={0}
+          >
+            <div className={styles.modeOptionContent}>
+              <div className={styles.modeOptionTitle}>{t(item.labelKey)}</div>
+              <div className={styles.modeOptionDesc}>{t(item.descKey)}</div>
+            </div>
+            {item.configurable && (
+              <Button
+                type="text"
+                size="small"
+                icon={<SettingOutlined />}
+                className={styles.modeOptionSetting}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openConfigModal(item.mode);
+                }}
+                title={t('knowledgeSearch.strictConfigTitle')}
+              />
+            )}
+          </div>
+        </React.Fragment>
+      ))}
     </div>
   );
 

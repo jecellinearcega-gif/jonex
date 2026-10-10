@@ -29,7 +29,7 @@ export default function DataSourceTab({
   const navigate = useNavigate();
 
   return (
-    <div className="config-section yx-kb-section-card">
+    <div>
       <div className="yx-kb-flex-header">
         <h3 className="yx-kb-section-title">
           <ApiOutlined className="yx-kb-icon-blue" /> {t('domainKnowledge.configuredDataSources')}

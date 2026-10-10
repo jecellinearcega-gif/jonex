@@ -117,6 +117,7 @@ export function getDomainKnowledgeList(
   const query: Record<string, string | number | undefined> = {
     keyword: params.keyword,
     space_id: params.spaceId,
+    scope: params.scope, // 不传 = 后端默认 manage，管理面行为不变
     status: params.status,
     source_type: params.sourceType,
     offset: (params.page - 1) * params.pageSize,
@@ -170,6 +171,28 @@ function mapKBList(resp: BackendKBListResponse): PaginationResult<DomainKnowledg
   const pageSize = resp.limit || list.length;
   const page = pageSize > 0 ? Math.floor((resp.offset || 0) / pageSize) + 1 : 1;
   return { list, pagination: { page, pageSize, total: resp.total } };
+}
+
+/** 本部署**可创建**的知识库类型（后端 env `KB_ENABLED_TYPES` 控制；未配置 = 三种全开）。
+ *
+ * 只用于**过滤「新建知识库」弹窗的选项** —— 被禁类型的存量库照常出现在列表里、
+ * 照常可读可检索，不参与这里的判定。
+ *
+ * ⚠ 这是「下发口」不是闸门：真正的拦截在后端 `create`（提交被禁类型会被拒、
+ * 错误码 `err.kb.kb_type_disabled`）。所以本请求失败时**不必阻断用户** ——
+ * 前端少过滤一层，最坏是用户选了个会被后端明确拒绝的类型，没有脏数据。
+ */
+export async function getKbTypeOptions(): Promise<{
+  kbTypes: KnowledgeBaseType[];
+  default: KnowledgeBaseType;
+}> {
+  const resp = await getData<{ kb_types?: string[]; default?: string }>(
+    request.get('/knowledge-base/kb-types'),
+  );
+  return {
+    kbTypes: (resp.kb_types ?? []) as KnowledgeBaseType[],
+    default: (resp.default as KnowledgeBaseType) || 'lightrag',
+  };
 }
 
 /** 创建知识库 */
@@ -279,13 +302,21 @@ export async function getKbPermissionCandidates(
 
 // ─── Detail APIs ────────────────────────────────────────
 
-export async function getDomainKnowledgeDetail(kbId: string): Promise<DomainKnowledgeDetail> {
+export async function getDomainKnowledgeDetail(
+  kbId: string,
+  options?: { withStats?: boolean },
+): Promise<DomainKnowledgeDetail> {
   // 详情 header 由知识库详情接口一次取齐：
-  //   GET /knowledge-base/knowledge-info/{kbId}
+  //   GET /knowledge-base/knowledge-info/{kbId}?with_stats=true|false
   // 该接口已集成本体 kb 维度统计（entity_count / relation_count / ontology_degraded），
   // 同时返回 空间名 / 状态 / 文档数 / 更新时间，无需再叠加额外请求。
+  // [jonex] 首屏提速：with_stats 默认 false —— 统计是跨容器全图扫描（jonex_wiki
+  // list_graph 实测 ~2.6s），只在需要页头实体/关系徽标时（知识库设置页）才传 true。
   // 注意：ontology_degraded 为 true 时 Neo4j 不可用，实体/关系数被降级为 0（非真实为 0）。
-  const info = await getData<BackendKBItem>(request.get(`/knowledge-base/knowledge-info/${kbId}`));
+  const withStats = options?.withStats ?? false;
+  const info = await getData<BackendKBItem>(
+    request.get(`/knowledge-base/knowledge-info/${kbId}`, { params: { with_stats: withStats } }),
+  );
   return {
     id: info.id,
     name: info.name,
@@ -569,9 +600,11 @@ function mapBackendDoc(doc: BackendDocItem, knowledgeBaseId: string, _t: (key: s
         ? '入库·解析·编译'
         : doc.status === 'parsing'
           ? '入库·解析中'
-          : doc.status === 'pending'
-            ? '入库'
-            : doc.status,
+          : doc.status === 'parsed'
+            ? '入库·待抽取'
+            : doc.status === 'pending'
+              ? '入库'
+              : doc.status,
     docStatus: doc.status,
     ontologyStatus: doc.ontology_status,
     errorMessage: doc.error_message,
@@ -718,6 +751,10 @@ export async function retryDocumentOntology(knowledgeBaseId: string, documentId:
 export async function reparseDocument(documentId: string): Promise<void> {
   await postData(`/knowledge-base/documents/${documentId}/reparse`, {
     document_id: documentId,
+    // [jonex] 用户手动点「重新解析」= 明确重跑意图，传 force 跳过 R1-c
+    // 「源文件+解析配置未变」防抖检查——否则编译失败（本体重试 3/3 上限）
+    // 的文档点重新解析会被静默跳过，ontology_retry_count 不重置，永远无法重试。
+    force: true,
   });
 }
 
@@ -1000,6 +1037,10 @@ function mapCompiledRelationToOntology(
     description: relation.description || '',
     relationType: compiledCardinalityToOntologyType(relation.cardinality),
     status: relation.status || 'active',
+    // [jonex] P1：新字段编辑往返（code → display name 口径，保存时反向映射）
+    inverseOf: relation.inverse_of || undefined,
+    sourceTypes: (relation.source_types || []).map((t) => entityDisplayMap.get(t) || t),
+    targetTypes: (relation.target_types || []).map((t) => entityDisplayMap.get(t) || t),
   };
 }
 
@@ -1161,6 +1202,8 @@ function buildCompiledEntityFromPayload(
     status: payload.status || 'active',
     aliases: existing?.aliases || [],
     source_object_id: existing?.source_object_id || null,
+    // [jonex] P1：extraction_skills 一期不做编辑器，保存时保留 existing（防静默丢失）
+    extraction_skills: existing?.extraction_skills || null,
     attributes: (payload.attributes || []).map((attr) => {
       const attrMeta = decodeAttrMeta(attr.id);
       const attrName = attrMeta.compiledName || ensureUniqueName(slugifyOntologyName(attr.name), attrNames);
@@ -1206,6 +1249,12 @@ function buildCompiledRelationFromPayload(
     target: targetCode,
     source_relation_id: existing?.source_relation_id || null,
     cardinality: ontologyRelationToCompiledCardinality(payload.relationType),
+    // [jonex] P1：新字段保存（payload 优先；未填则保留 existing，防静默丢失）
+    inverse_of: payload.inverseOf?.trim() || existing?.inverse_of || null,
+    source_types: (payload.sourceTypes || existing?.source_types || [])
+      .map((t) => entityCodeByDisplay.get(t) || t),
+    target_types: (payload.targetTypes || existing?.target_types || [])
+      .map((t) => entityCodeByDisplay.get(t) || t),
   };
 }
 
@@ -1767,9 +1816,11 @@ export function getOntologyStatistics(kbId: string): Promise<OntologyStatistics>
 export function getOntologyEntityTypes(
   kbId: string,
   keyword?: string,
+  documentId?: string,
 ): Promise<{ items: OntologyInstanceSummary[]; total: number }> {
   const params: Record<string, string> = { knowledge_base_id: kbId };
   if (keyword) params.keyword = keyword;
+  if (documentId) params.document_id = documentId;
   return getData<{ items: OntologyInstanceSummary[]; total: number }>(
     request.get('/knowledge-base/ontology/entity-types', {
       params,
@@ -1778,10 +1829,15 @@ export function getOntologyEntityTypes(
 }
 
 /** 获取关系类型列表（含实例数聚合） */
-export function getOntologyRelationTypes(kbId: string): Promise<{ items: RelationInstanceSummary[]; total: number }> {
+export function getOntologyRelationTypes(
+  kbId: string,
+  documentId?: string,
+): Promise<{ items: RelationInstanceSummary[]; total: number }> {
+  const params: Record<string, string> = { knowledge_base_id: kbId };
+  if (documentId) params.document_id = documentId;
   return getData<{ items: RelationInstanceSummary[]; total: number }>(
     request.get('/knowledge-base/ontology/relation-types', {
-      params: { knowledge_base_id: kbId },
+      params,
     }),
   );
 }
@@ -1896,15 +1952,18 @@ export function expandOntologyNeighbors(
   entityType: string,
   canonicalName: string,
   limit = 50,
+  documentId?: string,
 ): Promise<OntologyNeighborData> {
+  const params: Record<string, string | number> = {
+    knowledge_base_id: kbId,
+    entity_type: entityType,
+    canonical_name: canonicalName,
+    limit,
+  };
+  if (documentId) params.document_id = documentId;
   return getData<OntologyNeighborData>(
     request.get('/knowledge-base/ontology/neighbors', {
-      params: {
-        knowledge_base_id: kbId,
-        entity_type: entityType,
-        canonical_name: canonicalName,
-        limit,
-      },
+      params,
     }),
   );
 }
@@ -2223,7 +2282,7 @@ export function getWikiRelationships(params: {
 
 /** Wiki 图谱（openkb 管线专用） */
 export function getWikiGraph(kbId: string, limit = 200, documentId?: string): Promise<WikiGraphData> {
-  // [jonex] documentId 缺省/空 = KB 级全库图谱（compile-results 页）；省略参数避免空串语义
+  // [jonex] documentId 缺省/空 = KB 级全库图谱（编译资产 tab）；省略参数避免空串语义
   const params: Record<string, unknown> = { knowledge_base_id: kbId, limit };
   if (documentId) params.document_id = documentId;
   return getData<{
@@ -2235,7 +2294,7 @@ export function getWikiGraph(kbId: string, limit = 200, documentId?: string): Pr
   }));
 }
 
-// ── [jonex] Wiki 阅读模式（编译结果页）──
+// ── [jonex] Wiki 阅读模式（编译资产 tab）──
 
 /** 读取 Wiki 页面内容（openkb 管线专用；后端字段本已是 camelCase 结构，直接透传） */
 export function getWikiPage(kbId: string, path: string): Promise<WikiPageContent> {
@@ -2254,7 +2313,31 @@ interface BackendWikiContents {
   document_id: string;
 }
 
-/** Wiki 页面树（openkb 管线专用；documentId 缺省/空 = KB 级全库，compile-results 页用） */
+/** Wiki 页面树（openkb 管线专用；documentId 缺省/空 = KB 级全库，编译资产 tab 用） */
+export interface WikiCompilationState {
+  paused: boolean;
+  pending_source_count?: number;
+  waiting_source_count?: number;
+  failed_source_count?: number;
+  last_task_status?: string | null;
+  last_task_error?: string | null;
+  parsed_source_count: number;
+  published_source_count: number;
+  tasks: { task_id: string; status: string; stage?: string; source_names: string[] }[];
+}
+
+export function getWikiCompilationState(kbId: string): Promise<WikiCompilationState> {
+  return getData(request.get('/knowledge-base/wiki/compilation', {
+    params: { knowledge_base_id: kbId },
+  }));
+}
+
+export function setWikiCompilationPaused(kbId: string, paused: boolean): Promise<WikiCompilationState> {
+  return getData(request.post(`/knowledge-base/wiki/compilation/${paused ? 'pause' : 'resume'}`, {
+    knowledge_base_id: kbId,
+  }));
+}
+
 export function getWikiContents(kbId: string, documentId?: string): Promise<WikiContents> {
   // [jonex] documentId 空时省略参数（Gateway 缺省 = KB 级全库）
   const params: Record<string, unknown> = { knowledge_base_id: kbId };
@@ -2266,5 +2349,34 @@ export function getWikiContents(kbId: string, documentId?: string): Promise<Wiki
     concepts: res.concepts || [],
     entities: res.entities || [],
     documentId: res.document_id || '',
+  }));
+}
+
+/** 后端 counts 视图（view=counts）：三类页数，不含页面条目 */
+interface BackendWikiContentsCounts {
+  summaries: number;
+  concepts: number;
+  entities: number;
+  document_id: string;
+}
+
+/**
+ * [jonex] 全库三类页数（view=counts），只回数字。
+ *
+ * 与 getWikiContents 同一接口同源口径，但服务端跳过页面对象组装与传输：
+ * 编译资产 tab 的统计卡与 tab 计数只要三个数字，此前却调 getWikiContents
+ * 拉整棵页面树（实测 6 文档的库 1.6MB、50 文档的库 4.75MB / 约 3.5s）。
+ */
+export function getWikiContentsStats(
+  kbId: string,
+): Promise<{ summaries: number; concepts: number; entities: number }> {
+  return getData<BackendWikiContentsCounts>(
+    request.get('/knowledge-base/parse-results/wiki-contents', {
+      params: { knowledge_base_id: kbId, view: 'counts' },
+    }),
+  ).then((res) => ({
+    summaries: res.summaries || 0,
+    concepts: res.concepts || 0,
+    entities: res.entities || 0,
   }));
 }

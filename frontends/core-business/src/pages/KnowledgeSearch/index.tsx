@@ -40,6 +40,7 @@ import type {
   KnowledgeSearchOverview,
   KnowledgeSearchDomain,
   KnowledgeSearchStrictConfig,
+  KnowledgeSearchUiMode,
   KnowledgeSearchHistoryItem,
   KnowledgeSearchRunStatus,
   KnowledgeReference,
@@ -49,6 +50,7 @@ import type {
   SearchFeedbackType,
   FeedbackReason,
 } from '@/types/knowledgeSearch';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 import SearchPanel from './SearchPanel';
 import SearchHistorySidebar from './SearchHistorySidebar';
 import SessionCard from './SessionCard';
@@ -356,7 +358,9 @@ const KnowledgeSearch = function KnowledgeSearch() {
   const { global } = useStore();
   const [query, setQuery] = useState('');
   const [selectedDomain, setSelectedDomain] = useState('');
-  const [deepSearch, setDeepSearch] = useState(false);
+  // [jonex] 检索模式（按钮组）：fast=快速检索 /search/mix，deep=深度检索 /search/deep，
+  // wiki=Wiki 检索 /search/jonex_wiki（只落在 jonex_wiki 链路的库上）
+  const [searchMode, setSearchMode] = useState<KnowledgeSearchUiMode>('fast');
   const [strictConfig, setStrictConfig] = useState<KnowledgeSearchStrictConfig>(DEFAULT_FAST_STRICT_CONFIG);
 
   const [overview, setOverview] = useState<KnowledgeSearchOverview | null>(null);
@@ -402,13 +406,18 @@ const KnowledgeSearch = function KnowledgeSearch() {
   // [jonex] 检索维度 = 领域空间 + 领域服务（双维度并存）：下拉即完整候选，不再按空间过滤。
   const visibleDomains = useMemo(() => domains, [domains]);
 
-  // 默认检索范围：当前领域空间（唯一空间项）→ 保留现有选中 → 第一个候选 → 空
+  // [jonex] 默认检索范围：**有 KB 的**当前领域空间 → 保留现有选中 → 第一个有 KB 的候选 → 空
+  // 空间维度可能一个 KB 都没有：纯 space member 的 KB 列表取自「列表口径」
+  // （我管的空间 ∪ 我被授权的 KB，见 knowledge_info_service.list），不含他所在空间下的 KB。
+  // 若仍默认选中它，handleSearch 会因 kbIds 为空直接 return、请求根本不发出；
+  // 而服务维度走 ?scope=search（检索口径），是好的候选。故跳过 kb_ids 为空的维度。
   useEffect(() => {
     setSelectedDomain((prev) => {
-      const currentSpace = visibleDomains.find((d) => d.kind === 'space');
+      const usable = visibleDomains.filter((d) => (d.kb_ids?.length ?? 0) > 0);
+      const currentSpace = usable.find((d) => d.kind === 'space');
       if (currentSpace) return currentSpace.id;
-      if (prev && visibleDomains.some((d) => d.id === prev)) return prev;
-      return visibleDomains[0]?.id ?? '';
+      if (prev && usable.some((d) => d.id === prev)) return prev;
+      return usable[0]?.id ?? '';
     });
   }, [visibleDomains, global.currentSpaceId]);
 
@@ -422,9 +431,11 @@ const KnowledgeSearch = function KnowledgeSearch() {
   // 查看原文：全部走统一弹层；视频/音频带时间锚点时定位到时间点
   const openReference = useCallback(
     (ref: KnowledgeReference, loc?: KnowledgeReferenceLocation) => {
-      // [jonex] §image-refs P3-2: image location 且有 asset_url → 直开原图；
-      // 无 asset_url（local 后端/未上传）回落文档级打开
-      if (loc?.type === 'image' && loc.asset_url) {
+      // [jonex] §image-refs P3-2: 仅纯图片文档（media_type=image）的 image location
+      // 且有 asset_url 时才直开原图；PDF/Word 文档内嵌图片锚点不在此打开
+      // （应由卡片内缩略图 ImageAssetThumb 单独打开），否则「查看原文」会被图片抢走、
+      // 且图片预签名 URL 的 Content-Type 未设对时触发下载。
+      if (loc?.type === 'image' && loc.asset_url && ref.media_type === 'image') {
         window.open(loc.asset_url, '_blank', 'noopener');
         return;
       }
@@ -434,6 +445,8 @@ const KnowledgeSearch = function KnowledgeSearch() {
         mediaType: ref.media_type,
         timeStart: loc?.time_start ?? null,
         timeEnd: loc?.time_end ?? null,
+        // 后端 page_no 为 0-based（MinerU page_idx），PDF viewer #page=N 为 1-based
+        page: loc?.page_no != null ? loc.page_no + 1 : null,
       });
     },
     [openDocument],
@@ -614,13 +627,39 @@ const KnowledgeSearch = function KnowledgeSearch() {
         message.warning(t('knowledgeSearch.noKbWarning'));
         return;
       }
+      // [jonex] 选中范围里每个库的 kb_type（与 kbIds 同序）。API 层据此判断是否「只落在
+      // 同一条引擎链路」以选择专用检索端点；为空/不等长时回落 /search/mix。
+      const domainKbTypes = visibleDomains.find((dm) => dm.id === domainId)?.kb_types ?? [];
+
+      // [jonex] Wiki 检索：/search/jonex_wiki 端点只接受 jonex_wiki 管线的库（后端对异管线库
+      // 直接拒绝），因此这里先按 kb_type 收敛范围；类型未知（与 kb_ids 不等长）时无法判定，
+      // 提示用户而不是把 lightrag/openkb 的库送去被拒。
+      let scopedKbIds = kbIds;
+      let kbTypes = domainKbTypes;
+      if (searchMode === 'wiki') {
+        if (domainKbTypes.length !== kbIds.length) {
+          message.warning(t('knowledgeSearch.wikiKbTypeUnknown'));
+          return;
+        }
+        const wikiPairs = kbIds
+          .map((id, index) => [id, domainKbTypes[index]] as const)
+          .filter(([, kbType]) => kbType === 'jonex_wiki');
+        if (wikiPairs.length === 0) {
+          message.warning(t('knowledgeSearch.noWikiKbWarning'));
+          return;
+        }
+        scopedKbIds = wikiPairs.map(([id]) => id);
+        kbTypes = wikiPairs.map(([, kbType]) => kbType);
+      }
       const searchParams = {
         query: trimmedQuery,
         mode: 'mix' as const,
         topK: 5,
         domainId,
-        kbIds,
-        deep: deepSearch,
+        kbIds: scopedKbIds,
+        kbTypes,
+        deep: searchMode === 'deep',
+        wiki: searchMode === 'wiki',
         strictConfig: effectiveStrictConfig,
       };
       let streamError: Error | null = null;
@@ -766,7 +805,7 @@ const KnowledgeSearch = function KnowledgeSearch() {
         if (abortRef.current === controller) abortRef.current = null;
       }
     },
-    [query, selectedDomain, getSelectedKbIds, deepSearch, strictConfig, fetchAnswerFeedback],
+    [query, selectedDomain, getSelectedKbIds, visibleDomains, searchMode, strictConfig, fetchAnswerFeedback, t],
   );
 
   const handleHistoryClick = useCallback(
@@ -802,9 +841,7 @@ const KnowledgeSearch = function KnowledgeSearch() {
         if (item.references?.length) {
           resolveKnowledgeReferences(item.references)
             .then((resolved) => {
-              setActiveSearch((prev) =>
-                prev?.id === sessionId ? { ...prev, references: resolved } : prev,
-              );
+              setActiveSearch((prev) => (prev?.id === sessionId ? { ...prev, references: resolved } : prev));
             })
             .catch(() => {
               // resolve 失败时保留快照引用（doc_id 仍可打开原文，仅 raw_url 为空）
@@ -1043,57 +1080,48 @@ const KnowledgeSearch = function KnowledgeSearch() {
 
   // ── main render ────────────────────────────────────────
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1>{t('knowledgeSearch.pageTitle')}</h1>
-        <p className="yx-page-subtitle">
-          <span
-            dangerouslySetInnerHTML={{
-              __html: t('knowledgeSearch.pageSubtitle', {
-                name: global.currentSpace?.name || t('knowledgeSearch.notSelected'),
-              }),
-            }}
-          />
-        </p>
-      </div>
-      {/* 统计信息-暂时隐藏 */}
-      {/* {renderStats()} */}
-      <SearchPanel
-        selectedDomain={selectedDomain}
-        visibleDomains={visibleDomains}
-        query={query}
-        isSearching={isSearching}
-        deepSearch={deepSearch}
-        onDeepSearchChange={setDeepSearch}
-        strictConfig={strictConfig}
-        onStrictConfigChange={setStrictConfig}
-        onDomainChange={handleDomainChange}
-        onQueryChange={setQuery}
-        onSearch={() => void handleSearch()}
-        onStop={handleStopSearch}
-      />
-
-      <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start' }}>
-        <div style={{ flex: 1, minWidth: 0 }}>{renderMainContent()}</div>
-        <SearchHistorySidebar
-          history={history}
-          activeHistoryIndex={activeHistoryIndex}
-          onHistoryClick={handleHistoryClick}
-          onDeleteHistory={handleDeleteHistory}
-          onClearHistory={handleClearHistory}
-          hasMore={history.length < historyTotal}
-          onLoadMore={() => void loadMoreHistory()}
-          loadingMore={historyLoadingMore}
+    <>
+      <PageHeader title={t('knowledgeSearch.pageTitle')} />
+      <PageContent showCard={false}>
+        {/* 统计信息-暂时隐藏 */}
+        {/* {renderStats()} */}
+        <SearchPanel
+          selectedDomain={selectedDomain}
+          visibleDomains={visibleDomains}
+          query={query}
+          isSearching={isSearching}
+          searchMode={searchMode}
+          onSearchModeChange={setSearchMode}
+          strictConfig={strictConfig}
+          onStrictConfigChange={setStrictConfig}
+          onDomainChange={handleDomainChange}
+          onQueryChange={setQuery}
+          onSearch={() => void handleSearch()}
+          onStop={handleStopSearch}
         />
-      </div>
 
-      <div style={{ textAlign: 'center', padding: '32px 0 8px', fontSize: 13, color: '#cbd5e1' }}>
-        {t('knowledgeSearch.footer')}
-      </div>
+        <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>{renderMainContent()}</div>
+          <SearchHistorySidebar
+            history={history}
+            activeHistoryIndex={activeHistoryIndex}
+            onHistoryClick={handleHistoryClick}
+            onDeleteHistory={handleDeleteHistory}
+            onClearHistory={handleClearHistory}
+            hasMore={history.length < historyTotal}
+            onLoadMore={() => void loadMoreHistory()}
+            loadingMore={historyLoadingMore}
+          />
+        </div>
 
-      {/* 统一文档查看弹层（视频/音频可定位到时间点） */}
-      {viewer}
-    </div>
+        <div style={{ textAlign: 'center', padding: '32px 0 8px', fontSize: 13, color: '#cbd5e1' }}>
+          {t('knowledgeSearch.footer')}
+        </div>
+
+        {/* 统一文档查看弹层（视频/音频可定位到时间点） */}
+        {viewer}
+      </PageContent>
+    </>
   );
 };
 

@@ -8,6 +8,7 @@ import { getDataSource, listDataSourceDocuments, syncDataSource } from '@/api/da
 import type { DataSourceInstance } from '@/types/dataSource';
 import type { ManualDocItem } from '@/types/domainKnowledge';
 import DataSourceDocTable from '@/components/datasource/DataSourceDocTable';
+import { PageContent } from '@jonex/shared-lib';
 
 export default function DomainKnowledgeDatasourceSync() {
   const { t } = useTranslation();
@@ -73,7 +74,7 @@ export default function DomainKnowledgeDatasourceSync() {
   const filtered = docs.filter((d) => d.name.includes(keyword));
 
   return (
-    <div>
+    <PageContent showCard={false}>
       <a
         onClick={() => navigate(`/domain-knowledge/${id}/detail`)}
         style={{
@@ -92,7 +93,7 @@ export default function DomainKnowledgeDatasourceSync() {
       <Spin spinning={loading}>
         <Card
           style={{
-            borderRadius: 14,
+            borderRadius: 10,
             marginBottom: 24,
             border: '1px solid #eef2f6',
             boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
@@ -145,7 +146,7 @@ export default function DomainKnowledgeDatasourceSync() {
         </div>
 
         <Card
-          style={{ borderRadius: 14, border: '1px solid #eef2f6', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}
+          style={{ borderRadius: 10, border: '1px solid #eef2f6', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}
           bodyStyle={{ padding: 0 }}
         >
           <div
@@ -181,6 +182,6 @@ export default function DomainKnowledgeDatasourceSync() {
           </div>
         </Card>
       </Spin>
-    </div>
+    </PageContent>
   );
 }

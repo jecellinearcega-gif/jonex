@@ -1,4 +1,15 @@
+import type { KnowledgeBaseType } from './domainKnowledge';
+
 export type KnowledgeSearchMode = 'local' | 'global' | 'hybrid' | 'naive' | 'mix' | 'bypass';
+
+/**
+ * [jonex] 检索模式（搜索框右侧按钮组的三个档位）：
+ * - fast：快速检索 → /search/mix（按 kb_type 分流 lightrag / openkb / jonex_wiki）
+ * - deep：深度检索 → /search/deep
+ * - wiki：Wiki 检索 → 强制走 jonex_wiki 专用端点 /search/jonex_wiki，
+ *   只检索 jonex_wiki 链路的库，展示 Wiki 检索链路（stage=jonex_wiki_query）与页面级来源引用
+ */
+export type KnowledgeSearchUiMode = 'fast' | 'deep' | 'wiki';
 
 export interface KnowledgeSearchOverview {
   totalDocuments: number;
@@ -23,6 +34,12 @@ export interface KnowledgeSearchDomain {
   space_name?: string;
   kb_ids?: string[];
   kb_names?: string[];
+  /**
+   * [jonex] kb_ids 各自的知识库类型（kb_type），与 kb_ids 顺序/下标一一对应。
+   * 仅当每个 kb_id 的类型都已知时才等长；前端据此决定「只选了一条引擎链路」
+   * 时打哪条专用检索端点（/search/jonex_wiki、/search/llmwiki），否则回落 /search/mix。
+   */
+  kb_types?: KnowledgeBaseType[];
   created_at?: string;
   updated_at?: string;
 }
@@ -91,8 +108,18 @@ export interface KnowledgeSearchStreamParams {
   domainId?: string;
   /** 知识库 ID 列表，至少一个 */
   kbIds?: string[];
+  /**
+   * [jonex] 与 kbIds 对应的 kb_type 列表（用于端点选择）。
+   * 只在「每个 kb_id 的类型都已知且完全一致」时才用于选择专用端点；否则一律走 /search/mix。
+   */
+  kbTypes?: KnowledgeBaseType[];
   /** 是否深度检索：true 时调用 /search/deep，默认 /search/ontology */
   deep?: boolean;
+  /**
+   * [jonex] 是否 Wiki 检索：true 时强制调用 /search/jonex_wiki（jonex_wiki 专用链路）。
+   * 该端点拒绝异管线知识库，调用方需先把 kbIds 收敛为 kb_type=jonex_wiki 的库。
+   */
+  wiki?: boolean;
   /** 严格模式配置（缺省时后端使用默认值） */
   strictConfig?: KnowledgeSearchStrictConfig;
 }
@@ -110,6 +137,8 @@ export interface KnowledgeReferenceLocation {
   image_idx?: number | null;
   /** [jonex] §image-refs：图片资产预览地址（预签名 URL；local 后端/未上传为空，前端降级） */
   asset_url?: string | null;
+  /** [jonex] §image-refs B2：图片资产扩展名（持久标识；resolve 回传据此重新推导 asset_url） */
+  asset_ext?: string | null;
   /** 命中片段原文文本（RAG 链路带 chunk content 时有值） */
   text?: string | null;
 }
@@ -122,7 +151,7 @@ export interface KnowledgeReference {
   file_name: string;
   mime_type?: string | null;
   file_size?: number | null;
-  media_type: 'text' | 'pdf' | 'audio' | 'video' | 'image' | 'other';
+  media_type: 'text' | 'pdf' | 'audio' | 'video' | 'image' | 'office' | 'other';
   raw_url?: string | null;
   wiki_path?: string | null; // [jonex] OpenKB wiki 页路径
   locations: KnowledgeReferenceLocation[];

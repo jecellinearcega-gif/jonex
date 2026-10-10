@@ -5,16 +5,12 @@ import './index.scss';
 import DataSourceEditModal from './DataSourceEditModal';
 import {
   PlusOutlined,
-  ArrowLeftOutlined,
-  DatabaseOutlined,
   ApiOutlined,
   ControlOutlined,
   CodeOutlined,
   BarChartOutlined,
   ThunderboltOutlined,
-  GlobalOutlined,
   FileTextOutlined,
-  ShareAltOutlined,
   CloudOutlined,
   UploadOutlined,
   FolderOpenOutlined,
@@ -27,7 +23,8 @@ import {
   EyeOutlined,
   SwapOutlined,
 } from '@ant-design/icons';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 import { useStore } from '@/store';
 import type {
   DomainKnowledgeDetail as DomainKnowledgeDetailType,
@@ -39,6 +36,8 @@ import type {
   OntologyStatistics,
   DomainKnowledgePermissionMember,
   DomainKnowledgePermissionRole,
+  KnowledgeBaseType,
+  WikiStats,
 } from '@/types/domainKnowledge';
 import { getStatusTextMap } from '@/types/domainKnowledge';
 import {
@@ -50,21 +49,25 @@ import {
   getOntologyStatistics,
   getDomainKnowledgePermissions,
   saveDomainKnowledgePermissions,
+  getWikiContents,
   type ParserConfigItem,
 } from '@/api/domainKnowledge';
+import { isLlmWikiType } from '@/utils/kbType';
 import CompileTab from './compile/CompileTab';
 import LlmWikiSchemaTab from './llmWikiSchema/LlmWikiSchemaTab';
+import JonexWikiPromptTab from './llmWikiSchema/JonexWikiPromptTab';
 import SynonymTab from './synonym/SynonymTab';
 import DataSourceTab from './DataSourceTab';
 import ResultTab from './ResultTab';
 import ActionTab from './ActionTab';
 import PermissionTab from './PermissionTab';
 import AddDataSourceModal from '@/components/datasource/AddDataSourceModal';
+import AssetStatTag, { buildAssetTags } from '@/components/AssetStatTag';
 import { deleteDataSource } from '@/api/dataSource';
 import { ParserConfigContent } from '@/pages/DomainKnowledgeParser';
 
-function getTabs(t: (key: string) => string) {
-  return [
+function getTabs(t: (key: string) => string, kbType?: KnowledgeBaseType) {
+  const tabs = [
     {
       key: 'datasource',
       label: t('domainKnowledge.tab.datasource'),
@@ -93,6 +96,9 @@ function getTabs(t: (key: string) => string) {
     },
     // { key: 'action', label: 'Action', icon: ThunderboltOutlined },
   ];
+  // [jonex] 同义词只服务本体（lightrag）抽取链路：LLM-Wiki 型（openkb/jonex_wiki）的编译与
+  // 检索都不读 ontology_synonyms，tab 留着会让人以为建了就生效 —— 故对该类型隐藏。
+  return isLlmWikiType(kbType) ? tabs.filter((tab) => tab.key !== 'synonym') : tabs;
 }
 
 export const dataSourceIconMap: Record<string, React.ComponentType<any>> = {
@@ -127,6 +133,7 @@ const DomainKnowledgeDetail = function DomainKnowledgeDetail() {
   const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const { global } = useStore();
   const currentSpaceId = global.currentSpaceId;
   const [activeTab, setActiveTab] = useState('datasource');
@@ -150,6 +157,9 @@ const DomainKnowledgeDetail = function DomainKnowledgeDetail() {
   // ── detail header ────────────────────────────────────
   const [detail, setDetail] = useState<DomainKnowledgeDetailType | null>(null);
   const [detailLoading, setDetailLoading] = useState(true);
+  // LLM-Wiki 的 Wiki 主题/概念不在 KB 详情里（detail 的 entityCount/relationCount 是
+  // Wiki 图谱的节点/边计数），得单独取一份全库 Wiki 内容。null = 还没拿到，标签按 0 渲染。
+  const [wikiStats, setWikiStats] = useState<WikiStats | null>(null);
 
   // ── datasource tab ────────────────────────────────────
   const [dataSources, setDataSources] = useState<DataSourceConfig[]>([]);
@@ -259,11 +269,31 @@ const DomainKnowledgeDetail = function DomainKnowledgeDetail() {
   useEffect(() => {
     if (!id) return;
     setDetailLoading(true);
-    getDomainKnowledgeDetail(id)
+    // [jonex] 设置页需要页头实体/关系徽标，带 with_stats 拉取跨容器全图统计（可接受多等 ~2.6s）。
+    getDomainKnowledgeDetail(id, { withStats: true })
       .then(setDetail)
       .catch((err: any) => message.error(err?.message || t('domainKnowledge.fetchDetailFailed')))
       .finally(() => setDetailLoading(false));
   }, [id, t]);
+
+  // ── fetch Wiki 计数（仅 llm-wiki 库）────────────────────
+  // 页头标签按库型二选一（见 buildAssetTags），Wiki 那一组要这份数据；kbType 未定时先不动，
+  // 拿到后若不是 llm-wiki 就清空——否则切库时会把上个库的页数留在页头上。
+  useEffect(() => {
+    if (!id || !isLlmWikiType(detail?.kbType)) {
+      setWikiStats(null);
+      return;
+    }
+    getWikiContents(id, '')
+      .then((res) =>
+        setWikiStats({
+          summaries: res.summaries?.length ?? 0,
+          concepts: res.concepts?.length ?? 0,
+          entities: res.entities?.length ?? 0,
+        }),
+      )
+      .catch(() => setWikiStats(null));
+  }, [id, detail?.kbType]);
 
   // ── load tab data lazily ──────────────────────────────
   const loadTabData = useCallback(
@@ -351,11 +381,14 @@ const DomainKnowledgeDetail = function DomainKnowledgeDetail() {
         return <ParserConfigContent kbId={id} spaceId={currentSpaceId} canWrite={detail?.can_write ?? false} />;
 
       case 'compile':
-        // [jonex] 管线分流（方案 §10）：openkb KB 显示 LLM-Wiki Schema 设置；
-        // detail?.kbType 已随 KB 详情加载（无额外请求）；未到达前按 lightrag 渲染
-        return detail?.kbType === 'openkb'
-          ? <LlmWikiSchemaTab kbId={id!} canWrite={detail?.can_write ?? false} />
-          : <CompileTab kbId={id!} canWrite={detail?.can_write ?? false} />;
+        // [jonex] 管线分流（方案 §10）三引擎显式：
+        // jonex_wiki → compile_main prompt 编辑；openkb → LLM-Wiki Schema（词表）；
+        // lightrag → 本体 CompileTab。detail?.kbType 随 KB 详情加载；未到达前按 lightrag。
+        if (detail?.kbType === 'jonex_wiki')
+          return <JonexWikiPromptTab kbId={id!} canWrite={detail?.can_write ?? false} />;
+        if (detail?.kbType === 'openkb')
+          return <LlmWikiSchemaTab kbId={id!} canWrite={detail?.can_write ?? false} />;
+        return <CompileTab kbId={id!} canWrite={detail?.can_write ?? false} />;
 
       case 'synonym':
         return <SynonymTab kbId={id!} canWrite={detail?.can_write ?? false} />;
@@ -401,79 +434,76 @@ const DomainKnowledgeDetail = function DomainKnowledgeDetail() {
     }
   };
 
+  // 本页有两个入口——知识库列表的下拉菜单、知识库详情页 tab 栏的「知识库设置」按钮。
+  // 返回目标由来源决定：入口在 navigate 时带上 backTo，这里读出来用。
+  // 直接打开链接（无 state）时回落到知识库列表，与加 state 之前的行为一致。
+  const backState = location.state as { backTo?: string } | null;
+  const backTo = backState?.backTo || '/domain-knowledge';
+
+  // 页头三个标签：与知识库详情页共用 buildAssetTags，两处页头永远同款（口径见该函数注释）
+  const assetTags = detail ? buildAssetTags(t, detail, wikiStats) : [];
+
   // ── main render ──
   return (
-    <div
-      style={{
-        fontFamily:
-          '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif',
-        color: '#1e293b',
-        letterSpacing: 0,
-      }}
-    >
-      {/* Back Navigation */}
-      <div style={{ marginBottom: 16 }}>
-        <a onClick={() => navigate('/domain-knowledge')} className="yx-kb-back-link">
-          <ArrowLeftOutlined style={{ fontSize: 12 }} /> {t('domainKnowledge.backToKnowledgeList')}
-        </a>
-      </div>
-
-      {/* Knowledge Base Header */}
-      <div className="yx-kb-header-card">
-        <div className="yx-kb-header-icon">
-          <DatabaseOutlined />
-        </div>
-        {detailLoading ? (
-          <div style={{ flex: 1 }}>
-            <h2 className="yx-kb-name-lg">{t('common.loading')}</h2>
-          </div>
-        ) : detail ? (
-          <>
-            <div style={{ flex: 1 }}>
-              <h2 className="yx-kb-name-lg">{detail.name}</h2>
-              <div className="yx-kb-tag-row">
-                <span className="yx-kb-stat-badge">
-                  <GlobalOutlined style={{ color: '#3b82f6' }} /> {detail.spaceName}
-                </span>
-                <span className="yx-kb-stat-badge">
-                  <FileTextOutlined /> {detail.documentCount.toLocaleString()} {t('domainKnowledge.documents')}
-                </span>
-                <span className="yx-kb-stat-badge">
-                  <ShareAltOutlined /> {detail.entityCount.toLocaleString()} {t('domainKnowledge.entities')}
-                </span>
-                <span className="yx-kb-stat-badge">
-                  <ShareAltOutlined /> {detail.relationCount.toLocaleString()} {t('domainKnowledge.relations')}
-                </span>
-              </div>
-            </div>
-            <div style={{ textAlign: 'right' }}>
-              <div className={`yx-kb-detail-status ${detail.status}`}>{getStatusTextMap(t)[detail.status]}</div>
-              <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>
+    <>
+      {/* 页头承担返回与 KB 身份：返回按钮、名称/统计、同步状态排在同一行 */}
+      <PageHeader
+        // backTo 传函数：本页返回目标由来源决定（见上），不是固定路径
+        backTo={() => navigate(backTo)}
+        // 不传 backText：返回按钮只留箭头图标（PageHeader 不传即只渲染图标）
+        title={
+          <span className="yx-kb-header-title">
+            <span className="yx-kb-header-name">
+              {detailLoading ? t('common.loading') : detail?.name}
+            </span>
+            {/* 统计标签随详情一起出现：加载中与未取到时它没有可信数值可显示 */}
+            {detail && (
+              <span className="yx-kb-tag-row">
+                {assetTags.map((tag) => (
+                  <AssetStatTag
+                    key={tag.label}
+                    label={tag.label}
+                    value={tag.value}
+                    icon={tag.icon}
+                    tone={tag.tone}
+                  />
+                ))}
+              </span>
+            )}
+          </span>
+        }
+        extra={
+          detail && (
+            <span className="yx-kb-header-status">
+              <span className={`yx-kb-detail-status ${detail.status}`}>{getStatusTextMap(t)[detail.status]}</span>
+              <span className="yx-kb-header-updated">
                 {t('domainKnowledge.lastUpdated', { time: detail.updatedAt })}
+              </span>
+            </span>
+          )
+        }
+      />
+
+      <PageContent>
+        {/* Tab Bar */}
+        <div className="yx-kb-detail-tabs">
+          {getTabs(t, detail?.kbType).map((tab) => {
+            const Icon = tab.icon;
+            const active = activeTab === tab.key;
+            return (
+              <div
+                key={tab.key}
+                onClick={() => setActiveTab(tab.key)}
+                className={`yx-kb-detail-tab${active ? ' active' : ''}`}
+              >
+                <Icon /> {tab.label}
               </div>
-            </div>
-          </>
-        ) : null}
-      </div>
+            );
+          })}
+        </div>
 
-      {/* Tab Bar */}
-      <div className="yx-kb-detail-tabs">
-        {getTabs(t).map((tab) => {
-          const Icon = tab.icon;
-          const active = activeTab === tab.key;
-          return (
-            <div
-              key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
-              className={`yx-kb-detail-tab${active ? ' active' : ''}`}
-            >
-              <Icon /> {tab.label}
-            </div>
-          );
-        })}
-      </div>
-
-      {renderTabContent()}
+        {renderTabContent()}
+      </PageContent>
 
       {/* 编辑数据源弹窗 */}
       <DataSourceEditModal
@@ -495,7 +525,7 @@ const DomainKnowledgeDetail = function DomainKnowledgeDetail() {
           reloadDataSources();
         }}
       />
-    </div>
+    </>
   );
 };
 

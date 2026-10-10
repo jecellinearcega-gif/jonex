@@ -21,6 +21,23 @@ export interface BatchDownloadResult {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/**
+ * 触发单个文件下载：创建隐藏 <a> 并点击。
+ *
+ * 刻意用 <a> 而不是 fetch + createObjectURL：COS/S3 预签名是跨域直连，
+ * fetch 需要 bucket 的 CORS 放行前端 origin（<video>/<img> 走 no-cors 不需要），
+ * 而 <a> 导航由 Content-Disposition: attachment 承载文件名，无跨域要求。
+ * 同源（local 后端 / gateway proxy）与 302 直连对象存储两种形态都适用。
+ */
+export function clickDownloadLink(url: string): void {
+  const a = document.createElement('a');
+  a.href = url;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 function defaultCreateLink(url: string): { click: () => void } {
   const a = document.createElement('a');
   a.href = url;

@@ -13,6 +13,7 @@ import {
   InfoCircleOutlined,
 } from '@ant-design/icons';
 import { emitSpacesInvalidated } from '@jonex/shell-sdk';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 import {
   getSpace,
   updateSpace,
@@ -22,7 +23,12 @@ import {
   type SpaceOwnerInfo,
 } from '../../api/domainSpace';
 import type { DomainSpace } from '../../types/domainSpace';
-import { candidateToPermMember, type MemberCandidate, type PermMember, type SpaceRole } from '../../types/domainService';
+import {
+  candidateToPermMember,
+  type MemberCandidate,
+  type PermMember,
+  type SpaceRole,
+} from '../../types/domainService';
 import { useStore } from '../../store';
 import DeleteSpaceModal from './DeleteSpaceModal';
 import type { DeleteSpaceModalHandle } from './DeleteSpaceModal';
@@ -252,318 +258,321 @@ const DomainSpaceSettings = function DomainSpaceSettings() {
   }
 
   return (
-    <div className="yx-domain-space-page">
-      {/* 页面标题 */}
-      <div className="yx-page-header">
-        <h1 className="yx-page-title" style={{ margin: 0 }}>
-          {t('domainSpace.settingsTitle', { name: space.name })}
-        </h1>
-      </div>
-
-      {/* 基本信息 */}
-      <section style={{ marginBottom: 28 }}>
-        <h2
-          style={{
-            fontSize: 17,
-            fontWeight: 600,
-            color: '#0b2b5c',
-            marginBottom: 16,
-            paddingBottom: 12,
-            borderBottom: '1px solid #eef2f6',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-          }}
-        >
-          <InfoCircleOutlined style={{ color: '#3b82f6' }} /> {t('domainSpace.sectionInfo')}
-        </h2>
-        <div className="yx-card" style={{ padding: '24px 28px' }}>
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 13, color: '#64748b', marginBottom: 6 }}>{t('domainSpace.name')}</div>
-            <Input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              maxLength={128}
-              placeholder={t('domainSpace.nameInputPlaceholder')}
-            />
-          </div>
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 13, color: '#64748b', marginBottom: 6 }}>{t('domainSpace.description')}</div>
-            <Input.TextArea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={3}
-              placeholder={t('domainSpace.descriptionPlaceholder')}
-            />
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, paddingTop: 8 }}>
-            <Button
-              type="primary"
-              icon={<SaveOutlined />}
-              loading={savingInfo}
-              disabled={!canManage}
-              title={canManage ? undefined : t('domainSpace.noManagePermission')}
-              onClick={handleSaveInfo}
-            >
-              {t('common.save')}
-            </Button>
-          </div>
-        </div>
-      </section>
-
-      {/* 成员权限 */}
-      <section style={{ marginBottom: 28 }}>
-        <h2
-          style={{
-            fontSize: 17,
-            fontWeight: 600,
-            color: '#0b2b5c',
-            marginBottom: 16,
-            paddingBottom: 12,
-            borderBottom: '1px solid #eef2f6',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-          }}
-        >
-          <TeamOutlined style={{ color: '#3b82f6' }} /> {t('domainSpace.permissionSettings')}
-        </h2>
-        <div className="yx-card" style={{ padding: '24px 28px' }}>
-          {/* 添加成员 */}
-          <div ref={userSelectRef} style={{ position: 'relative', marginBottom: 12 }}>
-            <Button
-              icon={<UserAddOutlined />}
-              disabled={!canManage}
-              title={canManage ? undefined : t('domainSpace.noManagePermission')}
-              onClick={() => {
-                const willOpen = !userSelectOpen;
-                setUserSelectOpen(willOpen);
-                setUserSearchText('');
-                if (willOpen && availableUsers.length === 0) loadAvailableUsers();
+    <>
+      <PageHeader title={t('domainSpace.settingsTitle', { name: space.name })} />
+      <PageContent showCard={false}>
+        <div className="yx-domain-space-page">
+          {/* 基本信息 */}
+          <section style={{ marginBottom: 28 }}>
+            <h2
+              style={{
+                fontSize: 17,
+                fontWeight: 600,
+                color: '#0b2b5c',
+                marginBottom: 16,
+                paddingBottom: 12,
+                borderBottom: '1px solid #eef2f6',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
               }}
             >
-              {t('domainSpace.addMember')}
-            </Button>
-            {userSelectOpen && (
-              <div
-                style={{
-                  position: 'absolute',
-                  top: 40,
-                  left: 0,
-                  zIndex: 10,
-                  width: 320,
-                  background: '#fff',
-                  borderRadius: 8,
-                  boxShadow: '0 4px 20px rgba(0,0,0,.12)',
-                  border: '1px solid #e2e8f0',
-                  overflow: 'hidden',
-                }}
-              >
-                <div style={{ padding: '8px 12px', borderBottom: '1px solid #e2e8f0' }}>
-                  <Input
-                    size="small"
-                    placeholder={t('domainSpace.searchUserPlaceholder')}
-                    prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
-                    value={userSearchText}
-                    onChange={(e) => setUserSearchText(e.target.value)}
-                    allowClear
-                  />
-                </div>
-                <div style={{ maxHeight: 220, overflowY: 'auto' }}>
-                  {usersLoading ? (
-                    <div style={{ textAlign: 'center', padding: 20 }}>
-                      <Spin size="small" />
-                    </div>
-                  ) : filteredAvailableUsers.length === 0 ? (
-                    <div style={{ textAlign: 'center', padding: 20, color: '#94a3b8', fontSize: 13 }}>
-                      {userSearchText ? t('domainSpace.noMatchUser') : t('domainSpace.noAvailableUser')}
-                    </div>
-                  ) : (
-                    filteredAvailableUsers.slice(0, 30).map((user) => (
-                      <div
-                        key={user.user_id}
-                        className="yx-perm-user-row"
-                        style={{ cursor: 'pointer', padding: '8px 12px' }}
-                        onClick={() => {
-                          addPermMember(user);
-                          setUserSearchText('');
-                        }}
-                      >
-                        <div className="yx-perm-avatar" style={{ background: candidateToPermMember(user).avatarColor }}>
-                          {candidateToPermMember(user).avatar}
-                        </div>
-                        <div className="yx-perm-user-info" style={{ flex: 1 }}>
-                          <div className="yx-perm-user-name">{user.display_name || user.username || user.user_id}</div>
-                          <div className="yx-perm-user-dept">{user.email || user.username || ''}</div>
-                        </div>
-                        <span style={{ fontSize: 20, color: '#3b82f6', lineHeight: 1 }}>+</span>
-                      </div>
-                    ))
-                  )}
-                </div>
+              <InfoCircleOutlined style={{ color: '#3b82f6' }} /> {t('domainSpace.sectionInfo')}
+            </h2>
+            <div className="yx-card" style={{ padding: '24px 28px' }}>
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 13, color: '#64748b', marginBottom: 6 }}>{t('domainSpace.name')}</div>
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  maxLength={128}
+                  placeholder={t('domainSpace.nameInputPlaceholder')}
+                />
               </div>
-            )}
-          </div>
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 13, color: '#64748b', marginBottom: 6 }}>{t('domainSpace.description')}</div>
+                <Input.TextArea
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  rows={3}
+                  placeholder={t('domainSpace.descriptionPlaceholder')}
+                />
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, paddingTop: 8 }}>
+                <Button
+                  type="primary"
+                  icon={<SaveOutlined />}
+                  loading={savingInfo}
+                  disabled={!canManage}
+                  title={canManage ? undefined : t('domainSpace.noManagePermission')}
+                  onClick={handleSaveInfo}
+                >
+                  {t('common.save')}
+                </Button>
+              </div>
+            </div>
+          </section>
 
-          {/* 已有成员搜索 */}
-          <Input
-            prefix={<SearchOutlined style={{ color: '#94a3b8', fontSize: 14 }} />}
-            placeholder={t('domainSpace.searchMemberPlaceholder')}
-            value={permSearch}
-            onChange={(e) => setPermSearch(e.target.value)}
-            style={{ width: '100%', marginBottom: 12 }}
-          />
-
-          {/* 成员列表 */}
-          <div style={{ maxHeight: 320, overflowY: 'auto', marginBottom: 16 }}>
-            {permLoading ? (
-              <div style={{ textAlign: 'center', padding: 24 }}>
-                <Spin />
-              </div>
-            ) : filteredPermMembers.length === 0 && !permOwner ? (
-              <div style={{ textAlign: 'center', padding: 24, color: '#94a3b8', fontSize: 13 }}>
-                {permSearch ? t('domainSpace.noMatchMember') : t('domainSpace.noMembers')}
-              </div>
-            ) : (
-              <>
-              {/* 创建者（owner）：只读展示，不落 space_permissions、不可删/改角色 */}
-              {permOwner && (
-                <div className="yx-perm-user-row">
-                  <div className="yx-perm-avatar" style={{ background: '#3b82f6' }}>
-                    {(permOwner.display_name || permOwner.user_id).charAt(0).toUpperCase()}
-                  </div>
-                  <div className="yx-perm-user-info" style={{ flex: 1 }}>
-                    <div className="yx-perm-user-name">
-                      {permOwner.display_name || `ID: ${permOwner.user_id.slice(0, 8)}`}
-                    </div>
-                    <div className="yx-perm-user-dept">{t('domainSpace.ownerLabel')}</div>
-                  </div>
-                  <span
+          {/* 成员权限 */}
+          <section style={{ marginBottom: 28 }}>
+            <h2
+              style={{
+                fontSize: 17,
+                fontWeight: 600,
+                color: '#0b2b5c',
+                marginBottom: 16,
+                paddingBottom: 12,
+                borderBottom: '1px solid #eef2f6',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+              }}
+            >
+              <TeamOutlined style={{ color: '#3b82f6' }} /> {t('domainSpace.permissionSettings')}
+            </h2>
+            <div className="yx-card" style={{ padding: '24px 28px' }}>
+              {/* 添加成员 */}
+              <div ref={userSelectRef} style={{ position: 'relative', marginBottom: 12 }}>
+                <Button
+                  icon={<UserAddOutlined />}
+                  disabled={!canManage}
+                  title={canManage ? undefined : t('domainSpace.noManagePermission')}
+                  onClick={() => {
+                    const willOpen = !userSelectOpen;
+                    setUserSelectOpen(willOpen);
+                    setUserSearchText('');
+                    if (willOpen && availableUsers.length === 0) loadAvailableUsers();
+                  }}
+                >
+                  {t('domainSpace.addMember')}
+                </Button>
+                {userSelectOpen && (
+                  <div
                     style={{
-                      fontSize: 12,
-                      color: '#3b82f6',
-                      background: '#eff6ff',
-                      padding: '2px 10px',
-                      borderRadius: 10,
+                      position: 'absolute',
+                      top: 40,
+                      left: 0,
+                      zIndex: 10,
+                      width: 320,
+                      background: '#fff',
+                      borderRadius: 8,
+                      boxShadow: '0 4px 20px rgba(0,0,0,.12)',
+                      border: '1px solid #e2e8f0',
+                      overflow: 'hidden',
                     }}
                   >
-                    {t('domainSpace.ownerLabel')}
-                  </span>
-                </div>
-              )}
-              {filteredPermMembers.map((member) => (
-                <div key={member.id} className="yx-perm-user-row">
-                  <div className="yx-perm-avatar" style={{ background: member.avatarColor }}>
-                    {member.avatar}
-                  </div>
-                  <div className="yx-perm-user-info" style={{ flex: 1 }}>
-                    <div className="yx-perm-user-name">{member.name}</div>
-                    <div className="yx-perm-user-dept">{member.department || `ID: ${member.id.slice(0, 8)}`}</div>
-                  </div>
-                  <div className="yx-perm-radio">
-                    <label className={`yx-perm-radio-label${member.role === 'member' ? ' is-checked' : ''}`}>
-                      <input
-                        type="radio"
-                        name={`perm-${member.id}`}
-                        value="member"
-                        checked={member.role === 'member'}
-                        disabled={!canManage}
-                        onChange={() => setMemberRole(member.id, 'member')}
+                    <div style={{ padding: '8px 12px', borderBottom: '1px solid #e2e8f0' }}>
+                      <Input
+                        size="small"
+                        placeholder={t('domainSpace.searchUserPlaceholder')}
+                        prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
+                        value={userSearchText}
+                        onChange={(e) => setUserSearchText(e.target.value)}
+                        allowClear
                       />
-                      {t('permission.spaceMember')}
-                    </label>
-                    <label className={`yx-perm-radio-label${member.role === 'space_manager' ? ' is-checked' : ''}`}>
-                      <input
-                        type="radio"
-                        name={`perm-${member.id}`}
-                        value="space_manager"
-                        checked={member.role === 'space_manager'}
-                        disabled={!canManage}
-                        onChange={() => setMemberRole(member.id, 'space_manager')}
-                      />
-                      {t('permission.spaceManager')}
-                    </label>
+                    </div>
+                    <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+                      {usersLoading ? (
+                        <div style={{ textAlign: 'center', padding: 20 }}>
+                          <Spin size="small" />
+                        </div>
+                      ) : filteredAvailableUsers.length === 0 ? (
+                        <div style={{ textAlign: 'center', padding: 20, color: '#94a3b8', fontSize: 13 }}>
+                          {userSearchText ? t('domainSpace.noMatchUser') : t('domainSpace.noAvailableUser')}
+                        </div>
+                      ) : (
+                        filteredAvailableUsers.slice(0, 30).map((user) => (
+                          <div
+                            key={user.user_id}
+                            className="yx-perm-user-row"
+                            style={{ cursor: 'pointer', padding: '8px 12px' }}
+                            onClick={() => {
+                              addPermMember(user);
+                              setUserSearchText('');
+                            }}
+                          >
+                            <div
+                              className="yx-perm-avatar"
+                              style={{ background: candidateToPermMember(user).avatarColor }}
+                            >
+                              {candidateToPermMember(user).avatar}
+                            </div>
+                            <div className="yx-perm-user-info" style={{ flex: 1 }}>
+                              <div className="yx-perm-user-name">
+                                {user.display_name || user.username || user.user_id}
+                              </div>
+                              <div className="yx-perm-user-dept">{user.email || user.username || ''}</div>
+                            </div>
+                            <span style={{ fontSize: 20, color: '#3b82f6', lineHeight: 1 }}>+</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
                   </div>
-                  {canManage && (
-                  <Button
-                    type="text"
-                    className="yx-perm-remove-btn"
-                    onClick={() => removePermMember(member.id)}
-                    title={t('domainSpace.removeMember')}
-                    style={{ color: '#94a3b8', fontSize: 16, padding: '0 0 0 8px', lineHeight: 1 }}
-                  >
-                    <CloseOutlined />
-                  </Button>
-                  )}
-                </div>
-              ))
-              }
-              </>
-            )}
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <Button
-              type="primary"
-              icon={<SaveOutlined />}
-              loading={permSaving}
-              disabled={!canManage}
-              title={canManage ? undefined : t('domainSpace.noManagePermission')}
-              onClick={handleSavePermissions}
-            >
-              {t('domainSpace.savePermission')}
-            </Button>
-          </div>
-        </div>
-      </section>
+                )}
+              </div>
 
-      {/* 危险区 */}
-      <section>
-        <div style={{ border: '1px solid #fecaca', borderRadius: 14, overflow: 'hidden' }}>
-          <div
-            style={{
-              background: '#fef2f2',
-              padding: '16px 24px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              fontWeight: 600,
-              color: '#dc2626',
-              fontSize: 15,
-            }}
-          >
-            <WarningOutlined /> {t('domainSpace.dangerZone')}
-          </div>
-          <div
-            style={{
-              background: '#fff',
-              padding: 24,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-            }}
-          >
-            <div>
-              <p style={{ fontSize: 14, color: '#1e293b', fontWeight: 500, marginBottom: 4 }}>
-                {t('domainSpace.deleteSpaceTitle')}
-              </p>
-              <p style={{ fontSize: 13, color: '#64748b' }}>{t('domainSpace.deleteWarning')}</p>
+              {/* 已有成员搜索 */}
+              <Input
+                prefix={<SearchOutlined style={{ color: '#94a3b8', fontSize: 14 }} />}
+                placeholder={t('domainSpace.searchMemberPlaceholder')}
+                value={permSearch}
+                onChange={(e) => setPermSearch(e.target.value)}
+                style={{ width: '100%', marginBottom: 12 }}
+              />
+
+              {/* 成员列表 */}
+              <div style={{ maxHeight: 320, overflowY: 'auto', marginBottom: 16 }}>
+                {permLoading ? (
+                  <div style={{ textAlign: 'center', padding: 24 }}>
+                    <Spin />
+                  </div>
+                ) : filteredPermMembers.length === 0 && !permOwner ? (
+                  <div style={{ textAlign: 'center', padding: 24, color: '#94a3b8', fontSize: 13 }}>
+                    {permSearch ? t('domainSpace.noMatchMember') : t('domainSpace.noMembers')}
+                  </div>
+                ) : (
+                  <>
+                    {/* 创建者（owner）：只读展示，不落 space_permissions、不可删/改角色 */}
+                    {permOwner && (
+                      <div className="yx-perm-user-row">
+                        <div className="yx-perm-avatar" style={{ background: '#3b82f6' }}>
+                          {(permOwner.display_name || permOwner.user_id).charAt(0).toUpperCase()}
+                        </div>
+                        <div className="yx-perm-user-info" style={{ flex: 1 }}>
+                          <div className="yx-perm-user-name">
+                            {permOwner.display_name || `ID: ${permOwner.user_id.slice(0, 8)}`}
+                          </div>
+                          <div className="yx-perm-user-dept">{t('domainSpace.ownerLabel')}</div>
+                        </div>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            color: '#3b82f6',
+                            background: '#eff6ff',
+                            padding: '2px 10px',
+                            borderRadius: 10,
+                          }}
+                        >
+                          {t('domainSpace.ownerLabel')}
+                        </span>
+                      </div>
+                    )}
+                    {filteredPermMembers.map((member) => (
+                      <div key={member.id} className="yx-perm-user-row">
+                        <div className="yx-perm-avatar" style={{ background: member.avatarColor }}>
+                          {member.avatar}
+                        </div>
+                        <div className="yx-perm-user-info" style={{ flex: 1 }}>
+                          <div className="yx-perm-user-name">{member.name}</div>
+                          <div className="yx-perm-user-dept">{member.department || `ID: ${member.id.slice(0, 8)}`}</div>
+                        </div>
+                        <div className="yx-perm-radio">
+                          <label className={`yx-perm-radio-label${member.role === 'member' ? ' is-checked' : ''}`}>
+                            <input
+                              type="radio"
+                              name={`perm-${member.id}`}
+                              value="member"
+                              checked={member.role === 'member'}
+                              disabled={!canManage}
+                              onChange={() => setMemberRole(member.id, 'member')}
+                            />
+                            {t('permission.spaceMember')}
+                          </label>
+                          <label
+                            className={`yx-perm-radio-label${member.role === 'space_manager' ? ' is-checked' : ''}`}
+                          >
+                            <input
+                              type="radio"
+                              name={`perm-${member.id}`}
+                              value="space_manager"
+                              checked={member.role === 'space_manager'}
+                              disabled={!canManage}
+                              onChange={() => setMemberRole(member.id, 'space_manager')}
+                            />
+                            {t('permission.spaceManager')}
+                          </label>
+                        </div>
+                        {canManage && (
+                          <Button
+                            type="text"
+                            onClick={() => removePermMember(member.id)}
+                            title={t('domainSpace.removeMember')}
+                            style={{ color: '#94a3b8', fontSize: 16, padding: '0 0 0 8px', lineHeight: 1 }}
+                          >
+                            <CloseOutlined />
+                          </Button>
+                        )}
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <Button
+                  type="primary"
+                  icon={<SaveOutlined />}
+                  loading={permSaving}
+                  disabled={!canManage}
+                  title={canManage ? undefined : t('domainSpace.noManagePermission')}
+                  onClick={handleSavePermissions}
+                >
+                  {t('domainSpace.savePermission')}
+                </Button>
+              </div>
             </div>
-            <Button
-              danger
-              type="primary"
-              icon={<DeleteOutlined />}
-              disabled={!canManage}
-              title={canManage ? undefined : t('domainSpace.noManagePermission')}
-              onClick={() => deleteRef.current?.open(space.name)}
-            >
-              {t('domainSpace.deleteSpaceBtn')}
-            </Button>
-          </div>
-        </div>
-      </section>
+          </section>
 
-      <DeleteSpaceModal ref={deleteRef} spaceId={id || ''} onDeleted={handleDeleted} />
-    </div>
+          {/* 危险区 */}
+          <section>
+            <div style={{ border: '1px solid #fecaca', borderRadius: 10, overflow: 'hidden' }}>
+              <div
+                style={{
+                  background: '#fef2f2',
+                  padding: '16px 24px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  fontWeight: 600,
+                  color: '#dc2626',
+                  fontSize: 15,
+                }}
+              >
+                <WarningOutlined /> {t('domainSpace.dangerZone')}
+              </div>
+              <div
+                style={{
+                  background: '#fff',
+                  padding: 24,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <div>
+                  <p style={{ fontSize: 14, color: '#1e293b', fontWeight: 500, marginBottom: 4 }}>
+                    {t('domainSpace.deleteSpaceTitle')}
+                  </p>
+                  <p style={{ fontSize: 13, color: '#64748b' }}>{t('domainSpace.deleteWarning')}</p>
+                </div>
+                <Button
+                  danger
+                  type="primary"
+                  icon={<DeleteOutlined />}
+                  disabled={!canManage}
+                  title={canManage ? undefined : t('domainSpace.noManagePermission')}
+                  onClick={() => deleteRef.current?.open(space.name)}
+                >
+                  {t('domainSpace.deleteSpaceBtn')}
+                </Button>
+              </div>
+            </div>
+          </section>
+
+          <DeleteSpaceModal ref={deleteRef} spaceId={id || ''} onDeleted={handleDeleted} />
+        </div>
+      </PageContent>
+    </>
   );
 };
 

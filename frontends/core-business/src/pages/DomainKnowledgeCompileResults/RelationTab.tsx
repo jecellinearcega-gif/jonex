@@ -6,8 +6,10 @@ import type { ColumnsType } from 'antd/es/table';
 import type { RelationInstanceSummary, RelationInstanceRow } from '@/types/domainKnowledge';
 import { useTranslation } from 'react-i18next';
 import EditRelationModal from './EditRelationModal';
+import useFillHeight from '@/hooks/useFillHeight';
 import { getOntologyRelationInstances, createOntologyRelation, deleteOntologyRelation } from '@/api/domainKnowledge';
 import debounce from 'lodash/debounce';
+import './index.scss';
 
 const PAGE_SIZE = 10;
 
@@ -29,6 +31,8 @@ export default function RelationTab({ kbId, docId, data, title: propTitle }: Rel
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [keyword, setKeyword] = useState('');
+  // 表体高度按真实容器量，而不是按视口猜（见 useFillHeight）
+  const [tableHostRef, tableBodyHeight] = useFillHeight();
 
   const fetchList = useMemo(
     () =>
@@ -292,14 +296,14 @@ export default function RelationTab({ kbId, docId, data, title: propTitle }: Rel
   ];
 
   return (
-    <>
+    <div className="yx-fill-view">
       <div
         style={{
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
-          padding: '16px 24px',
-          borderTop: '1px solid #f1f5f9',
+          padding: 16,
+          flexShrink: 0,
         }}
       >
         <div style={{ fontSize: 14, fontWeight: 600, color: '#0b2b5c' }}>
@@ -333,27 +337,29 @@ export default function RelationTab({ kbId, docId, data, title: propTitle }: Rel
         </div>
       </div>
 
-      <Table
-        rowKey={(r) => `${r.source_type}|${r.source}|${r.relation_type}|${r.target_type}|${r.target}`}
-        columns={columns}
-        dataSource={instances}
-        loading={loading}
-        pagination={{
-          current: page,
-          pageSize: PAGE_SIZE,
-          total,
-          onChange: (p) => {
-            setPage(p);
-            fetchList(p, keyword, kbId, docId);
-          },
-          showSizeChanger: false,
-          showTotal: (tTotal) => t('compile.totalInstances', { count: tTotal }),
-        }}
-        size="middle"
-        style={{ padding: '0 24px 24px' }}
-        scroll={{ y: 'calc(100vh - 480px)' }}
-        locale={{ emptyText: <span style={{ color: '#94a3b8' }}>{t('compile.emptyRelationInstances')}</span> }}
-      />
+      <div className="yx-fill-table" ref={tableHostRef}>
+        <Table
+          rowKey={(r) => `${r.source_type}|${r.source}|${r.relation_type}|${r.target_type}|${r.target}`}
+          columns={columns}
+          dataSource={instances}
+          loading={loading}
+          pagination={{
+            current: page,
+            pageSize: PAGE_SIZE,
+            total,
+            onChange: (p) => {
+              setPage(p);
+              fetchList(p, keyword, kbId, docId);
+            },
+            showSizeChanger: false,
+            showTotal: (tTotal) => t('compile.totalInstances', { count: tTotal }),
+          }}
+          size="middle"
+          style={{ padding: '0 16px' }}
+          scroll={{ y: tableBodyHeight }}
+          locale={{ emptyText: <span style={{ color: '#94a3b8' }}>{t('compile.emptyRelationInstances')}</span> }}
+        />
+      </div>
 
       <EditRelationModal
         open={modalOpen}
@@ -364,6 +370,6 @@ export default function RelationTab({ kbId, docId, data, title: propTitle }: Rel
         onSave={isCreate ? handleCreate : handleEdit}
         onCancel={closeModal}
       />
-    </>
+    </div>
   );
 }

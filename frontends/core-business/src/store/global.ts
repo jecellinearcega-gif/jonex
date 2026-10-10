@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { getItem, setItem } from '@/utils/storage';
+import { getItem, setItem } from '@jonex/shared-lib';
 import { listSpaces } from '@/api/domainSpace';
 import type { DomainSpace } from '@/types/domainSpace';
 import { persistSpaceId, readPersistedSpaceId } from '@jonex/shell-sdk';

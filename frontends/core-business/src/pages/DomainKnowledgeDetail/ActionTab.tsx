@@ -16,7 +16,7 @@ export default function ActionTab({ actionRules, actionLoading, ruleStatusLabel,
   const { t } = useTranslation();
 
   return (
-    <div className="config-section yx-kb-section-card">
+    <div>
       <div className="yx-kb-flex-header">
         <h3 className="yx-kb-section-title">
           <ThunderboltOutlined className="yx-kb-icon-purple" /> {t('domainKnowledge.triggerRules')}

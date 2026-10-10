@@ -6,12 +6,16 @@
  * docs/document-status-display-design.md §2.2 / §8.1 保持同源同义。
  */
 
+import { isLlmWikiType } from './kbType';
+
 export type DocPhase =
   | 'pending_parse'
   | 'parsing'
+  | 'parsed'
   | 'ingesting'
   | 'parse_failed'
   | 'pending_compile'
+  | 'compile_paused'
   | 'compiling'
   | 'compiled'
   | 'compile_failed'
@@ -35,8 +39,8 @@ export interface PhaseDisplay {
 
 /**
  * 后端两字段 → 单一线性 phase。传入的是后端原始值（status / ontology_status）。
- * openkb 文档额外传 kbType + llm_wiki_compile_status：其 ontology_status 被强制
- * ready 表示「不需要本体抽取」，不能当「编译完成」——openkb 编译状态以
+ * llm-wiki 文档额外传 kbType + llm_wiki_compile_status：其 ontology_status 被强制
+ * ready 表示「不需要本体抽取」，不能当「编译完成」——llm-wiki 编译状态以
  * llm_wiki 为准（kbType 显式判断，避免依赖「llmWikiCompileStatus 有值」的隐式约定）。
  * 返回 null 表示列表不展示（如 deleted 软删除）。
  */
@@ -45,12 +49,17 @@ export function deriveDocPhase(
   ontologyStatus: string | undefined | null,
   llmWikiCompileStatus?: string | null,
   kbType?: string | null,
+  compilationPaused = false,
 ): DocPhase | null {
   switch (status) {
     case 'pending':
       return 'pending_parse';
     case 'parsing':
       return 'parsing';
+    // [jonex] 解析产物已落盘、切片还没推入库（lightrag 三步链第 1 步的收口态）。
+    // 只可能出现在 lightrag 库：两种 llm-wiki 库没有 ingest 那一段，解析完直接 ready。
+    case 'parsed':
+      return 'parsed';
     case 'ingesting':
       return 'ingesting';
     case 'failed':
@@ -60,12 +69,15 @@ export function deriveDocPhase(
     case 'deleted':
       return null;
     case 'ready':
-      // [jonex] openkb 文档：llm_wiki_compile_status 是编译状态唯一事实来源
+      // [jonex] llm-wiki 文档：llm_wiki_compile_status 是编译状态唯一事实来源
       // （NULL/compiling/compiled/stale/failed；ontology_status 恒 ready）
-      if (kbType === 'openkb' && llmWikiCompileStatus) {
+      if (isLlmWikiType(kbType)) {
+        if (compilationPaused && (!llmWikiCompileStatus || ['compiling', 'stale', 'paused'].includes(llmWikiCompileStatus))) return 'compile_paused';
         switch (llmWikiCompileStatus) {
           case 'compiled':
             return 'compiled';
+          case 'paused':
+            return 'compile_paused';
           case 'compiling':
             return 'compiling';
           case 'failed':
@@ -112,6 +124,20 @@ export const PHASE_DISPLAY: Record<DocPhase, PhaseDisplay> = {
     canRecompile: false,
     canDelete: false,
   },
+  parsed: {
+    // 「待抽取」：解析完了但**没入库**，所以和 parsing 一样不可搜、也**没有 hint**
+    // （不写「已可搜索」—— 那时候搜不到）。
+    // 但两个操作必须放开：这正是它存在的意义。文档停在这个相位**只可能**是因为
+    // 任务中心那条任务被停了（或后面那步没派下来），此刻没有后台任务在跑，重新解析
+    // 和删除都是安全的；照抄 parsing 把按钮全禁掉，用户就彻底没出路了。
+    label: 'docPhase.parsed',
+    color: '#8b5cf6',
+    icon: 'hourglass',
+    searchable: false,
+    canReparse: true,
+    canRecompile: false, // 还没入库，编译无从谈起
+    canDelete: true,
+  },
   ingesting: {
     label: 'docPhase.ingesting',
     color: '#3b82f6',
@@ -150,6 +176,15 @@ export const PHASE_DISPLAY: Record<DocPhase, PhaseDisplay> = {
     canDelete: true,
     hint: 'docPhase.searchable',
   },
+  compile_paused: {
+    label: 'docPhase.compilePaused',
+    color: '#d97706',
+    icon: 'hourglass',
+    searchable: false,
+    canReparse: false,
+    canRecompile: false,
+    canDelete: true,
+  },
   compiled: {
     label: 'docPhase.compiled',
     color: '#10b981',
@@ -184,6 +219,7 @@ export const PHASE_DISPLAY: Record<DocPhase, PhaseDisplay> = {
 export const FILTER_PHASES: DocPhase[] = [
   'pending_parse',
   'parsing',
+  'parsed',
   'ingesting',
   'parse_failed',
   'pending_compile',

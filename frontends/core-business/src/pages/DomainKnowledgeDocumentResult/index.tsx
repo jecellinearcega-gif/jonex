@@ -1,16 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { useKbPermission } from '@/hooks/useKbPermission';
-import { Button, Card, Space, Tag, Tabs, Spin, Typography, message } from 'antd';
+import { Button, Space, Tag, Tabs, Spin, message } from 'antd';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 import {
-  ArrowLeftOutlined,
   FileTextOutlined,
   ReloadOutlined,
   BuildOutlined,
   FilePdfOutlined,
   BranchesOutlined,
   FileOutlined,
+  HddOutlined,
+  ClockCircleOutlined,
 } from '@ant-design/icons';
 import {
   getManualDocumentDetail,
@@ -26,8 +28,8 @@ import StageDetailCard from './StageDetailCard';
 import CompileResultPanel from './CompileResultPanel';
 import type { ProcessingStage } from './StageDetailCard';
 import VideoPlayerModal from './VideoPlayerModal';
-
-const { Title } = Typography;
+import { isLlmWikiType } from '@/utils/kbType';
+import './index.scss';
 
 function getDocStatusText(t: (key: string) => string): Record<string, string> {
   return {
@@ -37,10 +39,10 @@ function getDocStatusText(t: (key: string) => string): Record<string, string> {
   };
 }
 
-/** [jonex] openkb 文档头部状态：解析完成（ready）后按 llm_wiki_compile_status
+/** [jonex] llm-wiki 文档头部状态：解析完成（ready）后按 llm_wiki_compile_status
  *  细化——ready 只代表解析完成，LLM-Wiki 编译是独立异步状态，
  *  不能用 lightrag 的「入库·解析·编译」文案误导用户。 */
-function openkbDocStatusText(doc: ManualDocItem, t: (key: string) => string): string {
+function llmWikiDocStatusText(doc: ManualDocItem, t: (key: string) => string): string {
   if (doc.status !== 'ready') return getDocStatusText(t)[doc.status] || doc.status;
   switch (doc.llmWikiCompileStatus) {
     case 'compiled':
@@ -64,7 +66,6 @@ const DOC_STATUS_COLOR: Record<string, string> = {
 
 export default function DomainKnowledgeDocumentResult() {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const { id = '', docId = '' } = useParams<{ id: string; docId: string }>();
   // KB 写权限（权限矩阵）：重新解析/重新编译按钮依据
   const { canWrite } = useKbPermission(id || undefined);
@@ -107,11 +108,11 @@ export default function DomainKnowledgeDocumentResult() {
   }, [id, doc?.kbType]);
 
   // [jonex] 编译状态轮询：任务化后终态由对账巡检回写（最长 30s 延迟），
-  // 前端每 10s 刷新文档详情直到 compiled/failed。仅 openkb KB 轮询
+  // 前端每 10s 刷新文档详情直到 compiled/failed。仅 llm-wiki KB 轮询
   // （lightrag 文档 llmWikiCompileStatus 恒 undefined，不加门会永不停）。
   // 必须传 t——缺省时 mapBackendDoc 的状态展示串会变成 i18n key 原文。
   useEffect(() => {
-    if (!id || !docId || kbType !== 'openkb') return;
+    if (!id || !docId || !isLlmWikiType(kbType)) return;
     const status = doc?.llmWikiCompileStatus;
     if (status === 'compiled' || status === 'failed') return;   // 终态停止轮询
     const timer = setInterval(() => {
@@ -123,16 +124,16 @@ export default function DomainKnowledgeDocumentResult() {
   }, [id, docId, kbType, t, doc?.llmWikiCompileStatus]);
 
   // 本体类型列表只服务于 lightrag 的 OntologyTab/RelationTab 类型筛选；
-  // openkb 管线不跑本体抽取，跳过无效请求。
+  // llm-wiki 管线不跑本体抽取，跳过无效请求。
   useEffect(() => {
-    if (!id || kbType === 'openkb') return;
-    getOntologyEntityTypes(id)
+    if (!id || isLlmWikiType(kbType)) return;
+    getOntologyEntityTypes(id, undefined, docId)
       .then((res) => setEntityTypes(res.items))
       .catch(() => {});
-    getOntologyRelationTypes(id)
+    getOntologyRelationTypes(id, docId)
       .then((res) => setRelationTypes(res.items))
       .catch(() => {});
-  }, [id, kbType]);
+  }, [id, docId, kbType]);
 
   // 视频文档：页面加载时自动获取播放 URL
   useEffect(() => {
@@ -158,16 +159,16 @@ export default function DomainKnowledgeDocumentResult() {
     setRecompileLoading(true);
     try {
       await retryDocumentOntology(id, docId);
-      // [jonex] openkb KB 的「重新编译」= 重跑 Wiki 编译，提示文案与本体重抽区分
+      // [jonex] llm-wiki KB 的「重新编译」= 重跑 Wiki 编译，提示文案与本体重抽区分
       message.success(
-        kbType === 'openkb'
+        isLlmWikiType(kbType)
           ? t('domainKnowledge.wikiRecompileTriggered')
           : t('domainKnowledge.recompileTriggered'),
       );
     } catch (err: any) {
       message.error(
         err?.message
-          || (kbType === 'openkb'
+          || (isLlmWikiType(kbType)
             ? t('domainKnowledge.wikiRecompileFailed')
             : t('domainKnowledge.retryOntologyFailed')),
       );
@@ -178,8 +179,9 @@ export default function DomainKnowledgeDocumentResult() {
 
   const fileIcon = (type?: string) => {
     const t = (type || '').toLowerCase();
-    if (t === 'pdf') return <FilePdfOutlined style={{ color: '#ef4444', fontSize: 32 }} />;
-    return <FileTextOutlined style={{ color: '#3b82f6', fontSize: 32 }} />;
+    // 与知识库详情页头同尺寸：页标题本身是 24px，图标跟着标题走
+    if (t === 'pdf') return <FilePdfOutlined style={{ color: '#ef4444', fontSize: 24 }} />;
+    return <FileTextOutlined style={{ color: '#3b82f6', fontSize: 24 }} />;
   };
 
   const stages: ProcessingStage[] = [
@@ -236,110 +238,93 @@ export default function DomainKnowledgeDocumentResult() {
   }));
 
   return (
-    <div style={{ padding: '0 0 24px' }}>
-      <Spin spinning={loading}>
-        <Card
-          style={{
-            borderRadius: 12,
-            border: '1px solid #eef2f6',
-            boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
-            marginBottom: 16,
-          }}
-          styles={{ body: { padding: '20px 24px' } }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 16,
-              flexWrap: 'wrap',
-            }}
-          >
-            <Space align="center" size={16}>
-              <Button
-                icon={<ArrowLeftOutlined />}
-                onClick={() => navigate(`/domain-knowledge/${id}`)}
-                style={{ borderRadius: 8 }}
-              >
-                {t('common.back')}
-              </Button>
+    <>
+      {/* 页头承担返回与文档身份：返回箭头、文件图标 + 名称 + 状态标签排一行，
+          类型/大小/上传时间三个元信息与两个操作按钮同行排在右侧 */}
+      <PageHeader
+        backTo={`/domain-knowledge/${id}`}
+        title={
+          // wrap：名称 + 状态标签在窄屏放不下时换行，而不是把页头撑出横向滚动
+          <Space align="center" size={10} wrap>
+            {fileIcon(doc?.type)}
+            {/* 名称要等详情到货，加载中先显示文案而不是空白页头 */}
+            <span>{loading ? t('common.loading') : doc?.name || t('domainKnowledge.documentResultTitle')}</span>
+            <Tag
+              style={{
+                border: 'none',
+                borderRadius: 6,
+                fontSize: 12,
+                color: '#fff',
+                // Tag 自带 margin-inline-end，会在 Space 的 gap 之外再多一份间距，这里清掉
+                margin: 0,
+                background: DOC_STATUS_COLOR[doc?.status || ''] || '#94a3b8',
+              }}
+            >
+              {isLlmWikiType(kbType)
+                ? (doc ? llmWikiDocStatusText(doc, t) : t('common.unknown'))
+                : getDocStatusText(t)[doc?.status || ''] || doc?.status || t('common.unknown')}
+            </Tag>
 
-              {fileIcon(doc?.type)}
-
-              <Space direction="vertical" size={4}>
-                <Space align="center" size={12}>
-                  <Title level={4} style={{ margin: 0, color: '#0b2b5c', fontSize: 18 }}>
-                    {doc?.name || t('domainKnowledge.documentResultTitle')}
-                  </Title>
-                  <Tag
-                    style={{
-                      border: 'none',
-                      borderRadius: 6,
-                      fontSize: 12,
-                      color: '#fff',
-                      background: DOC_STATUS_COLOR[doc?.status || ''] || '#94a3b8',
-                    }}
-                  >
-                    {kbType === 'openkb'
-                      ? (doc ? openkbDocStatusText(doc, t) : t('common.unknown'))
-                      : getDocStatusText(t)[doc?.status || ''] || doc?.status || t('common.unknown')}
-                  </Tag>
-                </Space>
-
-                <Space
-                  size={16}
-                  style={{
-                    color: '#64748b',
-                    fontSize: 13,
-                    flexWrap: 'wrap',
-                  }}
-                >
-                  <span>{doc?.type?.toUpperCase() || '—'}</span>
-                  <span>{doc?.size || '—'}</span>
-                  <span>{doc?.uploadTime || '—'}</span>
-                </Space>
-              </Space>
+            {/* 类型 / 大小 / 上传时间：与状态标签同一行的浅底胶囊，形状取自知识库详情页头的统计徽标。
+                与状态标签拉开一点距离，避免四个标签连成一串分不清主次 */}
+            <Space size={6} align="center" wrap style={{ marginLeft: 4 }}>
+              <Tag icon={<FileOutlined />} style={{ margin: 0 }}>
+                {doc?.type?.toUpperCase() || '—'}
+              </Tag>
+              <Tag icon={<HddOutlined />} style={{ margin: 0 }}>
+                {doc?.size || '—'}
+              </Tag>
+              <Tag icon={<ClockCircleOutlined />} style={{ margin: 0 }}>
+                {doc?.uploadTime || '—'}
+              </Tag>
             </Space>
+          </Space>
+        }
+        extra={
+          // marginLeft:auto 吃掉标题之后的剩余空间：extra 本身是 flex item 不会自己靠右
+          //（PageHeader 的标题设了 flex:0 1 auto，只保证标题不被顶开），
+          // 不加这一条按钮会紧跟在标题后面，右缘与内容卡片对不齐
+          <Space size={12} style={{ marginLeft: 'auto' }}>
+            <Button
+              icon={<ReloadOutlined />}
+              style={{ borderRadius: 8 }}
+              loading={reparseLoading}
+              disabled={!canWrite}
+              title={canWrite ? undefined : t('domainSpace.noManagePermission')}
+              onClick={handleReparse}
+            >
+              {t('domainKnowledge.reparse')}
+            </Button>
+            <Button
+              icon={<BuildOutlined />}
+              style={{ borderRadius: 8 }}
+              loading={recompileLoading}
+              disabled={!canWrite}
+              title={canWrite ? undefined : t('domainSpace.noManagePermission')}
+              onClick={handleRecompile}
+            >
+              {t('domainKnowledge.recompile')}
+            </Button>
+          </Space>
+        }
+      />
 
-            <Space size={12}>
-              <Button
-                icon={<ReloadOutlined />}
-                style={{ borderRadius: 8 }}
-                loading={reparseLoading}
-                disabled={!canWrite}
-                title={canWrite ? undefined : t('domainSpace.noManagePermission')}
-                onClick={handleReparse}
-              >
-                {t('domainKnowledge.reparse')}
-              </Button>
-              <Button
-                icon={<BuildOutlined />}
-                style={{ borderRadius: 8 }}
-                loading={recompileLoading}
-                disabled={!canWrite}
-                title={canWrite ? undefined : t('domainSpace.noManagePermission')}
-                onClick={handleRecompile}
-              >
-                {t('domainKnowledge.recompile')}
-              </Button>
-            </Space>
-          </div>
-        </Card>
-
-        <Tabs
-          activeKey={activeTab}
-          onChange={setActiveTab}
-          items={tabItems}
-          style={{
-            background: '#fff',
-            borderRadius: 12,
-            border: '1px solid #eef2f6',
-            boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
-            padding: '0 24px 24px',
-          }}
-        />
-      </Spin>
+      <PageContent>
+        {/* 卡片外壳由 PageContent 承担，Tabs 不再自带白底与边框。
+            这层 div 只为把卡片高度递给 Tabs：中间的 Spin 会渲染 .ant-spin /
+            .ant-spin-container 两层包裹，它们都是内容高度，不撑满的话
+            Tabs 的 100% 无处可依，内容区会塌成内容高度 */}
+        <div className="yx-doc-result-fill">
+          <Spin spinning={loading}>
+            <Tabs
+              className="yx-doc-result-tabs"
+              activeKey={activeTab}
+              onChange={setActiveTab}
+              items={tabItems}
+            />
+          </Spin>
+        </div>
+      </PageContent>
 
       <VideoPlayerModal
         open={videoOpen}
@@ -347,6 +332,6 @@ export default function DomainKnowledgeDocumentResult() {
         timeStart={videoTimeStart}
         onClose={() => setVideoOpen(false)}
       />
-    </div>
+    </>
   );
 }

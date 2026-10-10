@@ -2,6 +2,7 @@ import { readAccessToken } from '@jonex/shell-sdk';
 import { request, getData } from './request';
 import { getDomainKnowledgeSpaces, getDomainKnowledgeList } from './domainKnowledge';
 import type { DomainServiceItem } from '../types/domainService';
+import type { KnowledgeBaseType } from '../types/domainKnowledge';
 import {
   listMockKnowledgeSearchHistory,
   saveMockKnowledgeSearchHistory,
@@ -37,6 +38,7 @@ type NormalizedSearchParams = {
   topK: number;
   domainId: string;
   kbIds: string[];
+  kbTypes: KnowledgeBaseType[];
   strictConfig?: KnowledgeSearchStrictConfig;
 };
 
@@ -81,6 +83,7 @@ function normalizeSearchParams(params: KnowledgeSearchStreamParams): NormalizedS
     topK: params.topK ?? 5,
     domainId: params.domainId ?? '',
     kbIds: params.kbIds ?? [],
+    kbTypes: params.kbTypes ?? [],
     strictConfig: params.strictConfig,
   };
 }
@@ -139,6 +142,16 @@ export const DEFAULT_DEEP_STRICT_CONFIG: KnowledgeSearchStrictConfig = {
   allow_common_sense: true,
 };
 
+/**
+ * [jonex] Wiki 检索的严格模式默认值（与快速检索一致）。
+ * 注意：/search/jonex_wiki 端点的契约是「只收 query/mode/top_k/knowledge_base_ids」，
+ * 严格模式参数不会下发（见 streamKnowledgeSearch 的 wikiEndpoint 判定），
+ * 该配置仅用于面板切换时保持各档位的参数快照一致。
+ */
+export const DEFAULT_WIKI_STRICT_CONFIG: KnowledgeSearchStrictConfig = {
+  ...DEFAULT_FAST_STRICT_CONFIG,
+};
+
 export async function getKnowledgeSearchOverview(): Promise<KnowledgeSearchOverview> {
   // if (useMock) return mockKnowledgeSearchOverview
   return getData<KnowledgeSearchOverview>(request.get('/knowledge-base/search/overview'));
@@ -150,19 +163,26 @@ export async function getKnowledgeSearchDomains(spaceId?: string): Promise<Knowl
   //   （含未挂服务的新建 KB）；
   // - 服务：scope="search" 只返回「有可访问 KB 的服务」，且仅保留当前领域空间下的服务，
   //   不显示其他空间下的服务。
+  // ⚠️ 本函数是**检索面**：KB 列表必须传 scope="search"（检索口径 = 可见空间 ∪ 授权 KB）。
+  //    若用默认的列表口径（我管的空间 ∪ 授权 KB），纯 space member 会拿到 0 个 KB，
+  //    空间维度随之变空、快速检索直接 return 发不出请求。**不要**把它改回默认。
   const [spaces, kbResult, servicesResult] = await Promise.all([
     getDomainKnowledgeSpaces(),
-    getDomainKnowledgeList({ page: 1, pageSize: 100 }),
+    getDomainKnowledgeList({ page: 1, pageSize: 100, scope: 'search' }),
     getData<{ items: DomainServiceItem[] }>(
       request.get('/knowledge-base/services', { params: { limit: 100, scope: 'search' } }),
     ),
   ]);
 
-  const kbBySpace = new Map<string, { id: string; name: string }[]>();
+  // [jonex] 除按空间分桶外，另建 kb_id → kb_type 索引：领域服务的 kb_ids 只有 id，
+  // 端点选择需要它们的引擎类型（jonex_wiki / openkb / lightrag）。
+  const kbBySpace = new Map<string, { id: string; name: string; kbType?: KnowledgeBaseType }[]>();
+  const kbTypeById = new Map<string, KnowledgeBaseType>();
   kbResult.list.forEach((kb) => {
     const bucket = kbBySpace.get(kb.spaceId) ?? [];
-    bucket.push({ id: kb.id, name: kb.name });
+    bucket.push({ id: kb.id, name: kb.name, kbType: kb.kbType });
     kbBySpace.set(kb.spaceId, bucket);
+    if (kb.kbType) kbTypeById.set(kb.id, kb.kbType);
   });
 
   // 空间维度只生成「当前领域空间」一项，不列出所有空间（产品：空间是默认范围，非可枚举筛选）
@@ -179,6 +199,9 @@ export async function getKnowledgeSearchDomains(spaceId?: string): Promise<Knowl
         space_id: currentSpace.id,
         kb_ids: kbs.map((k) => k.id),
         kb_names: kbs.map((k) => k.name),
+        // 空间下的 KB 类型可能缺失（列表项 kbType 是可选的）：只收已知的，
+        // 长度不等即视为「类型不全」，端点选择回落 /search/mix
+        kb_types: kbs.map((k) => k.kbType).filter((x): x is KnowledgeBaseType => !!x),
       },
     ];
   })();
@@ -194,6 +217,10 @@ export async function getKnowledgeSearchDomains(spaceId?: string): Promise<Knowl
       space_name: svc.space_name,
       kb_ids: svc.kb_ids ?? [],
       kb_names: svc.kb_names ?? [],
+      // 类型未知的 kb 不塞占位值：长度不等会被端点选择逻辑判为「类型不全」并回落 /search/mix
+      kb_types: (svc.kb_ids ?? [])
+        .map((id) => kbTypeById.get(id))
+        .filter((x): x is KnowledgeBaseType => !!x),
     }));
 
   return [...spaceItems, ...serviceItems];
@@ -215,7 +242,14 @@ export async function getKnowledgeSearchHistory(
   return { items: (result.items ?? []).map(normalizeHistoryItem), total: result.total ?? 0 };
 }
 
-/** [jonex] 历史快照引用重新富化：按 doc_id/locations 重新生成预签名 URL（快照里 raw_url 会过期，展示时调用） */
+/**
+ * [jonex] 历史快照引用补预签名 URL：快照里 raw_url / asset_url 会过期（COS 约 1 小时），
+ * 展示前按 doc_id / image_idx 从 resolve 端点取新的补回快照（点击历史时调用）。
+ *
+ * ⚠️ 是「补 URL」不是「重取引用」：resolve 侧拿不回原文（`text` 不在 ParsedRef 契约里），
+ * 且回传后再按 doc 聚合会把多条 location 塌成一条。整个替换快照 = 引用区闪一下就没，
+ * 所以这里以快照为底、只往里填 URL，恢复不到的字段一律保留快照取值。
+ */
 export async function resolveKnowledgeReferences(
   refs: KnowledgeReference[],
 ): Promise<KnowledgeReference[]> {
@@ -238,14 +272,52 @@ export async function resolveKnowledgeReferences(
         row_start: row?.row_start ?? undefined,
         row_end: row?.row_end ?? undefined,
         table_idx: row?.table_idx ?? undefined,
+        // [jonex] §image-refs B2：回传 image_idx + asset_ext，供后端 resolve 重新
+        // 推导对象键并生成新的 asset_url（历史快照里 asset_url 已剥离且会过期）。
+        image_idx: loc?.image_idx ?? undefined,
+        asset_ext: loc?.asset_ext ?? undefined,
       });
     }
   }
-  if (!parsed.length) return [];
-  const result = await getData<{ references?: KnowledgeReference[] }>(
+  if (!parsed.length) return refs;
+  // 端点是 `success_response(data=result)` 且 result 就是 list —— data 是裸数组。
+  // 兼容 `{references}` 形状只是防御，不要照它写（旧代码就是这么整块丢掉的）。
+  const result = await getData<KnowledgeReference[] | { references?: KnowledgeReference[] }>(
     request.post('/knowledge-base/documents/references/resolve', { refs: parsed }),
   );
-  return result.references ?? [];
+  const resolved = Array.isArray(result) ? result : result?.references ?? [];
+  if (!resolved.length) return refs;
+  return mergeResolvedUrls(refs, resolved);
+}
+
+/**
+ * 把 resolve 的新 URL 填回快照引用。恢复不到的（doc 被删/越权剔除）原样透传。
+ *
+ * 图片资产按 `image_idx` 对齐而非下标：resolve 侧 location 经「展开回传 → 按 doc 聚合」
+ * 往返，顺序与条数都不保证，只有 image_idx 是稳定标识。
+ */
+function mergeResolvedUrls(
+  snapshot: KnowledgeReference[],
+  resolved: KnowledgeReference[],
+): KnowledgeReference[] {
+  const byDoc = new Map(resolved.map((r) => [r.doc_id, r]));
+  return snapshot.map((ref) => {
+    const hit = byDoc.get(ref.doc_id);
+    if (!hit) return ref;
+    const assetByIdx = new Map(
+      (hit.locations ?? [])
+        .filter((l) => l.image_idx != null && l.asset_url)
+        .map((l) => [l.image_idx, l.asset_url] as const),
+    );
+    return {
+      ...ref,
+      raw_url: hit.raw_url ?? ref.raw_url,
+      locations: (ref.locations ?? []).map((loc) => {
+        const assetUrl = loc.image_idx != null ? assetByIdx.get(loc.image_idx) : undefined;
+        return assetUrl ? { ...loc, asset_url: assetUrl } : loc;
+      }),
+    };
+  });
 }
 
 export async function saveKnowledgeSearchHistory(
@@ -289,12 +361,32 @@ export async function streamKnowledgeSearch(
 
   const token = readAccessToken();
   const baseUrl = (import.meta as any).env?.VITE_API_BASE_URL || '/api/v1';
-  // 快速检索走混合管线统一入口 /search/mix（按 kb_type 分流 lightrag / openkb）；
-  // 深度检索仍走 /search/deep（暂不支持 openkb，见 docs/openkb/llmwiki-reasoning）
-  const endpoint = params.deep ? '/knowledge-base/search/deep' : '/knowledge-base/search/mix';
+  // 快速检索默认走混合管线统一入口 /search/mix（后端按 kb_type 分流 lightrag / openkb /
+  // jonex_wiki）；深度检索仍走 /search/deep（暂不支持 openkb，见 docs/openkb/llmwiki-reasoning）。
+  //
+  // [jonex] 但当选择范围明确落在**同一条引擎链路**上时改打该引擎的专用端点，这样前端拿到的
+  // 就是该链路自己的检索过程与来源引用（/search/jonex_wiki → 推理链 stage=jonex_wiki_query）。
+  // 判据是显式三分支逐类型判断（不用「非 jonex 即 openkb」这类否定式判断），且要求每个
+  // kb_id 的类型都已知（kbTypes 与 kbIds 等长），否则无法断言「全库同引擎」，回落 /search/mix。
+  const kbTypes = normalized.kbTypes;
+  const typesKnown = kbTypes.length > 0 && kbTypes.length === normalized.kbIds.length;
+  const engineType = typesKnown && new Set(kbTypes).size === 1 ? kbTypes[0] : '';
+  const deep = params.deep === true;
+  // [jonex] Wiki 检索（按钮组第三档）：显式走 jonex_wiki 专用端点，不看 kbTypes 的推断结果
+  const wiki = params.wiki === true && !deep;
+  // 专用 wiki 引擎端点：接收 query/mode/top_k/knowledge_base_ids，不接受严格模式参数
+  const wikiEndpoint = wiki || (!deep && !!engineType);
+  const endpoint = wiki
+    ? '/knowledge-base/search/jonex_wiki'
+    : deep
+      ? '/knowledge-base/search/deep'
+      : engineType === 'jonex_wiki'
+        ? '/knowledge-base/search/jonex_wiki'
+        : engineType === 'openkb'
+          ? '/knowledge-base/search/llmwiki'
+          : '/knowledge-base/search/mix';
   const url = new URL(`${baseUrl}${endpoint}`, window.location.origin);
 
-  const deep = params.deep === true;
   const strict = normalized.strictConfig;
   const body: Record<string, unknown> = {
     query: normalized.query,
@@ -302,7 +394,7 @@ export async function streamKnowledgeSearch(
     top_k: normalized.topK,
     with_reasoning: true,
   };
-  if (strict) {
+  if (strict && !wikiEndpoint) {
     // 严格模式参数（普通 / 深度检索共用）：strict_mode 关闭时仅传开关，不传其它严格参数
     body.strict_mode = strict.strict_mode;
     if (strict.strict_mode) {
@@ -338,7 +430,8 @@ export async function streamKnowledgeSearch(
   }
 
   if (!response.ok) {
-    throw new Error(`Search failed: ${response.status}`);
+    const failure = await response.json().catch(() => null);
+    throw new Error(failure?.message || failure?.detail || `Search failed: ${response.status}`);
   }
 
   try {

@@ -6,13 +6,9 @@ import { OrderedListOutlined, PlusOutlined, EditOutlined, DeleteOutlined } from 
 import type { CompileStep } from '@/types/domainKnowledge';
 import { compileScopeLabelKey, compileTriggerLabelKey } from '@/types/domainKnowledge';
 
-const cardStyle: React.CSSProperties = {
-  background: '#fff',
-  borderRadius: 14,
-  border: '1px solid #eef2f6',
-  padding: 24,
+// 首层卡面已由 PageContent 的卡片承担，这里只留分区之间的间距
+const sectionStyle: React.CSSProperties = {
   marginBottom: 20,
-  boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
 };
 const h3Style: React.CSSProperties = {
   margin: 0,
@@ -116,8 +112,8 @@ export default function CompileStepSection({ data, loading, onCreate, onEdit, on
     },
   ];
   return (
-    <div className="config-section" style={cardStyle}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+    <div style={sectionStyle}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
         <h3 style={h3Style}>
           <OrderedListOutlined style={{ color: '#f97316' }} /> {t('compile.step.settings')}
         </h3>
@@ -125,7 +121,7 @@ export default function CompileStepSection({ data, loading, onCreate, onEdit, on
           {t('compile.step.create')}
         </Button>
       </div>
-      <p style={{ fontSize: 13, color: '#94a3b8', marginBottom: 16 }}>{t('compile.step.description')}</p>
+      <p style={{ fontSize: 13, color: '#94a3b8', marginBottom: 12 }}>{t('compile.step.description')}</p>
       <Table
         columns={columns}
         dataSource={data}

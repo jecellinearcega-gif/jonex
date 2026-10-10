@@ -86,83 +86,99 @@ export default function PermissionTab({
   });
 
   return (
-    <div className="config-section yx-kb-section-card">
+    <div>
+      {/* 标题与两个操作同行：添加成员是入口、保存权限是提交。
+          两者原先一个飘在列表上方左端、一个沉在页脚分割线下，中间隔着整张表，
+          看着像两块互不相干的区域 */}
       <div className="yx-kb-flex-header">
         <h3 className="yx-kb-section-title">
           <TeamOutlined className="yx-kb-icon-blue" /> {t('domainKnowledge.permissionSettings')}
         </h3>
-        {/* 添加成员（可管理权限者可见）：搜索本租户用户，选中即加入列表（默认 viewer） */}
-        <div ref={userSelectRef} style={{ position: 'relative' }}>
-          <Button
-            className="yx-kb-section-add-btn"
-            icon={<PlusOutlined />}
-            disabled={!canManage}
-            title={canManage ? undefined : t('domainSpace.noManagePermission')}
-            onClick={() => {
-              const willOpen = !userSelectOpen;
-              setUserSelectOpen(willOpen);
-              setUserSearchText('');
-              if (willOpen && availableUsers.length === 0) loadAvailableUsers();
-            }}
-          >
-            {t('domainKnowledge.addMember')}
-          </Button>
-          {userSelectOpen && (
-            <div
-              style={{
-                position: 'absolute',
-                top: 38,
-                right: 0,
-                zIndex: 10,
-                width: 300,
-                background: '#fff',
-                borderRadius: 8,
-                boxShadow: '0 4px 20px rgba(0,0,0,.12)',
-                border: '1px solid #e2e8f0',
-                overflow: 'hidden',
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {/* 添加成员（可管理权限者可见）：搜索本租户用户，选中即加入列表（默认 viewer） */}
+          <div ref={userSelectRef} style={{ position: 'relative' }}>
+            <Button
+              icon={<PlusOutlined />}
+              style={{ fontSize: 13 }}
+              disabled={!canManage}
+              title={canManage ? undefined : t('domainSpace.noManagePermission')}
+              onClick={() => {
+                const willOpen = !userSelectOpen;
+                setUserSelectOpen(willOpen);
+                setUserSearchText('');
+                if (willOpen && availableUsers.length === 0) loadAvailableUsers();
               }}
             >
-              <div style={{ padding: '8px 12px', borderBottom: '1px solid #e2e8f0' }}>
-                <Input
-                  size="small"
-                  placeholder={t('domainSpace.searchUserPlaceholder')}
-                  prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
-                  value={userSearchText}
-                  onChange={(e) => setUserSearchText(e.target.value)}
-                  allowClear
-                />
-              </div>
-              <div style={{ maxHeight: 220, overflowY: 'auto' }}>
-                {usersLoading ? (
-                  <div style={{ textAlign: 'center', padding: 20, color: '#94a3b8', fontSize: 13 }}>
-                    {t('common.loading')}
-                  </div>
-                ) : filteredAvailableUsers.length === 0 ? (
-                  <div style={{ textAlign: 'center', padding: 20, color: '#94a3b8', fontSize: 13 }}>
-                    {userSearchText ? t('domainSpace.noMatchUser') : t('domainSpace.noAvailableUser')}
-                  </div>
-                ) : (
-                  filteredAvailableUsers.slice(0, 30).map((user) => (
-                    <div
-                      key={user.user_id}
-                      style={{ cursor: 'pointer', padding: '8px 12px', borderBottom: '1px solid #f1f5f9' }}
-                      onClick={() => {
-                        onAdd(user);
-                        setUserSearchText('');
-                        setUserSelectOpen(false);
-                      }}
-                    >
-                      <div style={{ fontWeight: 500, color: '#0b2b5c' }}>{user.display_name || user.username || user.user_id}</div>
-                      <div style={{ fontSize: 12, color: '#94a3b8' }}>{user.email || user.username || ''}</div>
+              {t('domainKnowledge.addMember')}
+            </Button>
+            {userSelectOpen && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 38,
+                  right: 0,
+                  zIndex: 10,
+                  width: 300,
+                  background: '#fff',
+                  borderRadius: 8,
+                  boxShadow: '0 4px 20px rgba(0,0,0,.12)',
+                  border: '1px solid #e2e8f0',
+                  overflow: 'hidden',
+                }}
+              >
+                <div style={{ padding: '8px 12px', borderBottom: '1px solid #e2e8f0' }}>
+                  <Input
+                    size="small"
+                    placeholder={t('domainSpace.searchUserPlaceholder')}
+                    prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
+                    value={userSearchText}
+                    onChange={(e) => setUserSearchText(e.target.value)}
+                    allowClear
+                  />
+                </div>
+                <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+                  {usersLoading ? (
+                    <div style={{ textAlign: 'center', padding: 20, color: '#94a3b8', fontSize: 13 }}>
+                      {t('common.loading')}
                     </div>
-                  ))
-                )}
+                  ) : filteredAvailableUsers.length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: 20, color: '#94a3b8', fontSize: 13 }}>
+                      {userSearchText ? t('domainSpace.noMatchUser') : t('domainSpace.noAvailableUser')}
+                    </div>
+                  ) : (
+                    filteredAvailableUsers.slice(0, 30).map((user) => (
+                      <div
+                        key={user.user_id}
+                        style={{ cursor: 'pointer', padding: '8px 12px', borderBottom: '1px solid #f1f5f9' }}
+                        onClick={() => {
+                          onAdd(user);
+                          setUserSearchText('');
+                          setUserSelectOpen(false);
+                        }}
+                      >
+                        <div style={{ fontWeight: 500, color: '#0b2b5c' }}>
+                          {user.display_name || user.username || user.user_id}
+                        </div>
+                        <div style={{ fontSize: 12, color: '#94a3b8' }}>{user.email || user.username || ''}</div>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
+          <Button
+            type="primary"
+            style={{ fontSize: 13 }}
+            loading={saving}
+            disabled={!canManage}
+            title={canManage ? undefined : t('domainSpace.noManagePermission')}
+            onClick={onSave}
+          >
+            {t('domainKnowledge.savePermission')}
+          </Button>
         </div>
       </div>
-      <p className="yx-kb-section-desc">{t('domainKnowledge.permissionDesc')}</p>
       <Table
         columns={[
           {
@@ -214,17 +230,6 @@ export default function PermissionTab({
         loading={loading}
         locale={{ emptyText: t('domainKnowledge.noMembers') }}
       />
-      <div className="yx-kb-save-bar">
-        <Button
-          type="primary"
-          loading={saving}
-          disabled={!canManage}
-          title={canManage ? undefined : t('domainSpace.noManagePermission')}
-          onClick={onSave}
-        >
-          {t('domainKnowledge.savePermission')}
-        </Button>
-      </div>
     </div>
   );
 }

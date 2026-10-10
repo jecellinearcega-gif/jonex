@@ -11,11 +11,12 @@ import { useTranslation } from 'react-i18next';
 import copy from 'copy-to-clipboard';
 import type { ColumnsType } from 'antd/es/table';
 import type { DomainServiceItem, ServiceApiKeyItem } from '../../types/domainService';
-import { usePermission } from '@jonex/shared-lib';
 import McpKeyTab from './McpKeyTab';
 
 interface ServiceConfigModalProps {
   open: boolean;
+  /** 空间服务写权限（can_write_space）：服务管理（含 MCP 接入 Tab）可见性 */
+  canManage: boolean;
   srvConfigTarget: DomainServiceItem | null;
   apiKeys: ServiceApiKeyItem[];
   apiKeysLoading: boolean;
@@ -27,6 +28,7 @@ interface ServiceConfigModalProps {
 
 export default function ServiceConfigModal({
   open,
+  canManage,
   srvConfigTarget,
   apiKeys,
   apiKeysLoading,
@@ -36,9 +38,9 @@ export default function ServiceConfigModal({
   onCancel,
 }: ServiceConfigModalProps) {
   const { t } = useTranslation();
-  // 权限码判断：MCP 接入 Tab 仅服务管理员（service:write）可见
-  const { hasPerm } = usePermission();
-  const isAdmin = hasPerm('service:write');
+  // [jonex] 权限重构 B1：service:write 已删除。MCP 接入 Tab 改为跟随空间服务写权限
+  // （can_write_space：owner / manager 成员 / 租户管理员），与页面服务管理按钮同源。
+  const isAdmin = canManage;
   const [activeTab, setActiveTab] = useState<string>('api');
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
 

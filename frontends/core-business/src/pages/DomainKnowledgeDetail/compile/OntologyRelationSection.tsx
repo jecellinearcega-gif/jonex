@@ -1,11 +1,8 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Table, Tag } from 'antd';
+import { Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
-  ShareAltOutlined,
-  PlusOutlined,
-  ImportOutlined,
   EditOutlined,
   DeleteOutlined,
   MessageOutlined,
@@ -13,30 +10,14 @@ import {
 import type { OntologyRelationDef, OntologyRelationType } from '@/types/domainKnowledge';
 import { RELATION_TYPE_TAG, RELATION_CARDINALITY_LABEL_KEYS } from './constants';
 
-const cardStyle: React.CSSProperties = {
-  background: '#fff',
-  borderRadius: 14,
-  border: '1px solid #eef2f6',
-  padding: 24,
+// 首层卡面已由 PageContent 的卡片承担，这里只留分区之间的间距
+const sectionStyle: React.CSSProperties = {
   marginBottom: 20,
-  boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
-};
-
-const h3Style: React.CSSProperties = {
-  margin: 0,
-  fontSize: 15,
-  fontWeight: 600,
-  color: '#0b2b5c',
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
 };
 
 interface Props {
   data: OntologyRelationDef[];
   loading: boolean;
-  onCreate: () => void;
-  onImport: () => void;
   onEdit: (r: OntologyRelationDef) => void;
   onDelete: (r: OntologyRelationDef) => void;
   onPrompt: (r: OntologyRelationDef) => void;
@@ -47,8 +28,6 @@ export default function OntologyRelationSection({
   canWrite = false,
   data,
   loading,
-  onCreate,
-  onImport,
   onEdit,
   onDelete,
   onPrompt,
@@ -71,7 +50,6 @@ export default function OntologyRelationSection({
       width: 110,
       render: (v) => (
         <span
-          className="tag"
           style={{ background: '#eff6ff', color: '#3b82f6', padding: '2px 8px', borderRadius: 4, fontSize: 12 }}
         >
           {v}
@@ -92,7 +70,6 @@ export default function OntologyRelationSection({
       width: 110,
       render: (v) => (
         <span
-          className="tag"
           style={{ background: '#ecfdf5', color: '#059669', padding: '2px 8px', borderRadius: 4, fontSize: 12 }}
         >
           {v}
@@ -122,6 +99,14 @@ export default function OntologyRelationSection({
           </span>
         );
       },
+    },
+    {
+      // [jonex] P1：逆关系名（纯声明，不生成反向边）
+      title: t('compile.relation.inverseOf'),
+      dataIndex: 'inverseOf',
+      key: 'inverseOf',
+      width: 120,
+      render: (v) => <span style={{ fontSize: 12, color: '#64748b' }}>{v || '—'}</span>,
     },
     {
       title: t('common.status'),
@@ -159,27 +144,7 @@ export default function OntologyRelationSection({
   ];
 
   return (
-    <div className="config-section" style={cardStyle}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-        <h3 style={h3Style}>
-          <ShareAltOutlined style={{ color: '#8b5cf6' }} /> {t('compile.relation.sectionTitle')}
-        </h3>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <Button type="primary" icon={<PlusOutlined />} style={{ fontSize: 13 }} onClick={onCreate}
-            disabled={!canWrite}
-            title={canWrite ? undefined : t('domainSpace.noManagePermission')}
-          >
-            {t('compile.relation.createBtn')}
-          </Button>
-          <Button icon={<ImportOutlined />} style={{ fontSize: 13 }} onClick={onImport}
-            disabled={!canWrite}
-            title={canWrite ? undefined : t('domainSpace.noManagePermission')}
-          >
-            {t('compile.relation.importBtn')}
-          </Button>
-        </div>
-      </div>
-      <p style={{ fontSize: 13, color: '#94a3b8', marginBottom: 16 }}>{t('compile.relation.sectionDesc')}</p>
+    <div style={sectionStyle}>
       <Table
         columns={columns}
         dataSource={data}

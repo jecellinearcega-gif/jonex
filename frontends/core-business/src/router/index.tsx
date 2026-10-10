@@ -12,7 +12,6 @@ import {
   type LoaderFunctionArgs,
 } from 'react-router-dom';
 import { Result } from 'antd';
-import i18next from 'i18next';
 import { getRoutes } from './routes.config';
 import { getMenuFromRoutes } from '@/router/menu';
 import AppLayout from '@/components/AppLayout';
@@ -149,16 +148,17 @@ const routesRender = (routesConfig: RouteConfigItem[] = [], authLoader: ReturnTy
 };
 
 const ErrorBoundary = () => {
+  const { t } = useTranslation();
   const error = useRouteError();
   if (isRouteErrorResponse(error)) {
     if (error.status === 404) {
-      return <Result status="warning" title="404" subTitle={i18next.t('error.404')} />;
+      return <Result status="warning" title="404" subTitle={t('error.404')} />;
     }
     if (error.status === 403) {
-      return <Result status="warning" title="403" subTitle={i18next.t('error.403')} />;
+      return <Result status="warning" title="403" subTitle={t('error.403')} />;
     }
   }
-  return <Result status="warning" title={i18next.t('error.network')} />;
+  return <Result status="warning" title={t('error.network')} />;
 };
 
 interface AppRouteProps {

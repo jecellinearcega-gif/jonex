@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Card, Table, Tag, Input, Space } from 'antd';
 import { PlusOutlined, SearchOutlined } from '@ant-design/icons';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 
 const sourceDefs = [
   { nameKey: 'dataSource.demo.financeDatabase', type: 'database', status: 'connected', lastSync: '2026-05-21 14:30' },
@@ -68,32 +69,31 @@ export default function DomainKnowledgeDataSource() {
   ];
 
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1>{t('dataSource.pageTitle')}</h1>
-      </div>
-
-      <Card className="yx-card">
-        <div className="yx-toolbar">
-          <Input
-            prefix={<SearchOutlined />}
-            placeholder={t('dataSource.searchPlaceholder')}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{ width: 240 }}
+    <>
+      <PageHeader title={t('dataSource.pageTitle')} />
+      <PageContent showCard={false}>
+        <Card className="yx-card">
+          <div className="yx-toolbar">
+            <Input
+              prefix={<SearchOutlined />}
+              placeholder={t('dataSource.searchPlaceholder')}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              style={{ width: 240 }}
+            />
+            <Button type="primary" icon={<PlusOutlined />}>
+              {t('dataSource.addDataSource')}
+            </Button>
+          </div>
+          <Table
+            columns={columns}
+            dataSource={sources.filter((s) => s.name.includes(search))}
+            rowKey="name"
+            pagination={{ total: 12, pageSize: 5 }}
+            size="middle"
           />
-          <Button type="primary" icon={<PlusOutlined />}>
-            {t('dataSource.addDataSource')}
-          </Button>
-        </div>
-        <Table
-          columns={columns}
-          dataSource={sources.filter((s) => s.name.includes(search))}
-          rowKey="name"
-          pagination={{ total: 12, pageSize: 5 }}
-          size="middle"
-        />
-      </Card>
-    </div>
+        </Card>
+      </PageContent>
+    </>
   );
 }

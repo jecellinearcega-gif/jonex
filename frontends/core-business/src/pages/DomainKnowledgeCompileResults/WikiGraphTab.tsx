@@ -2,6 +2,7 @@
 // 不复用的原因：KnowledgeGraphPanel 深度耦合本体接口（getOntologyGraph/expandOntologyNeighbors/
 // getOntologyStatistics），Wiki 侧只有 getWikiGraph，强行注入 loader 会产生半功能不可用分支。
 import { useState, useEffect, useRef } from 'react';
+import type { CSSProperties } from 'react';
 import { Empty, Spin, message } from 'antd';
 import { useTranslation } from 'react-i18next';
 import { getWikiGraph } from '@/api/domainKnowledge';
@@ -11,9 +12,15 @@ interface WikiGraphTabProps {
   kbId: string;
   /** [jonex] 文档级子图必传（透传 parse-results/graph 的 document_id） */
   docId: string;
+  /**
+   * [jonex] 撑满父容器高度。嵌在「编译资产」tab 里时为 true——那一层是有确定高度的
+   * flex 链，height:100% 正好等于容器可用高度；照视口写 calc(100vh - N) 会偏大，
+   * 把外层撑出多余的上下滚动条，G6 画布尺寸也跟着取错。文档级页面无确定高度，维持视口估算。
+   */
+  fillHeight?: boolean;
 }
 
-export default function WikiGraphTab({ kbId, docId }: WikiGraphTabProps) {
+export default function WikiGraphTab({ kbId, docId, fillHeight }: WikiGraphTabProps) {
   const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<any>(null);
@@ -164,9 +171,14 @@ export default function WikiGraphTab({ kbId, docId }: WikiGraphTabProps) {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // 三种状态（加载 / 空 / 有图）必须同高，否则切状态时页面会跳
+  const boxStyle: CSSProperties = fillHeight
+    ? { height: '100%' }
+    : { height: 'calc(100vh - 290px)', minHeight: 500 };
+
   if (loading) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 'calc(100vh - 290px)' }}>
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', ...boxStyle }}>
         <Spin />
       </div>
     );
@@ -174,7 +186,7 @@ export default function WikiGraphTab({ kbId, docId }: WikiGraphTabProps) {
 
   if (!data || !data.nodes.length) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 'calc(100vh - 290px)' }}>
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', ...boxStyle }}>
         <Empty description={t('compile.emptyWikiGraph')} />
       </div>
     );
@@ -185,8 +197,7 @@ export default function WikiGraphTab({ kbId, docId }: WikiGraphTabProps) {
       ref={containerRef}
       style={{
         width: '100%',
-        height: 'calc(100vh - 290px)',
-        minHeight: 500,
+        ...boxStyle,
         background: '#fafbfc',
         borderTop: '1px solid #f1f5f9',
       }}

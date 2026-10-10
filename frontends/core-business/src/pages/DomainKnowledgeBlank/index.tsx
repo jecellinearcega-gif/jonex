@@ -1,9 +1,8 @@
-import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useCallback, useEffect, useState } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Button, Space, Tag } from 'antd';
+import { Button, Skeleton, Space, Tabs } from 'antd';
 import {
-  ArrowLeftOutlined,
   FileTextOutlined,
   DatabaseOutlined,
   CloudServerOutlined,
@@ -11,21 +10,43 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   BuildOutlined,
+  SettingOutlined,
 } from '@ant-design/icons';
-import type { DomainKnowledgeDetail, DocumentStatsResult } from '@/types/domainKnowledge';
-import { getDomainKnowledgeDetail, getDocumentStats } from '@/api/domainKnowledge';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
+import type { DomainKnowledgeDetail, DocumentStatsResult, WikiStats } from '@/types/domainKnowledge';
+import { getDomainKnowledgeDetail, getDocumentStats, getWikiContents } from '@/api/domainKnowledge';
 import { listDataSources } from '@/api/dataSource';
 import { dataSourceInstanceDisplayName } from '@/utils/dataSourceDisplay';
+import { isLlmWikiType } from '@/utils/kbType';
 import { useQuota } from '@/hooks/useQuota';
+import AssetStatTag, { buildAssetTags } from '@/components/AssetStatTag';
+import CompileAssetsPanel from '@/pages/DomainKnowledgeCompileResults/CompileAssetsPanel';
+import KnowledgeTracking from '@/pages/KnowledgeTracking';
 import DocumentLibrary from './DocumentLibrary';
+import './index.scss';
+
+// tab key 同时是 URL 上的 ?tab= 取值；documents 是默认值，不写进地址栏
+const TAB_DOCUMENTS = 'documents';
+const TAB_ASSETS = 'assets';
+const TAB_TRACKING = 'tracking';
+// 白名单：?tab= 只认这三个值，其余（含被篡改的）一律落回默认页
+const TAB_KEYS: string[] = [TAB_DOCUMENTS, TAB_ASSETS, TAB_TRACKING];
 
 export default function DomainKnowledgeBlank() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { id = '' } = useParams<{ id: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [detail, setDetail] = useState<DomainKnowledgeDetail | null>(null);
   const [dataSources, setDataSources] = useState<string>('—');
   const [docStats, setDocStats] = useState<DocumentStatsResult | null>(null);
+  // 每次切到编译资产 tab 都 bump → 面板重挂载 → 统计数据与子表全部重新拉取。
+  // 编译是异步的，切回来往往就是想看最新结果。不用 destroyInactiveTabPane：
+  // 那个是全局开关，会连带销毁文档库 pane 的分页、筛选、上传状态。
+  const [assetsMountKey, setAssetsMountKey] = useState(0);
+  // Wiki 主题/概念不在 KB 详情里，得单独取全库 Wiki 内容（document_id 空 = KB 级）。
+  // null 表示「还没拿到」而不是「没有」——页头标签据此决定要不要成组出现。
+  const [wikiStats, setWikiStats] = useState<WikiStats | null>(null);
 
   // 文档配额（knowledgeBaseDocumentLimit，传 kb_id 取该 KB 真实 used；加载失败展示 '—'）
   // 提升在父级：DocumentLibrary 刷新列表时经 onRefreshQuota 同步刷新，统计栏与上传按钮共用同一份数据
@@ -33,17 +54,53 @@ export default function DomainKnowledgeBlank() {
   const docQuota = getQuota('knowledgeBaseDocumentLimit');
   const docReached = isReached('knowledgeBaseDocumentLimit');
 
-  useEffect(() => {
-    if (!id) return;
-    getDomainKnowledgeDetail(id).then(setDetail);
-  }, [id]);
+  // tab 选中态与 ?tab= 同步：白名单式取值（非法值落回默认），默认值不写进 URL。
+  // 放 URL 而非本地 state，是为了刷新页面、复制链接后仍停在同一 tab。
+  const tabParam = searchParams.get('tab') ?? '';
+  const activeTab = TAB_KEYS.includes(tabParam) ? tabParam : TAB_DOCUMENTS;
 
-  useEffect(() => {
+  const handleTabChange = useCallback(
+    (key: string) => {
+      if (key === TAB_ASSETS) setAssetsMountKey((n) => n + 1);
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (key === TAB_DOCUMENTS) next.delete('tab');
+          else next.set('tab', key);
+          return next;
+        },
+        // replace：切 tab 不该在浏览器历史里堆一摞记录，返回键要能直接离开本页
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  // 带上来源：设置页据此把「返回」指回本页，而不是知识库列表
+  const openKbSettings = useCallback(() => {
+    navigate(`/domain-knowledge/${id}/detail`, {
+      state: { backTo: `/domain-knowledge/${id}` },
+    });
+  }, [navigate, id]);
+
+  // 顶部统计栏 + 页头三个标签：抽成可复用回调，DocumentLibrary 增删文档或点「刷新」后经
+  // onRefreshStats 触发，否则两者只在 id 变化时加载一次，会与列表脱节。
+  // 页头标签取自 detail（与统计接口同源），所以一次刷新要把 detail 一并重新拉——
+  // detail 的首次加载也走这里，不再另起一个 effect，否则挂载时会重复请求同一接口。
+  const refreshStats = useCallback(() => {
     if (!id) return;
     getDocumentStats(id)
       .then(setDocStats)
       .catch(() => setDocStats(null));
+    getDomainKnowledgeDetail(id)
+      .then(setDetail)
+      // 拉失败保留旧值：页头不该因为一次刷新失败就清空成空白
+      .catch(() => {});
   }, [id]);
+
+  useEffect(() => {
+    refreshStats();
+  }, [refreshStats]);
 
   useEffect(() => {
     if (!id) return;
@@ -51,6 +108,25 @@ export default function DomainKnowledgeBlank() {
       .then((list) => setDataSources(list.map((ds) => dataSourceInstanceDisplayName(ds, t)).join(' · ') || '—'))
       .catch(() => setDataSources('—'));
   }, [id, t]);
+
+  // 这份 Wiki 计数上提到宿主页，是因为页头标签要用它——面板已改成经 prop 拿，不再自己拉。
+  // assetsMountKey 参与依赖：切进「编译资产」tab 时会连它一起重取，编译产物变了计数跟着变。
+  // kbType 未定时先不动（isLlmWikiType(undefined) 为 false，等于按 lightrag 清空）。
+  useEffect(() => {
+    if (!id || !isLlmWikiType(detail?.kbType)) {
+      setWikiStats(null);
+      return;
+    }
+    getWikiContents(id, '')
+      .then((res) =>
+        setWikiStats({
+          summaries: res.summaries?.length ?? 0,
+          concepts: res.concepts?.length ?? 0,
+          entities: res.entities?.length ?? 0,
+        }),
+      )
+      .catch(() => setWikiStats(null));
+  }, [id, detail?.kbType, assetsMountKey]);
 
   // 互斥四桶口径（与统计栏、后端 documents_stats 同源）：处理中+已完成+编译失败+解析失败=总计
   // 失败类指标常驻显示（即使为 0）。
@@ -93,78 +169,114 @@ export default function DomainKnowledgeBlank() {
     },
   ];
 
+  // 编译资产三个总数放页头用标签展示：它们属于 KB 身份，与「知识库设置」页的页头标签同构，
+  // 切到任一 tab 都看得见，不必再进「编译资产」读统计卡（面板里那几张卡已随之撤掉）。
+  // lightrag 三个数直接取 detail——页面本来就要拉它，不额外发请求；口径见 buildAssetTags。
+  const assetTags = detail ? buildAssetTags(t, detail, wikiStats) : [];
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-      <div style={{ flexShrink: 0 }}>
-        <Space align="center" size={12}>
-          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/domain-knowledge')}>
-            {t('common.back')}
-          </Button>
-          <Space align="center" size={10}>
+    <>
+      <PageHeader
+        backTo="/domain-knowledge"
+        title={
+          // wrap：库名 + 三个标签在窄屏放不下时换行，而不是把页头撑出横向滚动
+          <Space align="center" size={10} wrap>
             <FileTextOutlined style={{ fontSize: 24, color: '#3b82f6' }} />
-            <h1
-              style={{
-                margin: 0,
-                fontSize: 22,
-                color: '#0b2b5c',
-                fontWeight: 600,
-              }}
-            >
-              {detail?.name}
-            </h1>
+            <span>{detail?.name}</span>
+            {assetTags.map((tag) => (
+              <AssetStatTag key={tag.label} label={tag.label} value={tag.value} icon={tag.icon} tone={tag.tone} />
+            ))}
           </Space>
-          <Tag
-            icon={<DatabaseOutlined />}
-            style={{
-              fontSize: 14,
-              padding: '4px 12px',
-              borderRadius: 8,
-              color: '#64748b',
-              borderColor: '#e2e8f0',
-            }}
-          >
-            {detail?.spaceName}
-          </Tag>
-        </Space>
-      </div>
+        }
+      />
 
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: 24,
-          marginTop: 24,
-          flexShrink: 0,
-        }}
-      >
-        <Space align="center" size={24}>
-          {stats.map((s) => (
-            <Space key={s.labelKey} align="center" size={8}>
-              {s.icon}
-              <span style={{ color: '#64748b', fontSize: 14 }}>{t(s.labelKey)}</span>
-              <span style={{ color: '#0b2b5c', fontSize: 18, fontWeight: 700 }}>{s.value}</span>
-              {s.suffixKey && <span style={{ color: '#64748b', fontSize: 14 }}>{t(s.suffixKey)}</span>}
-            </Space>
-          ))}
-        </Space>
-        <Space align="center" size={6} style={{ color: '#64748b', fontSize: 14 }}>
-          <CloudServerOutlined style={{ color: '#8b5cf6' }} />
-          <span>
-            {t('dataSource.title')}: {dataSources}
-          </span>
-        </Space>
-      </div>
+      <PageContent>
+        <Tabs
+          className="kb-detail-tabs"
+          activeKey={activeTab}
+          onChange={handleTabChange}
+          tabBarExtraContent={{
+            right: (
+              <Button icon={<SettingOutlined />} onClick={openKbSettings}>
+                {t('domainKnowledge.knowledgeBaseSettings')}
+              </Button>
+            ),
+          }}
+          items={[
+            {
+              key: TAB_DOCUMENTS,
+              label: t('domainKnowledge.documentList'),
+              children: (
+                <div className="kb-detail-tab-pane">
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: 24,
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Space align="center" size={24}>
+                      {stats.map((s) => (
+                        <Space key={s.labelKey} align="center" size={8}>
+                          {s.icon}
+                          <span style={{ color: '#64748b', fontSize: 14 }}>{t(s.labelKey)}</span>
+                          <span style={{ color: '#0b2b5c', fontSize: 18, fontWeight: 700 }}>{s.value}</span>
+                          {s.suffixKey && <span style={{ color: '#64748b', fontSize: 14 }}>{t(s.suffixKey)}</span>}
+                        </Space>
+                      ))}
+                    </Space>
+                    <Space align="center" size={6} style={{ color: '#64748b', fontSize: 14 }}>
+                      <CloudServerOutlined style={{ color: '#8b5cf6' }} />
+                      <span>
+                        {t('dataSource.title')}: {dataSources}
+                      </span>
+                    </Space>
+                  </div>
 
-      <div style={{ flex: 1, minHeight: 0 }}>
-        <DocumentLibrary
-          kbId={id}
-          kbType={detail?.kbType}
-          quotaError={quotaError}
-          docReached={docReached}
-          onRefreshQuota={reloadQuota}
+                  <div style={{ flex: 1, minHeight: 0 }}>
+                    <DocumentLibrary
+                      kbId={id}
+                      kbType={detail?.kbType}
+                      quotaError={quotaError}
+                      docReached={docReached}
+                      onRefreshQuota={reloadQuota}
+                      onRefreshStats={refreshStats}
+                    />
+                  </div>
+                </div>
+              ),
+            },
+            {
+              key: TAB_ASSETS,
+              label: t('domainKnowledge.compileAssets'),
+              // 面板由 antd Tabs 惰性挂载：首次切过来才发那批统计请求，不拖慢文档库首屏
+              children: (
+                <div className="kb-assets-tab-pane">
+                  {detail == null ? (
+                    // [jonex] 详情未返回前不渲染引擎面板：kb_type 未知时 CompileAssetsPanel
+                    // 默认按 lightrag 渲染 Ontology，jonex_wiki 库会闪一下「先 Ontology 后 Wiki」。
+                    <Skeleton active paragraph={{ rows: 6 }} />
+                  ) : (
+                    <CompileAssetsPanel key={assetsMountKey} kbId={id} kbType={detail.kbType} wikiStats={wikiStats} />
+                  )}
+                </div>
+              ),
+            },
+            {
+              key: TAB_TRACKING,
+              label: t('route.tracking'),
+              // 同样惰性挂载：反馈统计与明细只在首次切过来时才请求
+              children: (
+                <div className="kb-tracking-tab-pane">
+                  <KnowledgeTracking embedded />
+                </div>
+              ),
+            },
+          ]}
         />
-      </div>
-    </div>
+      </PageContent>
+    </>
   );
 }

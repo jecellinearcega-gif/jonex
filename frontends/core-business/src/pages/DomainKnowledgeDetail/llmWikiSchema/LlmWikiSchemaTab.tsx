@@ -1,5 +1,5 @@
 /**
- * [jonex] LLM-Wiki Schema 编译设置 Tab（kb_type=openkb 的编译设置分流目标，
+ * [jonex] LLM-Wiki Schema 编译设置 Tab（kb_type=llm-wiki 型（openkb/jonex_wiki）的编译设置分流目标，
  * 方案 llmwiki-schema-settings-execution-plan §10）。
  *
  * 页面结构（三个 tab，白底卡片样式对齐本体 CompileTab）：
@@ -38,15 +38,6 @@ interface Props {
   /** KB 写权限（权限矩阵） */
   canWrite?: boolean;
 }
-
-// [jonex] 白底卡片样式（对齐参考页 compile/OntologyObjectSection 的 cardStyle）
-const sectionCardStyle: React.CSSProperties = {
-  background: '#fff',
-  borderRadius: 14,
-  border: '1px solid #eef2f6',
-  padding: 24,
-  boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
-};
 
 export default function LlmWikiSchemaTab({ kbId, canWrite = false }: Props) {
   const { t } = useTranslation();
@@ -287,7 +278,7 @@ export default function LlmWikiSchemaTab({ kbId, canWrite = false }: Props) {
             key: 'entity',
             label: t('llmWikiSchema.tabEntityTypes'),
             children: (
-              <div style={sectionCardStyle}>
+              <div>
                 <VocabSection
                   kind="entity"
                   value={entityTypes}
@@ -303,7 +294,7 @@ export default function LlmWikiSchemaTab({ kbId, canWrite = false }: Props) {
             key: 'concept',
             label: t('llmWikiSchema.tabConceptTypes'),
             children: (
-              <div style={sectionCardStyle}>
+              <div>
                 <VocabSection
                   kind="concept"
                   value={conceptTypes}
@@ -319,7 +310,7 @@ export default function LlmWikiSchemaTab({ kbId, canWrite = false }: Props) {
             key: 'custom',
             label: t('llmWikiSchema.tabCustomBlock'),
             children: (
-              <div style={sectionCardStyle}>
+              <div>
                 <Input.TextArea
                   rows={24}
                   value={agentsMdExtra}

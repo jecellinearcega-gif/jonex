@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Button, Modal, Space, Spin, Tabs, Typography, message } from 'antd';
+import { PlusOutlined, ImportOutlined } from '@ant-design/icons';
 import type {
   OntologyObjectDef,
   OntologyRelationDef,
@@ -474,6 +475,34 @@ export default function CompileTab({ kbId, canWrite = false }: Props) {
     await doImport(false);
   };
 
+  // 「新建 / 从模板导入」属于子 tab 自己的操作，随激活 tab 切换。
+  // 它们原先各自在表格上方占一行，与 tab 栏的「导出 YAML」分处两地；
+  // 现在统一挂到 tab 栏右侧、导出按钮之前，把表格上方让出来
+  const subTabActions: Record<
+    string,
+    { createLabel: string; importLabel: string; onCreate: () => void; onImport: () => void }
+  > = {
+    obj: {
+      createLabel: t('compile.object.createBtn'),
+      importLabel: t('compile.object.importBtn'),
+      onCreate: () => setObjectModal({ open: true, editing: null }),
+      onImport: () => setImportModal({ open: true, mode: 'object' }),
+    },
+    rel: {
+      createLabel: t('compile.relation.createBtn'),
+      importLabel: t('compile.relation.importBtn'),
+      onCreate: () => setRelationModal({ open: true, editing: null }),
+      onImport: () => setImportModal({ open: true, mode: 'relation' }),
+    },
+    constraint: {
+      createLabel: t('compile.constraint.createBtn'),
+      importLabel: t('compile.constraint.importBtn'),
+      onCreate: () => setConstraintModal({ open: true, editing: null }),
+      onImport: () => setImportModal({ open: true, mode: 'constraint' }),
+    },
+  };
+  const activeActions = subTabActions[activeSubTab] ?? subTabActions.obj;
+
   const tabItems = [
     {
       key: 'obj',
@@ -483,8 +512,6 @@ export default function CompileTab({ kbId, canWrite = false }: Props) {
                 canWrite={canWrite}
           data={objects}
           loading={loadingObjects}
-          onCreate={() => setObjectModal({ open: true, editing: null })}
-          onImport={() => setImportModal({ open: true, mode: 'object' })}
           onEdit={(o) => setObjectModal({ open: true, editing: o })}
           onDelete={removeObject}
           onPrompt={(o) =>
@@ -506,8 +533,6 @@ export default function CompileTab({ kbId, canWrite = false }: Props) {
                 canWrite={canWrite}
           data={relations}
           loading={loadingRelations}
-          onCreate={() => setRelationModal({ open: true, editing: null })}
-          onImport={() => setImportModal({ open: true, mode: 'relation' })}
           onEdit={(r) => setRelationModal({ open: true, editing: r })}
           onDelete={removeRelation}
           onPrompt={(r) =>
@@ -529,8 +554,6 @@ export default function CompileTab({ kbId, canWrite = false }: Props) {
                 canWrite={canWrite}
           data={constraints}
           loading={loadingConstraints}
-          onCreate={() => setConstraintModal({ open: true, editing: null })}
-          onImport={() => setImportModal({ open: true, mode: 'constraint' })}
           onEdit={(c) => setConstraintModal({ open: true, editing: c })}
           onDelete={removeConstraint}
         />
@@ -547,6 +570,25 @@ export default function CompileTab({ kbId, canWrite = false }: Props) {
         tabBarExtraContent={{
           right: (
             <div style={{ display: 'flex', gap: 8 }}>
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                style={{ fontSize: 13 }}
+                disabled={!canWrite}
+                title={canWrite ? undefined : t('domainSpace.noManagePermission')}
+                onClick={activeActions.onCreate}
+              >
+                {activeActions.createLabel}
+              </Button>
+              <Button
+                icon={<ImportOutlined />}
+                style={{ fontSize: 13 }}
+                disabled={!canWrite}
+                title={canWrite ? undefined : t('domainSpace.noManagePermission')}
+                onClick={activeActions.onImport}
+              >
+                {activeActions.importLabel}
+              </Button>
               <Button icon={<span>&#x1F4E4;</span>} loading={yamlExporting} onClick={handleExportYaml}>
                 {t('compile.exportYaml')}
               </Button>

@@ -1,6 +1,6 @@
 import { redirect } from 'react-router-dom';
 import { isEmbedded } from '@jonex/shell-sdk';
-import loadableComponent from '@/utils/loadable';
+import { ErrorPage, NotFound, loadableComponent } from '@jonex/shared-lib';
 
 const BasicLayout = loadableComponent(() => import('@/components/BasicLayout'));
 const HostedLayout = loadableComponent(() => import('@/components/HostedLayout'));
@@ -17,7 +17,6 @@ const DomainKnowledgeDatasourceStorage = loadableComponent(() => import('@/pages
 const DomainKnowledgeDatasourceSync = loadableComponent(() => import('@/pages/DomainKnowledgeDatasourceSync'));
 const DomainKnowledgeDatasourceApiPush = loadableComponent(() => import('@/pages/DomainKnowledgeDatasourceApiPush'));
 const DomainKnowledgeSourceData = loadableComponent(() => import('@/pages/DomainKnowledgeSourceData'));
-const DomainKnowledgeCompileResults = loadableComponent(() => import('@/pages/DomainKnowledgeCompileResults'));
 const DomainKnowledgeDocumentResult = loadableComponent(() => import('@/pages/DomainKnowledgeDocumentResult'));
 const DomainKnowledgeDataSource = loadableComponent(() => import('@/pages/DomainKnowledgeDataSource'));
 const DomainKnowledgeParser = loadableComponent(() => import('@/pages/DomainKnowledgeParser'));
@@ -26,13 +25,10 @@ const DomainKnowledgeGraph = loadableComponent(() => import('@/pages/DomainKnowl
 const DomainKnowledgeInstanceDetail = loadableComponent(() => import('@/pages/DomainKnowledgeInstanceDetail'));
 const DomainKnowledgeRelationDetail = loadableComponent(() => import('@/pages/DomainKnowledgeRelationDetail'));
 const DomainKnowledgeInstanceList = loadableComponent(() => import('@/pages/DomainKnowledgeInstanceList'));
-const KnowledgeTracking = loadableComponent(() => import('@/pages/KnowledgeTracking'));
 const DomainKnowledgeRelationList = loadableComponent(() => import('@/pages/DomainKnowledgeRelationList'));
 const DomainManagement = loadableComponent(() => import('@/pages/DomainManagement'));
 const DomainManagementServices = loadableComponent(() => import('@/pages/DomainManagementServices'));
 const DomainManagementSearch = loadableComponent(() => import('@/pages/DomainManagementSearch'));
-const ErrorPage = loadableComponent(() => import('@/pages/Error'));
-const NotFound = loadableComponent(() => import('@/pages/NotFound'));
 
 export function getRoutes(mode: 'standalone' | 'hosted' = 'standalone', t?: (key: string) => string) {
   // hosted (MF mount) or embed (Shell iframe embed, URL with ?embed=1) both use shell-less layout,
@@ -114,11 +110,6 @@ export function getRoutes(mode: 'standalone' | 'hosted' = 'standalone', t?: (key
           title: T('knowledgeSource.title'),
         },
         {
-          path: 'domain-knowledge/:id/compile-results',
-          element: DomainKnowledgeCompileResults,
-          title: T('route.compileResults'),
-        },
-        {
           path: 'domain-knowledge/:id/documents/:docId/result',
           element: DomainKnowledgeDocumentResult,
           title: T('route.documentResult'),
@@ -150,7 +141,6 @@ export function getRoutes(mode: 'standalone' | 'hosted' = 'standalone', t?: (key
           element: DomainKnowledgeInstanceList,
           title: T('route.ontologyInstanceDetail'),
         },
-        { path: 'domain-knowledge/:id/tracking', element: KnowledgeTracking, title: T('route.tracking') },
         {
           path: 'domain-knowledge/:id/result/relations/:relationName',
           element: DomainKnowledgeRelationList,

@@ -10,6 +10,9 @@ interface RelationFormValues {
   sourceObject: string;
   targetObject: string;
   relationType: OntologyRelationType;
+  inverseOf?: string;
+  sourceTypes?: string[];
+  targetTypes?: string[];
 }
 
 interface Props {
@@ -38,6 +41,9 @@ export default function RelationFormModal({ open, editing, objectNames, submitti
         sourceObject: editing.sourceObject,
         targetObject: editing.targetObject,
         relationType: editing.relationType,
+        inverseOf: editing.inverseOf || undefined,
+        sourceTypes: editing.sourceTypes || [],
+        targetTypes: editing.targetTypes || [],
       });
       return;
     }
@@ -47,8 +53,22 @@ export default function RelationFormModal({ open, editing, objectNames, submitti
       sourceObject: '',
       targetObject: '',
       relationType: '一对一',
+      inverseOf: undefined,
+      sourceTypes: [],
+      targetTypes: [],
     });
   }, [editing, form, open]);
+
+  // [jonex] P1：端点多选（数组是主端点单值超集，非空时须包含主端点；后端 _normalize_relation_types 兜底）
+  const endpointTypesValidator =
+    (mainField: 'sourceObject' | 'targetObject') =>
+    async (_: unknown, value: string[] | undefined) => {
+      if (!value || value.length === 0) return;
+      const main = form.getFieldValue(mainField);
+      if (main && !value.includes(main)) {
+        throw new Error(t('compile.relation.endpointTypesMustIncludeMain'));
+      }
+    };
 
   async function handleOk() {
     const values = await form.validateFields();
@@ -59,6 +79,9 @@ export default function RelationFormModal({ open, editing, objectNames, submitti
       targetObject: values.targetObject,
       relationType: values.relationType,
       status: editing?.status || 'active',
+      inverseOf: (values.inverseOf || '').trim() || undefined,
+      sourceTypes: values.sourceTypes || [],
+      targetTypes: values.targetTypes || [],
     });
   }
 
@@ -115,6 +138,43 @@ export default function RelationFormModal({ open, editing, objectNames, submitti
                 { label: t('compile.cardinality.manyToMany'), value: '多对多' },
                 { label: t('compile.cardinality.custom'), value: '自定义' },
               ]}
+            />
+          </Form.Item>
+        </div>
+        <Form.Item
+          label={t('compile.relation.inverseOf')}
+          name="inverseOf"
+          tooltip={t('compile.relation.inverseOfTooltip')}
+        >
+          <Input placeholder={t('compile.relation.inverseOfPlaceholder')} />
+        </Form.Item>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <Form.Item
+            label={t('compile.relation.sourceTypes')}
+            name="sourceTypes"
+            rules={[{ validator: endpointTypesValidator('sourceObject') }]}
+          >
+            <Select
+              mode="multiple"
+              options={objectOptions}
+              showSearch
+              optionFilterProp="label"
+              placeholder={t('compile.relation.endpointTypesPlaceholder')}
+              allowClear
+            />
+          </Form.Item>
+          <Form.Item
+            label={t('compile.relation.targetTypes')}
+            name="targetTypes"
+            rules={[{ validator: endpointTypesValidator('targetObject') }]}
+          >
+            <Select
+              mode="multiple"
+              options={objectOptions}
+              showSearch
+              optionFilterProp="label"
+              placeholder={t('compile.relation.endpointTypesPlaceholder')}
+              allowClear
             />
           </Form.Item>
         </div>

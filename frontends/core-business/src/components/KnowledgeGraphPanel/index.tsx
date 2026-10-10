@@ -15,27 +15,73 @@ import type { OntologyGraphNode, OntologyGraphEdge, OntologyGraphData } from '@/
 
 // 自动为 entity_type 分配颜色
 const TYPE_COLORS: Record<string, string> = {};
+// 统一 S≈45% / L≈54%，只换色相。预设那组的毛病是明度不齐（#f59e0b 过亮、#8b5cf6 过暗、
+// #ef4444 刺眼），明度拉平后就不再有哪个色抢眼。
+// 注意别再往下压饱和度：画布上节点是小圆点且密集，靠色相区分类型，
+// 饱和度压到 30% 时 12 个色相会挤成同一片灰蓝。（页头那种大色块静态标签可以更低。）
+// 顺序按色相跳跃排布：类型按首次出现顺序取色，相邻色相排一起会让相邻类型几乎同色
 const COLOR_PALETTE = [
-  '#3b82f6',
-  '#10b981',
-  '#f59e0b',
-  '#ef4444',
-  '#8b5cf6',
-  '#ec4899',
-  '#06b6d4',
-  '#f97316',
-  '#14b8a6',
-  '#6366f1',
-  '#84cc16',
-  '#d946ef',
+  '#559bbe', // 湖蓝
+  '#be7855', // 陶土
+  '#55be9b', // 青绿
+  '#9255be', // 雾紫
+  '#be9b55', // 沙
+  '#555ebe', // 雾靛
+  '#be558a', // 藕荷
+  '#9bbe55', // 橄榄
+  '#5581be', // 雾蓝
+  '#be55be', // 洋红
+  '#be5e55', // 陶红
+  '#6f55be', // 蓝紫
 ];
 
 // 搜索命中节点的高亮色（不在 entity_type 调色板内，大红色高亮，保证视觉上唯一可区分）
 const SEARCH_HIGHLIGHT_FILL = '#FF0000'; // 大红色填充
 const SEARCH_HIGHLIGHT_STROKE = '#b91c1c'; // 深红描边
 
+// 画布上下留给浮层的高度：G6 容器从这两条线之间开始，
+// autoFit 出来的节点才不会跑到工具条、状态栏底下被压住
+const CANVAS_TOOLBAR_OFFSET = 60;
+const CANVAS_STATUS_OFFSET = 48;
+
+// 底部提示是纯文字，画布渐变底 + 密集节点会让它糊掉，所以垫一层白底
+const CANVAS_OVERLAY_STYLE: React.CSSProperties = {
+  pointerEvents: 'auto',
+  padding: '6px 8px',
+  borderRadius: 8,
+  background: 'rgba(255,255,255,0.9)',
+  border: '1px solid #eef2f6',
+  boxShadow: '0 2px 8px rgba(15,23,42,0.06)',
+  backdropFilter: 'blur(4px)',
+};
+
+// 顶部三块并排一行，必须等高，否则看起来是三级台阶。
+// 它们的内容本身就参差：Select 27px、Tag 24px、Button 28px（各自的行高与边框不同）。
+// 定值取内容最大值 28 + padding 6×2 = 40。
+// 用 minHeight 而非 height：将来某块内容真超过 40 时它自己长高，好过被裁掉。
+const CANVAS_PILL_MIN_HEIGHT = 40;
+
+// 顶部三块不垫底：里面的 Input / Select / Button 各自带着白底与边框，
+// 外面再套一层就是白底叠白底，画布上平白多出三块色块。
+// 只有数量组是纯文字、自己没有底——它落在右上角那片空白上，靠布局位置兜住可读性。
+const CANVAS_TOP_PILL_STYLE: React.CSSProperties = {
+  pointerEvents: 'auto',
+  padding: '6px 8px',
+  minHeight: CANVAS_PILL_MIN_HEIGHT,
+};
+
 let _colorIdx = 0;
+// 本体抽取没识别出类型的实体（兜底分类 unknown）在真实数据里占比过半，
+// 让它占一个彩色色位的话，整张图会被染成同一种颜色、其余类型全被压掉。
+// 给中性灰：让「未识别」退成背景，彩色才重新成为信息。
+// 大小写与空值都归到这里，不消耗彩色色位
+const UNKNOWN_TYPE_COLOR = '#a8b6c4';
+
+/** 本体抽取没识别出类型的兜底分类，大小写与空值一并归入 */
+const isUnknownType = (type: string) => !type || type.toLowerCase() === 'unknown';
+
 function getTypeColor(type: string): string {
+  if (isUnknownType(type)) return UNKNOWN_TYPE_COLOR;
   if (!TYPE_COLORS[type]) {
     TYPE_COLORS[type] = COLOR_PALETTE[_colorIdx % COLOR_PALETTE.length];
     _colorIdx++;
@@ -46,11 +92,17 @@ function getTypeColor(type: string): string {
 // 大图性能阈值
 const NODE_LABEL_LIMIT = 500;
 const EDGE_LABEL_LIMIT = 1000;
+// 标签密度开关：节点多到这个数以上，就不再给每个节点打标签，只留枢纽。
+// 500 个标签必然糊成一片；而顺着高连接度的节点往下读，本来就是看图的方式。
+// 阈值按度数实测定的：500 节点里度数 ≥5 的约 140 个，铺开正好读得清
+const LABEL_CROWD_THRESHOLD = 300;
+const LABEL_MIN_DEGREE = 5;
 const LARGE_GRAPH_THRESHOLD = 200;
 const WEBGL_RENDER_THRESHOLD = 200;
 const NODE_LIMIT = 500;
 
-function mapNode(n: OntologyGraphNode, showLabel = true) {
+// degree 只服务布局：孤立点要单独用弱斥力，见 renderGraph 里的 manyBody
+function mapNode(n: OntologyGraphNode, showLabel = true, degree = 0) {
   const label = n.name.length > 12 ? n.name.slice(0, 12) + '…' : n.name;
   const style: Record<string, any> = {
     fill: getTypeColor(n.type),
@@ -58,11 +110,16 @@ function mapNode(n: OntologyGraphNode, showLabel = true) {
     lineWidth: 2,
     stroke: getTypeColor(n.type),
   };
-  if (showLabel) {
+  // unknown 节点不给标签：它们占实体六成以上、名字多是噪音，
+  // 一起铺在图上会把真正有类型的节点标签压得读不出来
+  if (showLabel && !isUnknownType(n.type)) {
     style.labelText = label;
     style.labelFill = '#475569';
     style.labelFontSize = 11;
     style.labelOffsetY = 8;
+    // 文字描白边（halo）：标签压在节点、边或别的标签上时仍能读出来
+    style.labelStroke = '#ffffff';
+    style.labelLineWidth = 3;
   }
   return {
     id: n.id,
@@ -75,6 +132,7 @@ function mapNode(n: OntologyGraphNode, showLabel = true) {
       attributes: n.attributes || {},
       confidence: n.confidence ?? 1,
       docIds: n.doc_ids || [],
+      degree,
     },
     style,
   };
@@ -111,6 +169,16 @@ function buildGraphData(raw: { nodes: OntologyGraphNode[]; edges: OntologyGraphE
   const showNodeLabels = raw.nodes.length <= NODE_LABEL_LIMIT;
   const showEdgeLabels = raw.edges.length <= EDGE_LABEL_LIMIT;
 
+  // 节点连接度：拥挤时只有枢纽配得上标签
+  const degree = new Map<string, number>();
+  for (const e of raw.edges) {
+    const s = `${e.source_type}:${e.source}`;
+    const t = `${e.target_type}:${e.target}`;
+    degree.set(s, (degree.get(s) || 0) + 1);
+    degree.set(t, (degree.get(t) || 0) + 1);
+  }
+  const minDegree = raw.nodes.length > LABEL_CROWD_THRESHOLD ? LABEL_MIN_DEGREE : 0;
+
   const seenNodes = new Set<string>();
   const nodes = raw.nodes
     .filter((n) => {
@@ -118,7 +186,10 @@ function buildGraphData(raw: { nodes: OntologyGraphNode[]; edges: OntologyGraphE
       seenNodes.add(n.id);
       return true;
     })
-    .map((n) => mapNode(n, showNodeLabels));
+    .map((n) => {
+      const deg = degree.get(n.id) || 0;
+      return mapNode(n, showNodeLabels && deg >= minDegree, deg);
+    });
 
   const seenEdges = new Set<string>();
   const edges = raw.edges
@@ -137,9 +208,12 @@ interface KnowledgeGraphPanelProps {
   kbId: string;
   /** 按来源文档过滤图谱节点，不传则返回 KB 级全库图谱 */
   docId?: string;
+  /** 去掉自带的卡面（白底 / 边框 / 圆角 / 阴影）。嵌在已有卡片的容器里时，
+   *  这层壳会与父卡片叠成「卡中卡」；独立图谱页没有父卡片，靠它成卡片，不传 */
+  bare?: boolean;
 }
 
-export default function KnowledgeGraphPanel({ kbId, docId }: KnowledgeGraphPanelProps) {
+export default function KnowledgeGraphPanel({ kbId, docId, bare }: KnowledgeGraphPanelProps) {
   const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<any>(null);
@@ -180,7 +254,14 @@ export default function KnowledgeGraphPanel({ kbId, docId }: KnowledgeGraphPanel
       ? {
           type: 'd3-force',
           linkDistance: 80,
-          manyBody: { strength: -80 },
+          manyBody: {
+            // 孤立点（度数 0）只给弱斥力：它们之间互推纯粹在撑大包围盒，
+            // autoFit 之后整个主体被迫缩小，反而看不清
+            strength: (d: { data?: { degree?: number } }) => ((d?.data?.degree ?? 0) > 0 ? -80 : -10),
+          },
+          // 大图分支同样要有碰撞力：节点 size 在 30–60，半径按各自 size 算，
+          // 固定半径的话小节点会留出过多空隙、大节点仍会叠
+          collide: { radius: (d: { style?: { size?: number } }) => (d?.style?.size ?? 30) / 2 + 6, strength: 1 },
           animate: false,
         }
       : {
@@ -217,7 +298,8 @@ export default function KnowledgeGraphPanel({ kbId, docId }: KnowledgeGraphPanel
           style: { cursor: 'pointer' },
         },
         edge: {
-          type: 'line',
+          // 曲线而非直线：密集区的直线会织成网格，且双向关系（A→B 与 B→A）完全重叠
+          type: 'quadratic',
           style: { cursor: 'default', endArrow: true },
         },
         behaviors: ['zoom-canvas', 'drag-canvas', 'drag-element'],
@@ -416,92 +498,21 @@ export default function KnowledgeGraphPanel({ kbId, docId }: KnowledgeGraphPanel
     <div
       style={{
         flex: 1,
-        background: '#fff',
-        borderRadius: 14,
-        border: '1px solid #eef2f6',
-        boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
+        // 内边距与外层卡面解耦：bare 时卡面交给父卡片，但内容仍需要离边框的呼吸空间
         padding: 20,
         display: 'flex',
         flexDirection: 'column',
         overflowY: 'scroll',
+        ...(bare
+          ? {}
+          : {
+              background: '#fff',
+              borderRadius: 10,
+              border: '1px solid #eef2f6',
+              boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
+            }),
       }}
     >
-      {/* 工具栏 */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          marginBottom: 12,
-          flexWrap: 'wrap',
-          gap: 8,
-        }}
-      >
-        <Space wrap>
-          <Input.Search
-            placeholder={t('knowledgeGraph.searchPlaceholder')}
-            size="small"
-            style={{ width: 180 }}
-            value={searchKeyword}
-            onChange={(e) => setSearchKeyword(e.target.value)}
-            onSearch={handleSearch}
-            enterButton={<SearchOutlined />}
-          />
-          <Select
-            mode="multiple"
-            allowClear
-            size="small"
-            placeholder={t('knowledgeGraph.filterByType')}
-            style={{ minWidth: 200, maxWidth: 320 }}
-            value={selectedTypes}
-            onChange={(vals) => setSelectedTypes(vals)}
-            maxTagCount="responsive"
-            suffixIcon={<FilterOutlined />}
-            options={typeDistribution.map((t) => ({
-              label: `${t.type} (${t.count})`,
-              value: t.type,
-            }))}
-          />
-        </Space>
-        <Space>
-          <Button size="small" icon={<ZoomInOutlined />} style={{ borderRadius: 8 }} onClick={handleZoomIn} />
-          <Button size="small" icon={<ZoomOutOutlined />} style={{ borderRadius: 8 }} onClick={handleZoomOut} />
-          <Button size="small" icon={<ExpandAltOutlined />} style={{ borderRadius: 8 }} onClick={handleFitView} />
-          <Button size="small" icon={<ReloadOutlined />} style={{ borderRadius: 8 }} onClick={loadData} />
-        </Space>
-      </div>
-
-      {/* 数量提示 */}
-      {meta && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-            flexWrap: 'wrap',
-            marginBottom: 10,
-            fontSize: 12,
-            color: '#94a3b8',
-          }}
-        >
-          <span>{t('knowledgeGraph.showingEntities', { returned: meta.returned_nodes, total: meta.total_nodes })}</span>
-          <span>
-            {t('knowledgeGraph.showingRelations', { returned: meta.returned_edges, total: meta.total_relations })}
-          </span>
-          {meta.truncated && (
-            <Tooltip title={t('knowledgeGraph.truncatedTooltip', { limit: NODE_LIMIT })}>
-              <Tag color="orange" style={{ margin: 0, cursor: 'help' }}>
-                {t('knowledgeGraph.truncatedDisplay')}
-              </Tag>
-            </Tooltip>
-          )}
-          <span style={{ marginLeft: 'auto', color: '#cbd5e1' }}>
-            <NodeExpandOutlined /> {t('knowledgeGraph.dblClickHint')}
-          </span>
-          {expanding && <Spin size="small" />}
-        </div>
-      )}
-
       {/* G6 画布 */}
       <div
         style={{
@@ -511,10 +522,118 @@ export default function KnowledgeGraphPanel({ kbId, docId }: KnowledgeGraphPanel
           background: 'radial-gradient(ellipse at center, #f8fafc 0%, #f0f4f8 100%)',
           overflow: 'hidden',
           position: 'relative',
-          minHeight: 480,
+          // 加上上下浮层占的那两条，图谱可视区不小于原来的 480
+          minHeight: 480 + CANVAS_TOOLBAR_OFFSET + CANVAS_STATUS_OFFSET,
         }}
       >
-        <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />
+        {/* 工具条与状态栏浮在画布上：原先两者各占画布上下各一行，画布因此矮两截。
+            外层不接事件，空白处仍能拖动/缩放画布；只有控件本身吃掉指针 */}
+        <div
+          style={{
+            position: 'absolute',
+            top: 12,
+            left: 12,
+            right: 12,
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: 8,
+            zIndex: 5,
+            pointerEvents: 'none',
+          }}
+        >
+          <Space wrap style={CANVAS_TOP_PILL_STYLE}>
+            <Input.Search
+              placeholder={t('knowledgeGraph.searchPlaceholder')}
+              size="small"
+              style={{ width: 180 }}
+              value={searchKeyword}
+              onChange={(e) => setSearchKeyword(e.target.value)}
+              onSearch={handleSearch}
+              enterButton={<SearchOutlined />}
+            />
+            <Select
+              mode="multiple"
+              allowClear
+              size="small"
+              placeholder={t('knowledgeGraph.filterByType')}
+              style={{ minWidth: 200, maxWidth: 320 }}
+              value={selectedTypes}
+              onChange={(vals) => setSelectedTypes(vals)}
+              maxTagCount="responsive"
+              suffixIcon={<FilterOutlined />}
+              options={typeDistribution.map((t) => ({
+                label: `${t.type} (${t.count})`,
+                value: t.type,
+              }))}
+            />
+          </Space>
+          {/* 数量与操作按钮同处右上：先读「画了什么」，再决定「怎么操作」，
+              两者是同一段视线里的先因后果，拆到画布两端就断了 */}
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
+            {meta && (
+              <Space size={12} wrap style={{ ...CANVAS_TOP_PILL_STYLE, fontSize: 12, color: '#94a3b8' }}>
+                <span>
+                  {t('knowledgeGraph.showingEntities', { returned: meta.returned_nodes, total: meta.total_nodes })}
+                </span>
+                <span>
+                  {t('knowledgeGraph.showingRelations', { returned: meta.returned_edges, total: meta.total_relations })}
+                </span>
+                {meta.truncated && (
+                  <Tooltip title={t('knowledgeGraph.truncatedTooltip', { limit: NODE_LIMIT })}>
+                    <Tag color="orange" style={{ margin: 0, cursor: 'help' }}>
+                      {t('knowledgeGraph.truncatedDisplay')}
+                    </Tag>
+                  </Tooltip>
+                )}
+                {expanding && <Spin size="small" />}
+              </Space>
+            )}
+            <Space style={CANVAS_TOP_PILL_STYLE}>
+              <Button size="small" icon={<ZoomInOutlined />} style={{ borderRadius: 8 }} onClick={handleZoomIn} />
+              <Button size="small" icon={<ZoomOutOutlined />} style={{ borderRadius: 8 }} onClick={handleZoomOut} />
+              <Button size="small" icon={<ExpandAltOutlined />} style={{ borderRadius: 8 }} onClick={handleFitView} />
+              <Button size="small" icon={<ReloadOutlined />} style={{ borderRadius: 8 }} onClick={loadData} />
+            </Space>
+          </div>
+        </div>
+
+        <div
+          ref={containerRef}
+          style={{
+            position: 'absolute',
+            top: CANVAS_TOOLBAR_OFFSET,
+            left: 0,
+            right: 0,
+            bottom: CANVAS_STATUS_OFFSET,
+          }}
+        />
+
+        {/* 操作提示留在画布底部：扣掉高度是它唯一的作用，浮在画布下沿比另占一行更贴题 */}
+        {meta && (
+          <div
+            style={{
+              position: 'absolute',
+              bottom: 12,
+              left: 12,
+              right: 12,
+              display: 'flex',
+              alignItems: 'center',
+              // 数量搬去右上后这条只剩一项，靠右与上面的按钮列对齐成一条竖线
+              justifyContent: 'flex-end',
+              flexWrap: 'wrap',
+              gap: 8,
+              zIndex: 5,
+              pointerEvents: 'none',
+            }}
+          >
+            <Space style={{ ...CANVAS_OVERLAY_STYLE, fontSize: 12, color: '#94a3b8' }}>
+              <NodeExpandOutlined />
+              <span>{t('knowledgeGraph.dblClickHint')}</span>
+            </Space>
+          </div>
+        )}
         {loading && (
           <div
             style={{
@@ -592,7 +711,7 @@ export default function KnowledgeGraphPanel({ kbId, docId }: KnowledgeGraphPanel
           style={{
             marginTop: 12,
             background: '#fff',
-            borderRadius: 14,
+            borderRadius: 10,
             border: '1px solid #eef2f6',
             boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
             padding: 20,

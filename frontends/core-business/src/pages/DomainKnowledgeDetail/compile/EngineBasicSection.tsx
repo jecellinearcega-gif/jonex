@@ -5,13 +5,9 @@ import { SettingOutlined, SaveOutlined } from '@ant-design/icons';
 import type { EngineSetting } from '@/types/domainKnowledge';
 import { ENGINE_MODEL_OPTIONS, DEFAULT_ENGINE_MODEL } from './constants';
 
-const cardStyle: React.CSSProperties = {
-  background: '#fff',
-  borderRadius: 14,
-  border: '1px solid #eef2f6',
-  padding: 24,
+// 首层卡面已由 PageContent 的卡片承担，这里只留分区之间的间距
+const sectionStyle: React.CSSProperties = {
   marginBottom: 20,
-  boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
 };
 const h3Style: React.CSSProperties = {
   margin: 0,
@@ -37,13 +33,13 @@ export default function EngineBasicSection({ engine, loading, onSave }: Props) {
   }, [engine]);
 
   return (
-    <div className="config-section" style={cardStyle}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+    <div style={sectionStyle}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
         <h3 style={h3Style}>
           <SettingOutlined style={{ color: '#3b82f6' }} /> {t('compile.engine.sectionTitle')}
         </h3>
       </div>
-      <p style={{ fontSize: 13, color: '#94a3b8', marginBottom: 16 }}>{t('compile.engine.sectionDesc')}</p>
+      <p style={{ fontSize: 13, color: '#94a3b8', marginBottom: 12 }}>{t('compile.engine.sectionDesc')}</p>
       <div style={{ padding: 20, maxWidth: 560, border: '1px solid #eef2f6', borderRadius: 10 }}>
         <div className="yx-form-row">
           <label>

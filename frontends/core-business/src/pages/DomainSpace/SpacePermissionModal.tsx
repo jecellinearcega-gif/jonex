@@ -351,7 +351,6 @@ const SpacePermissionModal = forwardRef<SpacePermissionModalHandle, SpacePermiss
                 {canManage && (
                 <Button
                   type="text"
-                  className="yx-perm-remove-btn"
                   onClick={() => removePermMember(member.id)}
                   title={t('domainSpace.removeMember')}
                   style={{

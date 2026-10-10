@@ -38,6 +38,10 @@ COPY frontends/core-business/ ./core-business/
 COPY frontends/tsconfig.base.json ./
 COPY frontends/vite.base.config.ts ./
 
+# 生产登录页为同源相对路径 /login；覆盖 .env 烘入的本地 dev 网关地址 localhost:8080（生产无 8080 服务，跳转会落到死地址）
+ARG VITE_LOGIN=/login
+ENV VITE_LOGIN=${VITE_LOGIN}
+
 RUN pnpm --filter @jonex/core-business build
 
 FROM nginx:1.27-alpine

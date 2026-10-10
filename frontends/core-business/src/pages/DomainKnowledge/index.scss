@@ -2,12 +2,11 @@
    ─── 领域知识管理 — 卡片网格布局 ─────────────────────────
    ═══════════════════════════════════════════════════════════ */
 
-/* 筛选行 */
+/* 筛选行：作为 PageHeader 的 extra 与标题同行，下边距由页头行承载，此处不再自设 */
 .yx-filter-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 20px;
   flex-wrap: wrap;
 
   label {
@@ -83,15 +82,6 @@
   overflow: visible;
   display: flex;
   flex-direction: column;
-
-  &::before {
-    content: '';
-    display: block;
-    height: 3px;
-    flex-shrink: 0;
-    background: linear-gradient(90deg, #3b82f6, #60a5fa);
-    border-radius: 12px 12px 0 0;
-  }
 
   &:hover {
     transform: translateY(-2px);
@@ -205,116 +195,4 @@
   color: #3b82f6;
   border: 1px solid #bfdbfe;
   white-space: nowrap;
-}
-
-/* 权限设置徽章 */
-.perm-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  padding: 2px 10px;
-  border-radius: 6px;
-  background: #f1f5f9;
-  color: #64748b;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border: 1px solid #e2e8f0;
-
-  .anticon {
-    font-size: 11px;
-  }
-
-  &:hover {
-    background: #eff6ff;
-    color: #3b82f6;
-    border-color: #bfdbfe;
-  }
-}
-
-/* 卡片更多按钮 & 下拉菜单 */
-.card-more {
-  position: relative;
-  flex-shrink: 0;
-}
-
-.card-more-btn {
-  width: 30px;
-  height: 30px;
-  border: none;
-  background: transparent;
-  border-radius: 8px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #94a3b8;
-  font-size: 15px;
-  transition: all 0.2s;
-  padding: 0;
-
-  &:hover {
-    background: #f1f5f9;
-    color: #475569;
-  }
-}
-
-.card-dropdown {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 4px);
-  background: #fff;
-  border: 1px solid #e4ebf5;
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-  min-width: 150px;
-  z-index: 1000;
-  overflow: hidden;
-
-  &.open {
-    display: block;
-  }
-
-  a,
-  .card-dropdown-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 14px;
-    font-size: 13px;
-    color: #475569;
-    text-decoration: none;
-    cursor: pointer;
-    transition: background 0.15s;
-
-    .anticon {
-      width: 16px;
-      font-size: 13px;
-      color: #94a3b8;
-    }
-
-    &:hover {
-      background: #f8fafc;
-      color: #0b2b5c;
-    }
-
-    &.danger {
-      color: #dc2626;
-
-      .anticon {
-        color: #dc2626;
-      }
-
-      &:hover {
-        background: #fef2f2;
-      }
-    }
-  }
-}
-
-/* 分隔线 */
-.card-dropdown-divider {
-  height: 1px;
-  background: #eef2f6;
-  margin: 0;
 }

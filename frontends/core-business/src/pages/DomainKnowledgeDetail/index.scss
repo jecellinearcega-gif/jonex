@@ -1,26 +1,20 @@
 /* ── DomainKnowledgeDetail 页面样式 ── */
 
-/* 统计标签 */
-.yx-kb-stat-badge {
+/* 状态文字：圆点跟随 currentColor，失败/处理中自动换色 */
+.yx-kb-detail-status {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  padding: 3px 10px;
-  border-radius: 6px;
-  background: #f1f5f9;
-  color: #64748b;
-}
-
-.yx-kb-stat-badge svg,
-.yx-kb-stat-badge .anticon {
-  font-size: 12px;
-}
-
-/* 状态文字 */
-.yx-kb-detail-status {
-  font-size: 14px;
+  gap: 6px;
+  font-size: 13px;
   font-weight: 600;
+}
+
+.yx-kb-detail-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .yx-kb-detail-status.synced {
@@ -35,18 +29,15 @@
   color: #f59e0b;
 }
 
-.yx-kb-detail-updated {
-  font-size: 12px;
-  color: #94a3b8;
-  margin-top: 2px;
-}
-
 /* Tab 导航栏 */
 .yx-kb-detail-tabs {
   display: flex;
+  margin-bottom: 12px;
   border-bottom: 1px solid #eef2f6;
-  margin-bottom: 24px;
   overflow-x: auto;
+  /* 不参与 flex 压缩。外层 PageContent 是 flex column，而 overflow 非 visible 的
+     flex item 自动最小尺寸为 0，内容一超长（编译配置 tab）就会把它压成一条边线。 */
+  flex-shrink: 0;
 }
 
 .yx-kb-detail-tab {
@@ -83,7 +74,7 @@
 .yx-kb-section-desc {
   font-size: 13px;
   color: #94a3b8;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .yx-kb-icon-blue {
@@ -111,10 +102,6 @@
   color: #94a3b8;
 }
 
-.yx-kb-flex-1 {
-  flex: 1;
-}
-
 
 /* 弹窗内 AccessMethod */
 .yx-modal-access-method {
@@ -124,26 +111,11 @@
 }
 
 
-.yx-kb-section-card {
-  background: #fff;
-  border-radius: 14px;
-  border: 1px solid #eef2f6;
-  padding: 24px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
-}
-.yx-kb-section-card-mb {
-  background: #fff;
-  border-radius: 14px;
-  border: 1px solid #eef2f6;
-  padding: 24px;
-  margin-bottom: 20px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
-}
 .yx-kb-flex-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 .yx-kb-section-title {
   margin: 0;
@@ -198,10 +170,6 @@
   border-radius: 10px;
   border: 1px solid #eef2f6;
 }
-.yx-kb-stat-number {
-  font-size: 28px;
-  font-weight: 700;
-}
 .yx-kb-stat-label {
   font-size: 13px;
   color: #94a3b8;
@@ -209,16 +177,14 @@
 }
 
 
-
-.yx-kb-flex-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.yx-kb-flex-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .yx-kb-section-title { margin: 0; font-size: 15px; font-weight: 600; color: #0b2b5c; display: flex; align-items: center; gap: 8px; }
 .yx-kb-flex-between { display: flex; align-items: center; justify-content: space-between; }
 .yx-kb-flex-gap { display: flex; gap: 10px; align-items: flex-start; }
-.yx-kb-section-card { background: #fff; border-radius: 14px; border: 1px solid #eef2f6; padding: 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
-.yx-kb-section-card-mb { background: #fff; border-radius: 14px; border: 1px solid #eef2f6; padding: 24px; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+/* 首层卡面已由 PageContent 的卡片承担，tab 内不再重复描边；-mb 只留分区间距 */
+.yx-kb-section-card-mb { margin-bottom: 20px; }
 .yx-kb-section-title-mb { margin: 0 0 4px; font-size: 15px; font-weight: 600; color: #0b2b5c; display: flex; align-items: center; gap: 8px; }
 .yx-kb-meta-label { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
-.yx-kb-name-lg { font-size: 20px; font-weight: 700; color: #0b2b5c; margin: 0; }
 .yx-kb-stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 20px; }
 .yx-kb-chip-blue { padding: 2px 8px; border-radius: 6px; background: #eff6ff; color: #3b82f6; font-size: 12px; font-weight: 500; }
 .yx-kb-chip-green { padding: 2px 8px; border-radius: 6px; background: #ecfdf5; color: #059669; font-size: 12px; font-weight: 500; }
@@ -233,48 +199,39 @@
 .yx-kb-rule-icon { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; flex-shrink: 0; }
 
 
-/* 返回链接 */
-.yx-kb-back-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 14px;
-  color: #64748b;
-  cursor: pointer;
-  padding: 4px 0;
-}
-
-/* 头部大图标 */
-.yx-kb-header-icon {
-  width: 52px;
-  height: 52px;
-  border-radius: 12px;
+/* 页头 KB 身份块：名称与统计徽标并排一行。字号与颜色继承页头 h1，此处只管排布 */
+.yx-kb-header-title {
   display: flex;
   align-items: center;
-  justify-content: center;
-  font-size: 24px;
-  background: #eff6ff;
-  color: #3b82f6;
-  flex-shrink: 0;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* 与 12px 的徽标并排时，24px 名称按自身行高会把整行顶高，这里收回一点 */
+.yx-kb-header-name {
+  line-height: 1.15;
 }
 
 /* 标签行 */
 .yx-kb-tag-row {
   display: flex;
-  gap: 8px;
-  margin-top: 6px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
-/* 头部卡片 */
-.yx-kb-header-card {
+/* 状态块推到行尾：PageHeader 的 extra 默认紧跟标题，页头这里要撑满整行。
+   padding-left 兜住窄屏下 auto margin 塌到 0 时的最小间距。
+   align-self 覆盖 PageHeader 的 flex-end：标题块被 44px 图标撑着，按底边对齐会让状态文字沉下去。 */
+.yx-kb-header-status {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 24px;
-  padding: 20px 24px;
-  background: #fff;
-  border-radius: 14px;
-  border: 1px solid #eef2f6;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  gap: 12px;
+  margin-left: auto;
+  padding-left: 24px;
+  align-self: center;
+}
+
+.yx-kb-header-updated {
+  font-size: 12px;
+  color: #94a3b8;
 }

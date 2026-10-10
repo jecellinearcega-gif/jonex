@@ -1,17 +1,5 @@
 /* ── 领域服务管理页面样式 ── */
 .yx-domain-management-page {
-  .yx-page-header {
-    margin-bottom: 24px;
-  }
-
-  .yx-page-title {
-    font-size: 24px;
-    font-weight: 700;
-    color: #0b2b5c;
-    letter-spacing: 0.5px;
-    margin: 0;
-  }
-
   .yx-page-desc {
     font-size: 14px;
     color: #64748b;
@@ -34,24 +22,6 @@
     }
   }
 
-  .yx-filter-select {
-    padding: 8px 14px;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    font-size: 14px;
-    background: #fff;
-    color: #1e293b;
-    outline: none;
-    cursor: pointer;
-    min-width: 180px;
-    font-family: inherit;
-
-    &:focus {
-      border-color: #3b82f6;
-      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-    }
-  }
-
   .yx-filter-count {
     font-size: 13px;
     color: #94a3b8;
@@ -61,7 +31,7 @@
   /* 卡片 */
   .yx-card {
     background: #fff;
-    border-radius: 14px;
+    border-radius: 10px;
     padding: 24px;
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
     border: 1px solid #eef2f6;
@@ -115,19 +85,6 @@
       &::placeholder {
         color: #94a3b8;
       }
-    }
-  }
-
-  /* 领域名称 */
-  .yx-domain-name {
-    color: #3b82f6;
-    cursor: pointer;
-    font-weight: 500;
-    transition: color 0.2s;
-
-    &:hover {
-      color: #1d4ed8;
-      text-decoration: underline;
     }
   }
 
@@ -300,48 +257,6 @@
     }
   }
 
-  .yx-form-input {
-    width: 100%;
-    padding: 8px 12px;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    font-size: 13px;
-    color: #1e293b;
-    outline: none;
-    background: #fff;
-    font-family: inherit;
-    box-sizing: border-box;
-
-    &:focus {
-      border-color: #3b82f6;
-      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-    }
-  }
-
-  .yx-form-select {
-    width: 100%;
-    padding: 8px 12px;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    font-size: 13px;
-    color: #1e293b;
-    outline: none;
-    background: #fff;
-    font-family: inherit;
-    cursor: pointer;
-    box-sizing: border-box;
-
-    &:focus {
-      border-color: #3b82f6;
-      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-    }
-  }
-
-  .yx-form-hint {
-    font-size: 12px;
-    color: #94a3b8;
-  }
-
   /* 知识库勾选列表 */
   .yx-kb-check-list {
     display: grid;
@@ -350,36 +265,6 @@
     margin-top: 4px;
   }
 
-  .yx-kb-check-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 10px;
-    border-radius: 6px;
-    border: 1px solid #eef2f6;
-    font-size: 13px;
-    color: #475569;
-    cursor: pointer;
-    transition: all 0.2s;
-
-    &:hover {
-      border-color: #dbe7f5;
-      background: #fafcff;
-    }
-
-    input[type='checkbox'] {
-      accent-color: #3b82f6;
-      width: 14px;
-      height: 14px;
-    }
-  }
-
-  /* 开关 */
-  .yx-switch-wrap {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
 
   .yx-switch-label {
     position: relative;
@@ -423,35 +308,9 @@
     }
   }
 
-  .yx-switch-text {
-    font-size: 13px;
-    color: #475569;
-  }
-
-  /* ── 服务配置表 ── */
-  .yx-srv-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-
-    th {
-      text-align: left;
-      padding: 10px 12px;
-      font-weight: 600;
-      color: #64748b;
-      border-bottom: 2px solid #e8edf3;
-      font-size: 12px;
-    }
-
-    td {
-      padding: 10px 12px;
-      border-bottom: 1px solid #f1f5f9;
-      color: #334155;
-    }
-  }
 
   .yx-key-text {
-    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    font-family: var(--yx-font-mono);
     font-size: 12px;
     background: #f1f5f9;
     padding: 2px 8px;
@@ -482,38 +341,6 @@
       background: #dcfce7;
       color: #16a34a;
       border-color: #bbf7d0;
-    }
-  }
-
-  .yx-srv-actions {
-    display: flex;
-    gap: 4px;
-
-    button {
-      padding: 4px 8px;
-      border-radius: 4px;
-      border: 1px solid #e2e8f0;
-      background: #fff;
-      cursor: pointer;
-      font-size: 11px;
-      color: #64748b;
-      transition: all 0.2s;
-      font-family: inherit;
-
-      &:hover {
-        border-color: #3b82f6;
-        color: #3b82f6;
-      }
-
-      &.danger:hover {
-        border-color: #ef4444;
-        color: #ef4444;
-      }
-
-      &:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-      }
     }
   }
 }

@@ -1,0 +1,45 @@
+/* ── DomainKnowledgeDocumentResult 页面样式 ── */
+
+/* tab 栏下边距归零：antd 默认留 16px，页签与内容之间会多出一道缝 */
+.yx-doc-result-tabs .ant-tabs-nav {
+  margin-bottom: 0;
+}
+
+/* 内容撑满卡片剩余高度。面板原先各自写死 calc(100vh - Npx) 去猜剩余空间，
+   窗口尺寸与页头高度一变就猜不准；改由 flex 链把可用高度传下去，
+   面板只负责铺满，不再需要知道上面占了多少。
+   Spin 的两层包裹是链上必须打通的环节——它们默认都是内容高度 */
+.yx-doc-result-fill {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.yx-doc-result-fill > .ant-spin,
+.yx-doc-result-fill .ant-spin-container {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.yx-doc-result-tabs {
+  flex: 1;
+  min-height: 0;
+}
+
+.yx-doc-result-tabs .ant-tabs-content-holder,
+.yx-doc-result-tabs .ant-tabs-content-holder > .ant-tabs-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.yx-doc-result-tabs .ant-tabs-tabpane-active {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}

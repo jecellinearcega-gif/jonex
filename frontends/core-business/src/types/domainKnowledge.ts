@@ -22,7 +22,7 @@ export interface DomainKnowledgeItem {
    * [jonex] 知识库类型。创建时选定后不可变。
    * 列表标签与编辑弹窗的只读展示依赖它；后端缺省/未知时按 lightrag 处理。
    */
-  kbType?: KnowledgeBaseType;  /** 授权共享标识：仅真正靠 KB 授权才看到的 KB 为 true */
+  kbType?: KnowledgeBaseType; /** 授权共享标识：仅真正靠 KB 授权才看到的 KB 为 true */
   grant_shared?: boolean;
   /** 该 KB 的权限管理权 */
   can_manage_permissions?: boolean;
@@ -39,6 +39,13 @@ export interface DomainKnowledgeListParams {
   pageSize: number;
   sortField?: 'updatedAt' | 'documentCount' | 'name';
   sortOrder?: 'ascend' | 'descend';
+  /**
+   * [jonex] 可见口径：`manage`（默认，管理面）= 我管的空间 ∪ 授权 KB；
+   * `search`（检索面）= 可见空间 ∪ 授权 KB。
+   * 两者差别只在**空间 member** —— 检索面要传 `search`，否则拿不到 KB。
+   * 不传时后端按 `manage` 处理，管理面行为不受影响。
+   */
+  scope?: 'manage' | 'search';
 }
 
 export interface PaginationResult<T> {
@@ -95,8 +102,8 @@ export const statusColorMap: Record<DomainKnowledgeStatus, string> = {
   disabled: 'default',
 };
 
-/** 知识库类型。lightrag=标准检索型（向量+图谱）；openkb=Wiki 编译型（LLM 编译） */
-export type KnowledgeBaseType = 'lightrag' | 'openkb';
+/** 知识库类型。lightrag=标准检索型（向量+图谱）；openkb/jonex_wiki=Wiki 编译型（LLM 编译） */
+export type KnowledgeBaseType = 'lightrag' | 'openkb' | 'jonex_wiki';
 
 // ─── Detail Page Types ──────────────────────────────────
 
@@ -114,10 +121,10 @@ export interface DomainKnowledgeDetail {
   /** Neo4j 不可用时为 true，实体/关系数被降级为 0（非真实为 0） */
   ontologyDegraded?: boolean;
   /**
-   * 处理管线。openkb 的知识库不跑本体抽取，「编译结果」Tab 需换成只读 Wiki 视图。
+   * 处理管线。llm-wiki 型（openkb/jonex_wiki）的知识库不跑本体抽取，「编译结果」Tab 需换成只读 Wiki 视图。
    * 后端缺省/未知时按 lightrag 处理。
    */
-  kbType?: KnowledgeBaseType;  /** 该 KB 的权限管理权（空间 owner/manager 或租户管理员）——权限 tab 只读态依据 */
+  kbType?: KnowledgeBaseType; /** 该 KB 的权限管理权（空间 owner/manager 或租户管理员）——权限 tab 只读态依据 */
   can_manage_permissions: boolean;
   /** KB 写权限（额外含授权 editor）——详情页各 tab 写操作按钮依据 */
   can_write: boolean;
@@ -542,41 +549,41 @@ export interface GraphSummary {
 
 export interface DocumentChunk {
   /** LightRAG chunk 主键（chunk-<md5>），用于选中/列表 key */
-  chunk_id: string
+  chunk_id: string;
   /** chunk 完整文本内容（原 content_summary 已废弃，请用 content） */
-  content: string
+  content: string;
   /** chunk 内容长度（字符数），由 content.length 推导 */
-  content_length: number
+  content_length: number;
   /** chunk token 数 */
-  tokens: number | null
+  tokens: number | null;
   /** chunk 在原文档中的顺序索引 */
-  chunk_order_index: number | null
+  chunk_order_index: number | null;
   /** LightRAG 内部文档 id（doc-<md5>） */
-  full_doc_id: string | null
+  full_doc_id: string | null;
   /** file_source 原始字符串（含 tstart=/tend= 时间锚点） */
-  file_path: string
+  file_path: string;
   /** 视频/音频时间轴起点（秒），来自 file_source tstart= 锚点 */
-  time_start: number | null
+  time_start: number | null;
   /** 视频/音频时间轴终点（秒），来自 file_source tend= 锚点 */
-  time_end: number | null
+  time_end: number | null;
   /** 文档页码 */
-  page_no: number | null
+  page_no: number | null;
   /** 字符位置（起） */
-  char_start: number | null
+  char_start: number | null;
   /** 字符位置（止） */
-  char_end: number | null
+  char_end: number | null;
   /** file_source 中的 chunk 索引 */
-  chunk_index: number | null
+  chunk_index: number | null;
   /** 创建时间（unix 秒） */
-  create_time: number | null
+  create_time: number | null;
   /** 更新时间（unix 秒） */
-  update_time: number | null
+  update_time: number | null;
 
   // ── 以下为兼容旧字段，新代码不再使用 ──
   /** @deprecated 请用 chunk_id */
-  id?: string
+  id?: string;
   /** @deprecated 请用 content */
-  content_summary?: string
+  content_summary?: string;
 }
 
 // ─── Manual Datasource Types ────────────────────────────
@@ -602,7 +609,7 @@ export interface ManualDocItem {
   llmWikiCompileStatus?: string;
   /** [jonex] LLM-Wiki 编译失败原因（顶层字段 llm_wiki_compile_error）。 */
   llmWikiCompileError?: string;
-  /** [jonex] 管线类型 lightrag/openkb（后端 extra_metadata.kb_type，upload/reparse 时写入）。
+  /** [jonex] 管线类型 lightrag/openkb/jonex_wiki（后端 extra_metadata.kb_type，upload/reparse 时写入）。
       详情页用它随 doc 详情同一次请求到达，消除独立 KB 详情请求慢/失败的竞态窗口
       （「编译结果 tab 首次显示空本体、刷新后才切 Wiki」问题的根因）。 */
   kbType?: KnowledgeBaseType;
@@ -710,6 +717,17 @@ export interface CompiledSchemaAttribute {
   source_attribute_id?: string | null;
 }
 
+/** [jonex] P1：TBox 构建技能声明（refine 先于 constrain；skill 带 builtin:/catalog: 前缀） */
+export interface ExtractionSkillRef {
+  skill: string;
+  description?: string;
+}
+
+export interface ExtractionSkillsConfig {
+  refine?: ExtractionSkillRef[];
+  constrain?: ExtractionSkillRef[];
+}
+
 export interface CompiledSchemaEntityType {
   name: string;
   display_name: string;
@@ -719,6 +737,8 @@ export interface CompiledSchemaEntityType {
   aliases: string[];
   source_object_id?: string | null;
   attributes: CompiledSchemaAttribute[];
+  /** [jonex] P1：一期只读展示，不做编辑器 */
+  extraction_skills?: ExtractionSkillsConfig | null;
 }
 
 export interface CompiledSchemaRelationType {
@@ -731,6 +751,10 @@ export interface CompiledSchemaRelationType {
   target: string;
   source_relation_id?: string | null;
   cardinality: CompiledRelationCardinality;
+  /** [jonex] P1：逆关系名（纯声明）；端点多态类型（空数组 = 回落单值） */
+  inverse_of?: string | null;
+  source_types?: string[];
+  target_types?: string[];
 }
 
 export interface CompiledSchema {
@@ -832,6 +856,10 @@ export interface OntologyRelationDef {
   description: string;
   relationType: OntologyRelationType;
   status: OntologyDefStatus;
+  /** [jonex] P1：compiled schema 新字段的编辑往返载体（display name 口径，保存时反查 code） */
+  inverseOf?: string;
+  sourceTypes?: string[];
+  targetTypes?: string[];
 }
 
 export type CompileScope = 'single' | 'whole';
@@ -998,6 +1026,7 @@ export interface WikiGraphData {
 
 /** Wiki 页面内容（GET parse-results/wiki-page） */
 export interface WikiPageContent {
+  /** canonical 引擎路径（jonex_wiki 阅读界面用它做页面身份） */
   path: string;
   section: 'summaries' | 'concepts' | 'entities';
   name: string;
@@ -1006,6 +1035,33 @@ export interface WikiPageContent {
   description: string;
   sources: string[];
   content: string;
+  // ── [jonex] 阅读侧扩展字段（jonex_wiki 适配器返回；openkb 不返回，故全可选）──
+  enginePath?: string;
+  stem?: string;
+  category?: string;
+  aliases?: string[];
+  tags?: string[];
+  whyVisit?: string;
+  limitations?: string[];
+  /** 页间链接的 canonical 目标路径（渲染「相关页面」并做有效性校验） */
+  links?: string[];
+  related?: string[];
+  /** 页间链接明细（kind + why_visit）：图谱边标签与悬停说明用 */
+  linkMeta?: WikiLinkMeta[];
+  /** 表格页列名（列式视图·时间轴矩阵的表头来源之一） */
+  fields?: string[];
+  /** 引擎 scope（表格页含 sheet / 行列范围：矩阵用它把表头对齐到日期） */
+  scope?: Record<string, unknown>;
+  /** 页面级 References：该页证据指向的源文档 */
+  references?: WikiPageReference[];
+}
+
+/** 页间链接明细（引擎 frontmatter links 的 kind / why_visit） */
+export interface WikiLinkMeta {
+  path: string;
+  /** navigation / evidence / …（引擎给的链接类型） */
+  kind: string;
+  whyVisit: string;
 }
 
 /** Wiki 页面树条目（后端已结构化，含显示名——不是裸 stem） */
@@ -1024,16 +1080,162 @@ export interface WikiContents {
   documentId: string;
 }
 
+/**
+ * LLM-Wiki 全库页面计数：WikiContents 三个数组的长度。
+ *
+ * 两个页头（知识库详情页、知识库设置页）的「Wiki 主题 / Wiki 概念」标签、
+ * 以及编译资产面板的 tab 计数，用的都是这一份——各自去数一遍会数出两个时刻的快照。
+ */
+export interface WikiStats {
+  /** summaries/ 的页数（摘要页，不入图谱） */
+  summaries: number;
+  /** concepts/ 的页数 → 页头「Wiki 概念」 */
+  concepts: number;
+  /** entities/ 的页数 → 页头「Wiki 主题」 */
+  entities: number;
+}
+
+// ── [jonex] Wiki 阅读界面（jonex_wiki：目录 → 文章 → 溯源 References）──
+//
+// 与旧「Wiki 页面」只读投影的区别：页面身份改用**引擎 canonical 路径**
+// （canteen/lunch-dishes.md），目录由 LLM 起草/调整（后端 wiki_outlines），
+// References 直接指向源文档（claims.jsonl 的 document_id）。
+
+/** 阅读侧页面条目（后端 pages[] 每项） */
+export interface WikiReaderPage {
+  /** canonical 引擎路径：页面身份（目录 / 链接 / 阅读都用它） */
+  path: string;
+  title: string;
+  /** source=来源摘要 table=表格数据 concept=概念页 */
+  type: string;
+  /** 首个路径段（阅读分类提示） */
+  category: string;
+  description: string;
+  aliases: string[];
+  tags: string[];
+  whyVisit: string;
+  /** 页面级 References 的源文档数 */
+  referenceCount: number;
+  /** 表格页列名（列式视图用；非表格页为空数组） */
+  fields?: string[];
+  /** 引擎 scope（表格页含 sheet / 行列范围） */
+  scope?: Record<string, unknown>;
+}
+
+/** 目录条目 = 一个引擎页面 */
+export interface WikiOutlineEntry {
+  path: string;
+  title: string;
+  role: string;
+  category: string;
+  note: string;
+  order: number;
+}
+
+/** 目录节点（主题/小节；unclassified = 未归类兜底分组） */
+export interface WikiOutlineNode {
+  id: string;
+  kind: 'topic' | 'section' | 'unclassified';
+  title: string;
+  description: string;
+  order: number;
+  entries: WikiOutlineEntry[];
+  children: WikiOutlineNode[];
+}
+
+/** LLM 起草/调整后的阅读目录 */
+export interface WikiOutline {
+  version: number;
+  overview: string;
+  topics: WikiOutlineNode[];
+  pageCount: number;
+  coveredCount: number;
+}
+
+/** 目录视图（GET /knowledge-base/wiki/outline） */
+export interface WikiOutlineView {
+  knowledgeBaseId: string;
+  pageCount: number;
+  pages: WikiReaderPage[];
+  /** 未生成过目录时为 null（前端引导「生成目录」） */
+  outline: WikiOutline | null;
+  outlineVersion: number;
+  source: string | null;
+  model: string | null;
+  instruction: string | null;
+  generatedAt: string | null;
+  /** 生成目录时的页面清单指纹；与当前不一致即 stale */
+  catalogFingerprint: string;
+  /** 编译产物已变化 → 目录可能过期 */
+  stale: boolean;
+  /** 主题地图的边（后端由目录 + 页面分类/标签派生；无目录时为空） */
+  topicEdges?: WikiTopicEdge[];
+}
+
+/** 主题地图的边：两个主题共享分类/标签 → 连一条边 */
+export interface WikiTopicEdge {
+  source: string;
+  target: string;
+  weight: number;
+  reasons: string[];
+}
+
+/** 「链入本页」条目（反向链接） */
+export interface WikiBacklink {
+  path: string;
+  title: string;
+  /** link=frontmatter 页间链接 mention=正文提及 link+mention=两者都有 */
+  kind: string;
+}
+
+export interface WikiBacklinkResult {
+  path: string;
+  total: number;
+  mentionCount: number;
+  items: WikiBacklink[];
+}
+
+/** claim 级溯源明细（列式视图·溯源审计） */
+export interface WikiClaim {
+  claimId: string;
+  pagePath: string;
+  pageTitle: string;
+  text: string;
+  excerpt: string;
+  chunkId: string;
+  startChar: number | null;
+  endChar: number | null;
+  supportStatus: string;
+  documents: { documentId: string; fileName: string; mimeType: string }[];
+}
+
+export interface WikiClaimResult {
+  total: number;
+  items: WikiClaim[];
+}
+
+/** 页面级 References 条目（溯源到源文档） */
+export interface WikiPageReference {
+  documentId: string;
+  /** 平台库里的源文档名（引擎只有 document_id） */
+  fileName: string;
+  mimeType: string;
+  excerpts: string[];
+  claimCount: number;
+  startChar: number | null;
+  endChar: number | null;
+}
+
 // ── [jonex] LLM-Wiki Schema 编译设置（方案 llmwiki-schema-settings-execution-plan §4）──
 
 export interface LlmWikiConceptTypeItem {
-  code: string;        // 小写 ASCII（[a-z0-9 _-]）
+  code: string; // 小写 ASCII（[a-z0-9 _-]）
   name: string;
   description?: string;
 }
 
 export interface LlmWikiEntityTypeItem {
-  code: string;        // 小写 ASCII（[a-z0-9 _-]），前端必须校验
+  code: string; // 小写 ASCII（[a-z0-9 _-]），前端必须校验
   name: string;
   description?: string;
   examples?: string[];

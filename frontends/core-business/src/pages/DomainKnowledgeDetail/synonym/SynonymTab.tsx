@@ -16,24 +16,6 @@ import { createSynonym, updateSynonym, deleteSynonym, importSynonyms, exportAllS
 import SynonymFormModal from './SynonymFormModal';
 import SynonymImportModal from './SynonymImportModal';
 
-const cardStyle: React.CSSProperties = {
-  background: '#fff',
-  borderRadius: 14,
-  border: '1px solid #eef2f6',
-  padding: 24,
-  boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
-};
-
-const h3Style: React.CSSProperties = {
-  margin: 0,
-  fontSize: 15,
-  fontWeight: 600,
-  color: '#0b2b5c',
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-};
-
 /** 生成 CSV 单元格（含逗号/引号/换行时用双引号包裹并转义）。 */
 function csvCell(value: string): string {
   if (/[",\n\r，]/.test(value)) {
@@ -172,10 +154,10 @@ export default function SynonymTab({ kbId, canWrite = false }: Props) {
   ];
 
   return (
-    <div className="config-section" style={cardStyle}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-        <h3 style={h3Style}>
-          <SwapOutlined style={{ color: '#3b82f6' }} /> {t('synonym.title')}
+    <div>
+      <div className="yx-kb-flex-header">
+        <h3 className="yx-kb-section-title">
+          <SwapOutlined className="yx-kb-icon-blue" /> {t('synonym.title')}
         </h3>
         <Space>
           <Button
@@ -200,7 +182,6 @@ export default function SynonymTab({ kbId, canWrite = false }: Props) {
           </Button>
         </Space>
       </div>
-      <p style={{ fontSize: 13, color: '#94a3b8', marginBottom: 16 }}>{t('synonym.description')}</p>
 
       {error && (
         <Alert

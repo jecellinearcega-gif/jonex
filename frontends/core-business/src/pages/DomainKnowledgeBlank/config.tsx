@@ -10,6 +10,8 @@ import {
   BuildOutlined,
   DeleteOutlined,
   FolderOutlined,
+  PauseOutlined,
+  CaretRightOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
@@ -111,7 +113,14 @@ export const statusOptions = (t: TFunction) => [
   },
 ];
 
-const actionItems = (record: ManualDocItem, handlers: ActionHandlers, t: TFunction, canWrite: boolean): MenuProps['items'] => [
+const actionItems = (record: ManualDocItem, handlers: ActionHandlers, t: TFunction, canWrite: boolean, paused?: boolean, onToggleCompilation?: () => void, controlDisabled?: boolean): MenuProps['items'] => [
+  ...(onToggleCompilation ? [{
+    key: 'compilation-control',
+    icon: paused ? <CaretRightOutlined /> : <PauseOutlined />,
+    label: t(`domainKnowledge.wikiCompilation.${paused ? 'resume' : 'pause'}`),
+    disabled: !canWrite || controlDisabled,
+    onClick: onToggleCompilation,
+  }] : []),
   {
     key: 'view',
     icon: <EyeOutlined />,
@@ -171,6 +180,9 @@ export const createColumns = (
   accessMethods?: AccessMethodItem[],
   kbType?: string,
   canWrite = false,
+  compilationPaused = false,
+  onToggleCompilation?: () => void,
+  controlDisabled = false,
 ): ColumnsType<ManualDocItem> => {
   // 构建 accessType → name 映射
   const typeNameMap = new Map<string, string>(
@@ -261,6 +273,7 @@ export const createColumns = (
           docStatus={record.docStatus}
           ontologyStatus={record.ontologyStatus}
           kbType={kbType}
+          compilationPaused={compilationPaused}
           llmWikiCompileStatus={record.llmWikiCompileStatus}
           llmWikiCompileError={record.llmWikiCompileError}
           errorMessage={record.errorMessage}
@@ -274,7 +287,7 @@ export const createColumns = (
       width: 80,
       align: 'center',
       render: (_: unknown, record: ManualDocItem) => (
-        <Dropdown menu={{ items: actionItems(record, handlers, t, canWrite) }} trigger={['click']} placement="bottomRight">
+        <Dropdown menu={{ items: actionItems(record, handlers, t, canWrite, compilationPaused, onToggleCompilation, controlDisabled) }} trigger={['click']} placement="bottomRight">
           <Button type="text" icon={<MoreOutlined />} size="small" />
         </Dropdown>
       ),

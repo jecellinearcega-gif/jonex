@@ -9,6 +9,7 @@ import {
   SearchOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 
 export default function DomainKnowledgeEngine() {
   const { t } = useTranslation();
@@ -118,45 +119,48 @@ export default function DomainKnowledgeEngine() {
   ];
 
   return (
-    <div>
-      <div className="yx-page-title">
-        <h1>{t('domainKnowledge.engine.config')}</h1>
-        <p style={{ color: '#64748b', margin: '4px 0 0', fontSize: 14 }}>{t('domainKnowledge.engine.configDesc')}</p>
-      </div>
+    <>
+      <PageHeader title={t('domainKnowledge.engine.config')} style={{ marginBottom: 4 }} />
+      <p style={{ color: '#64748b', margin: '0 0 16px', fontSize: 14 }}>{t('domainKnowledge.engine.configDesc')}</p>
+      <PageContent>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 20 }}>
+          {engines.map((engine) => (
+            <Card
+              key={engine.key}
+              style={{ borderRadius: 12, border: '1px solid #e2e8f0' }}
+              bodyStyle={{ padding: 24 }}
+            >
+              <h3 style={{ margin: '0 0 16px', fontSize: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+                {engine.icon} {engine.title}
+                <Tag color="success" style={{ marginLeft: 'auto', fontSize: 11 }}>
+                  {engine.status}
+                </Tag>
+              </h3>
+              {engine.fields.map((f) => (
+                <div className="yx-form-row" key={f.label}>
+                  <label>{f.label}</label>
+                  {f.type === 'select' ? (
+                    <Select
+                      defaultValue={f.value}
+                      style={{ width: '100%' }}
+                      options={f.options!.map((o) => ({ value: o, label: o }))}
+                    />
+                  ) : (
+                    <Input defaultValue={f.value} />
+                  )}
+                </div>
+              ))}
+            </Card>
+          ))}
+        </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 20 }}>
-        {engines.map((engine) => (
-          <Card key={engine.key} style={{ borderRadius: 12, border: '1px solid #e2e8f0' }} bodyStyle={{ padding: 24 }}>
-            <h3 style={{ margin: '0 0 16px', fontSize: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
-              {engine.icon} {engine.title}
-              <Tag color="success" style={{ marginLeft: 'auto', fontSize: 11 }}>
-                {engine.status}
-              </Tag>
-            </h3>
-            {engine.fields.map((f) => (
-              <div className="yx-form-row" key={f.label}>
-                <label>{f.label}</label>
-                {f.type === 'select' ? (
-                  <Select
-                    defaultValue={f.value}
-                    style={{ width: '100%' }}
-                    options={f.options!.map((o) => ({ value: o, label: o }))}
-                  />
-                ) : (
-                  <Input defaultValue={f.value} />
-                )}
-              </div>
-            ))}
-          </Card>
-        ))}
-      </div>
-
-      <div style={{ marginTop: 20, display: 'flex', gap: 12 }}>
-        <Button type="primary" icon={<SaveOutlined />}>
-          {t('common.saveConfig')}
-        </Button>
-        <Button icon={<ReloadOutlined />}>{t('common.restartEngine')}</Button>
-      </div>
-    </div>
+        <div style={{ marginTop: 20, display: 'flex', gap: 12 }}>
+          <Button type="primary" icon={<SaveOutlined />}>
+            {t('common.saveConfig')}
+          </Button>
+          <Button icon={<ReloadOutlined />}>{t('common.restartEngine')}</Button>
+        </div>
+      </PageContent>
+    </>
   );
 }

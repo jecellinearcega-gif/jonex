@@ -11,6 +11,18 @@ interface CreateEditModalProps {
   /** kb_type 仅在「创建」模式下回传；编辑模式不回传（类型创建后不可变） */
   onOk: (data: { name: string; description?: string; kb_type?: KnowledgeBaseType }) => void;
   onCancel: () => void;
+  /**
+   * [jonex] 本部署**可创建**的类型（后端 env `KB_ENABLED_TYPES`，见
+   * `GET /knowledge-base/kb-types`）。
+   *
+   * 只过滤**创建**时的选项；被禁类型的**存量库**照常可读可检索，不受影响。
+   * 未就绪或拉取失败传 `undefined` = 不过滤（fail-open）：真正的闸门在后端
+   * `create`（被禁类型会被拒并给出 `err.kb.kb_type_disabled`），所以这里
+   * 拿不到配置时**不该**把用户挡在「一个类型都建不了」的死路上。
+   */
+  kbTypes?: KnowledgeBaseType[];
+  /** 弹窗初始选中类型（后端给的首个可用类型）；缺省/不在可用集合内时回退到第一个选项 */
+  defaultKbType?: KnowledgeBaseType;
 }
 
 /** 知识库类型选项（值与后端 VALID_KB_TYPES 一致） */
@@ -25,28 +37,49 @@ const KB_TYPE_OPTIONS: { value: KnowledgeBaseType; labelKey: string; descKey: st
     labelKey: 'domainKnowledge.kbTypeOpenkb',
     descKey: 'domainKnowledge.kbTypeOpenkbDesc',
   },
+  {
+    value: 'jonex_wiki',
+    labelKey: 'domainKnowledge.kbTypeJonexWiki',
+    descKey: 'domainKnowledge.kbTypeJonexWikiDesc',
+  },
 ];
 
 const KB_TYPE_TAG_COLOR: Record<KnowledgeBaseType, string> = {
   lightrag: 'blue',
   openkb: 'purple',
+  jonex_wiki: 'magenta',
 };
 
-export default function CreateEditModal({ open, editingKb, submitting, onOk, onCancel }: CreateEditModalProps) {
+export default function CreateEditModal({ open, editingKb, submitting, onOk, onCancel, kbTypes, defaultKbType }: CreateEditModalProps) {
   const { t } = useTranslation();
   const [form] = Form.useForm();
   const isEdit = !!editingKb;
+
+  // [jonex] KB_ENABLED_TYPES 过滤：**只作用于创建时的单选组**。
+  // 编辑态那个只读 Tag 仍从**未过滤**的 KB_TYPE_OPTIONS 查（见下面 editingOption）——
+  // 否则被禁类型的老库会连自己的类型都显示不出来。
+  const filteredOptions = kbTypes?.length
+    ? KB_TYPE_OPTIONS.filter((o) => kbTypes.includes(o.value))
+    : KB_TYPE_OPTIONS;
+  // 后端只会回 VALID_KB_TYPES 里的值，理论上过滤结果不为空；真为空（前后端版本错配）
+  // 就退回不过滤 —— 渲染一个**没有任何选项**的弹窗比多显示一个选项糟得多。
+  const availableOptions = filteredOptions.length ? filteredOptions : KB_TYPE_OPTIONS;
+  // 默认值必须跟着可用集合走：写死 'lightrag' 会在它被禁时给出一个「一提交就被拒」的初值
+  const defaultType: KnowledgeBaseType =
+    defaultKbType && availableOptions.some((o) => o.value === defaultKbType)
+      ? defaultKbType
+      : availableOptions[0].value;
 
   useEffect(() => {
     if (open) {
       form.setFieldsValue({
         name: editingKb?.name ?? '',
         description: editingKb?.description ?? '',
-        // 编辑模式回填以便只读展示；创建模式默认标准检索型
-        kb_type: editingKb?.kbType ?? 'lightrag',
+        // 编辑模式回填以便只读展示；创建模式用后端给的默认可用类型
+        kb_type: editingKb?.kbType ?? defaultType,
       });
     }
-  }, [open, editingKb, form]);
+  }, [open, editingKb, form, defaultType]);
 
   const handleOk = async () => {
     try {
@@ -63,6 +96,8 @@ export default function CreateEditModal({ open, editingKb, submitting, onOk, onC
   };
 
   const editingKbType: KnowledgeBaseType = editingKb?.kbType ?? 'lightrag';
+  // ⚠ 故意查**未过滤**的 KB_TYPE_OPTIONS：老库的类型可能已在本部署被禁，
+  // 但它自己得显示得出来（本弹窗在编辑态不提供改类型的入口，只做只读展示）。
   const editingOption = KB_TYPE_OPTIONS.find((o) => o.value === editingKbType) ?? KB_TYPE_OPTIONS[0];
 
   return (
@@ -131,7 +166,7 @@ export default function CreateEditModal({ open, editingKb, submitting, onOk, onC
           ) : (
             <Radio.Group style={{ width: '100%' }}>
               <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                {KB_TYPE_OPTIONS.map((opt) => (
+                {availableOptions.map((opt) => (
                   <Radio
                     key={opt.value}
                     value={opt.value}

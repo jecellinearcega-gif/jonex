@@ -57,7 +57,7 @@ export default function ResultTab({
         ))}
       </div>
 
-      <div className="config-section yx-kb-section-card-mb">
+      <div className="yx-kb-section-card-mb">
         <h3 className="yx-kb-section-title-mb">
           <ShareAltOutlined className="yx-kb-icon-blue" /> {t('domainKnowledge.ontologyInstances')}{' '}
           <span className="yx-kb-sub-text">{t('domainKnowledge.ontologyInstanceDesc')}</span>
@@ -129,7 +129,7 @@ export default function ResultTab({
         />
       </div>
 
-      <div className="config-section yx-kb-section-card-mb">
+      <div className="yx-kb-section-card-mb">
         <h3 className="yx-kb-section-title-mb">
           <ShareAltOutlined className="yx-kb-icon-purple" /> {t('domainKnowledge.relationInstances')}{' '}
           <span className="yx-kb-sub-text">{t('domainKnowledge.relationInstanceDesc')}</span>
@@ -251,7 +251,7 @@ export default function ResultTab({
         />
       </div>
 
-      <div className="config-section yx-kb-section-card-mb">
+      <div className="yx-kb-section-card-mb">
         <div className="yx-kb-flex-between">
           <h3 className="yx-kb-section-title">
             <ShareAltOutlined className="yx-kb-icon-purple" /> {t('domainKnowledge.ontologyGraph')}

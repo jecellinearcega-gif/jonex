@@ -1,12 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useKbPermission } from '@/hooks/useKbPermission';
 import { useNavigate } from 'react-router-dom';
-import { Input, Button, Table, Space, Modal, Dropdown, message, Menu, Badge } from 'antd';
+import { Button, Space, Modal, Dropdown, message, Menu, Badge } from 'antd';
 import {
-  SearchOutlined,
   PlusOutlined,
   ReloadOutlined,
-  SyncOutlined,
   FileOutlined,
   FolderOutlined,
   MoreOutlined,
@@ -16,6 +14,8 @@ import {
   CaretRightOutlined,
   DownloadOutlined,
 } from '@ant-design/icons';
+import { CommonTable } from '@jonex/shared-lib';
+import type { CommonTableRef, TableQueryParams } from '@jonex/shared-lib';
 import { useTranslation } from 'react-i18next';
 import { createColumns } from './config';
 import {
@@ -35,16 +35,18 @@ import { batchDownloadDocuments } from '@/utils/batchDocumentDownload';
 import { listAccessMethods } from '@/api/dataSource';
 import type { ManualDocItem, FolderItem } from '@/types/domainKnowledge';
 import type { AccessMethodItem } from '@/types/dataSource';
-import type { DocPhase } from '@/utils/docPhase';
+import { FILTER_PHASES, PHASE_DISPLAY, type DocPhase } from '@/utils/docPhase';
 import { useDocumentViewer } from '@/components/DocumentViewer';
-import DocumentStatusFilter from '@/components/DocumentStatusFilter';
 import UploadModal from './UploadModal';
 import FolderNameModal from './FolderNameModal';
 import MoveDocModal from './MoveDocModal';
 import TagModal from './TagModal';
+import { useWikiCompilation } from '@/hooks/useWikiCompilation';
+import WikiCompilationControl from '@/components/WikiCompilationControl';
 import './index.scss';
 
-const PAGE_SIZE = 10;
+// 用 type 而非 interface：需要隐式索引签名才能满足 CommonTable 的 F extends Record<string, unknown>
+type DocQuery = { keyword?: string; phase?: DocPhase[] };
 
 interface DocumentLibraryProps {
   kbId: string;
@@ -56,6 +58,11 @@ interface DocumentLibraryProps {
   quotaError: boolean;
   /** 刷新配额数据：父级 useQuota.reload，列表刷新时同步调用（统计栏与上传按钮共用一份） */
   onRefreshQuota: () => void;
+  /**
+   * 刷新顶部文档统计栏（文档总数/各阶段计数）与页头三个标签：文档增删、点「刷新」后由本组件调用，
+   * 避免统计栏、页头与列表三者脱节。
+   */
+  onRefreshStats?: () => void;
 }
 
 export default function DocumentLibrary({
@@ -64,28 +71,20 @@ export default function DocumentLibrary({
   docReached,
   quotaError,
   onRefreshQuota,
+  onRefreshStats,
 }: DocumentLibraryProps) {
   const { canWrite } = useKbPermission(kbId);
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [selectedKeys, setSelectedKeys] = useState<string[]>(['all']);
   const [folders, setFolders] = useState<FolderItem[]>([]);
-  const [data, setData] = useState<ManualDocItem[]>([]);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(PAGE_SIZE);
-  const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [folderModalOpen, setFolderModalOpen] = useState(false);
   const [folderModalValue, setFolderModalValue] = useState('');
   const [folderModalLoading, setFolderModalLoading] = useState(false);
   const [folderModalMode, setFolderModalMode] = useState<'create' | 'rename'>('create');
   const [editingFolderId, setEditingFolderId] = useState('');
-  const [reloadFlag, setReloadFlag] = useState(0);
   const [foldersCollapsed, setFoldersCollapsed] = useState(false);
-  const [keyword, setKeyword] = useState('');
-  const [inputValue, setInputValue] = useState('');
-  const [statusFilter, setStatusFilter] = useState<DocPhase[]>([]);
   const [tagModalOpen, setTagModalOpen] = useState(false);
   const [tagDoc, setTagDoc] = useState<ManualDocItem | null>(null);
   // 受控行选中（批量移动按钮可用性 + 移动目标文档集）
@@ -100,9 +99,35 @@ export default function DocumentLibrary({
   const [downloadProgress, setDownloadProgress] = useState(0);
   // 拖拽迁移状态（表格行 → 侧栏目录）：当前拖拽的文档 id + 悬停的 drop 目标（'all' = 根目录 / folder id）
   const [draggingDocId, setDraggingDocId] = useState<string | null>(null);
+  // 拖拽源文档所在目录。拖回原目录时直接提示，不发请求——列表数据已由 CommonTable 持有，
+  // 这里记在拖拽开始时，比放着整份列表再去 find 稳。
+  const [draggingDocFolderId, setDraggingDocFolderId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [accessMethods, setAccessMethods] = useState<AccessMethodItem[]>([]);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const tableRef = useRef<CommonTableRef>(null);
+  const compilation = useWikiCompilation(kbId, kbType === 'jonex_wiki');
+  useEffect(() => {
+    if (!compilation.state) return;
+    tableRef.current?.refresh();
+    onRefreshStats?.();
+  }, [compilation.state]);
+  // 切换目录要显式通知 CommonTable 重取（见下方 effect），首次挂载除外
+  const folderEffectMounted = useRef(false);
+  // 表体高度：antd 的固定表头只认具体像素。用 calc(100vh - N) 会在 hosted（iframe 内
+  // 100vh 是 iframe 高度）下比 standalone 多算一个顶栏的高度，所以改成量宿主容器。
+  // 取容器全高而非减去表头/分页：y 只是 max-height 上限，实际高度由 CSS 的 flex 分配决定。
+  const tableHostRef = useRef<HTMLDivElement>(null);
+  const [tableBodyHeight, setTableBodyHeight] = useState(400);
+
+  useEffect(() => {
+    const host = tableHostRef.current;
+    if (!host) return;
+    const sync = () => setTableBodyHeight(Math.max(host.clientHeight, 200));
+    sync();
+    const observer = new ResizeObserver(sync);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
 
   const fetchFolders = useCallback(() => {
     if (!kbId) return;
@@ -172,61 +197,56 @@ export default function DocumentLibrary({
     });
   };
 
-  const fetchList = useCallback(async () => {
-    setLoading(true);
-    try {
+  // 数据变更（上传/删除/重解析/移动等）与工具栏「刷新」按钮统一走这里：列表 + 配额（used 随之变化）
+  // + 顶部统计栏与页头标签。统计刷新原先只挂在上传/删除两个调用点上，
+  // 刷新按钮走的是本函数、漏了这条链路，文档数会停在旧值。
+  const reload = useCallback(
+    (options?: { resetPage?: boolean }) => {
+      tableRef.current?.refresh(options);
+      onRefreshQuota();
+      onRefreshStats?.();
+    },
+    [onRefreshQuota, onRefreshStats],
+  );
+
+  const fetchDocs = useCallback(
+    async (params: TableQueryParams<DocQuery>) => {
       const currentKey = selectedKeys[0];
-      const result = await getManualDocList({
+      // 空值剔除由 CommonTable 的 buildQueryParams 负责，不必再写 || undefined
+      const res = await getManualDocList({
         knowledgeBaseId: kbId,
-        page,
-        pageSize,
-        keyword: keyword || undefined,
-        phase: statusFilter.length ? statusFilter : undefined,
+        page: params.page,
+        pageSize: params.pageSize,
+        keyword: params.keyword,
+        phase: params.phase,
         folder_id: currentKey !== 'all' ? String(currentKey) : undefined,
       });
-      setData(result.list);
-      setTotal(result.pagination.total);
-    } catch (err: any) {
-      message.error(err?.message || t('common.docListLoadFailed'));
-    } finally {
-      setLoading(false);
-    }
-  }, [kbId, page, pageSize, keyword, selectedKeys, statusFilter]);
+      return { list: res.list, total: res.pagination.total };
+    },
+    [kbId, selectedKeys],
+  );
 
-  useEffect(() => {
-    fetchList();
-  }, [fetchList, reloadFlag]);
-
-  // 数据变更（上传/删除/重解析/移动等）触发列表刷新，同步刷新配额数据（used 随之变化）
-  useEffect(() => {
-    if (reloadFlag > 0) onRefreshQuota();
-  }, [reloadFlag, onRefreshQuota]);
-
-  // 关键词、文件夹或状态变化时，重置页码并清空行选中（避免批量移动作用于当前数据集之外的旧选中）
-  useEffect(() => {
-    setPage(1);
-    setSelectedRowKeys([]);
-  }, [keyword, selectedKeys, statusFilter]);
-
-  // 卸载时清理防抖定时器
-  useEffect(() => {
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
+  // 翻页或改筛选后清空行选中（避免批量移动/下载作用于当前数据集之外的旧选中）。
+  // 返回同一引用，让本来就空的时候 React 直接跳过重渲染。
+  const handleQueryChange = useCallback(() => {
+    setSelectedRowKeys((prev) => (prev.length ? [] : prev));
   }, []);
 
-  const handleKeywordChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value;
-    setInputValue(val);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      setKeyword(val);
-    }, 300);
-  };
+  // selectedKeys 是页面自己的查询条件，CommonTable 看不见它变了，必须显式通知。
+  // 首次挂载跳过——组件自己会取一次。
+  useEffect(() => {
+    if (!folderEffectMounted.current) {
+      folderEffectMounted.current = true;
+      return;
+    }
+    setSelectedRowKeys([]);
+    tableRef.current?.refresh({ resetPage: true });
+  }, [selectedKeys]);
 
   const handleUploadSuccess = () => {
-    setPage(1);
-    setReloadFlag((f) => f + 1);
+    // 新增文档后：刷新列表 + 文件夹计数 + 统计（统计刷新在 reload 里，见上）
+    fetchFolders();
+    reload({ resetPage: true });
   };
 
   const { openDocument, viewer } = useDocumentViewer();
@@ -250,27 +270,30 @@ export default function DocumentLibrary({
     setTagModalOpen(true);
   };
 
-  const handleReparse = useCallback(async (record: ManualDocItem) => {
-    try {
-      await reparseDocument(record.id);
-      message.success(t('common.retryTriggered'));
-      setReloadFlag((f) => f + 1);
-    } catch (err: any) {
-      message.error(err?.message || t('common.retryFailed'));
-    }
-  }, []);
+  const handleReparse = useCallback(
+    async (record: ManualDocItem) => {
+      try {
+        await reparseDocument(record.id);
+        message.success(t('common.retryTriggered'));
+        reload();
+      } catch (err: any) {
+        message.error(err?.message || t('common.retryFailed'));
+      }
+    },
+    [reload],
+  );
 
   const handleRecompile = useCallback(
     async (record: ManualDocItem) => {
       try {
         await retryDocumentOntology(kbId, record.id);
         message.success(t('common.recompileTriggered'));
-        setReloadFlag((f) => f + 1);
+        reload();
       } catch (err: any) {
         message.error(err?.message || t('common.recompileFailed'));
       }
     },
-    [kbId],
+    [kbId, reload],
   );
 
   const handleDelete = useCallback(
@@ -284,14 +307,16 @@ export default function DocumentLibrary({
           try {
             await deleteManualDocument(kbId, record.id);
             message.success(t('common.deleteSuccess'));
-            setReloadFlag((f) => f + 1);
+            // 删除后：刷新列表 + 文件夹计数 + 统计（统计刷新在 reload 里，见上）
+            fetchFolders();
+            reload();
           } catch (err: any) {
             message.error(err?.message || t('common.deleteFailed'));
           }
         },
       });
     },
-    [kbId, t],
+    [kbId, t, fetchFolders, reload],
   );
 
   const handleMove = useCallback((record: ManualDocItem) => {
@@ -299,12 +324,7 @@ export default function DocumentLibrary({
   }, []);
 
   const handleMoveOk = async (folderId: string | null) => {
-    const docIds =
-      moveModal.mode === 'batch'
-        ? selectedRowKeys.map(String)
-        : moveModal.doc
-          ? [moveModal.doc.id]
-          : [];
+    const docIds = moveModal.mode === 'batch' ? selectedRowKeys.map(String) : moveModal.doc ? [moveModal.doc.id] : [];
     if (!docIds.length) return;
     setMoveLoading(true);
     try {
@@ -314,7 +334,7 @@ export default function DocumentLibrary({
       setMoveModal({ open: false, mode: 'single' });
       setSelectedRowKeys([]);
       fetchFolders();
-      setReloadFlag((f) => f + 1);
+      reload();
     } catch (err: any) {
       // 直接显示接口报错信息（request 层 toApiError 已提取后端 message）
       message.error(err?.message);
@@ -350,12 +370,14 @@ export default function DocumentLibrary({
     (record: ManualDocItem) => (e: React.DragEvent<HTMLElement>) => {
       e.dataTransfer.effectAllowed = 'move';
       setDraggingDocId(record.id);
+      setDraggingDocFolderId(record.folder_id ?? null);
     },
     [],
   );
 
   const handleRowDragEnd = useCallback(() => {
     setDraggingDocId(null);
+    setDraggingDocFolderId(null);
     setDropTargetId(null);
   }, []);
 
@@ -366,15 +388,16 @@ export default function DocumentLibrary({
         await batchMoveDocuments(kbId, [draggingDocId], targetFolderId);
         message.success(t('common.moveSuccess'));
         fetchFolders();
-        setReloadFlag((f) => f + 1);
+        reload();
       } catch (err: any) {
         message.error(err?.message);
       } finally {
         setDraggingDocId(null);
+        setDraggingDocFolderId(null);
         setDropTargetId(null);
       }
     },
-    [draggingDocId, kbId, t, fetchFolders],
+    [draggingDocId, kbId, t, fetchFolders, reload],
   );
 
   const handleFolderDrop = useCallback(
@@ -383,16 +406,14 @@ export default function DocumentLibrary({
       e.stopPropagation();
       if (!draggingDocId) return;
       setDropTargetId(null);
-      const doc = data.find((d) => d.id === draggingDocId);
-      if (!doc) return;
       // 拖到文档当前所在目录（含同为根目录）→ 不发请求，提示
-      if ((doc.folder_id ?? null) === targetFolderId) {
+      if (draggingDocFolderId === targetFolderId) {
         message.info(t('common.moveInCurrentFolder'));
         return;
       }
       handleDragMove(targetFolderId);
     },
-    [draggingDocId, data, t, handleDragMove],
+    [draggingDocId, draggingDocFolderId, t, handleDragMove],
   );
 
   const handleDropTargetDragOver = useCallback(
@@ -428,6 +449,9 @@ export default function DocumentLibrary({
     accessMethods,
     kbType,
     canWrite,
+    compilation.state?.paused,
+    kbType === 'jonex_wiki' ? () => void compilation.toggle() : undefined,
+    !compilation.canToggle,
   );
 
   const sidebarContent = (
@@ -501,7 +525,15 @@ export default function DocumentLibrary({
                     onDragLeave={handleDropTargetDragLeave(f.id)}
                     onDrop={handleFolderDrop(f.id)}
                   >
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>
+                    <span
+                      style={{
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        flex: 1,
+                        minWidth: 0,
+                      }}
+                    >
                       {f.name}
                     </span>
                     <Badge
@@ -560,97 +592,92 @@ export default function DocumentLibrary({
       <div className="doc-library-sidebar">{sidebarContent}</div>
 
       <div className="doc-library-main">
-        <div className="doc-library-toolbar">
-          <Space size={12}>
-            <Input
-              prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
-              placeholder={t('common.keywordSearch')}
-              style={{ width: 240 }}
-              value={inputValue}
-              onChange={handleKeywordChange}
-              allowClear
-              onClear={() => {
-                setInputValue('');
-                setKeyword('');
-              }}
-            />
-            <DocumentStatusFilter value={statusFilter} onChange={(p) => setStatusFilter(p)} />
-          </Space>
-          <Space size={12}>
-            <Button
-              icon={<ReloadOutlined />}
-              onClick={() => {
-                fetchList();
-                onRefreshQuota();
-              }}
-            >
-              {t('common.refresh')}
-            </Button>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              disabled={!canWrite || docReached}
-              title={
-                !canWrite
-                  ? t('domainSpace.noManagePermission')
-                  : quotaError
-                    ? t('common.quotaLoadFailed')
-                    : docReached
-                      ? t('common.quotaDocReached')
-                      : undefined
-              }
-              onClick={() => setModalOpen(true)}
-            >
-              {t('common.addDocument')}
-            </Button>
-            <Button icon={<SyncOutlined />} onClick={() => navigate(`/domain-knowledge/${kbId}/compile-results`)}>
-              {t('common.fullCompileResults')}
-            </Button>
-            <Button
-              icon={<FolderOutlined />}
-              disabled={selectedRowKeys.length === 0}
-              onClick={() => setMoveModal({ open: true, mode: 'batch' })}
-            >
-              {t('common.batchMove')}
-            </Button>
-            {isAdmin && (
-              <Button icon={<DownloadOutlined />} disabled={selectedRowKeys.length === 0} onClick={handleBatchDownload}>
-                {downloadProgress > 0
-                  ? t('common.downloading', { i: downloadProgress, n: selectedRowKeys.length })
-                  : t('common.batchDownload')}
-              </Button>
-            )}
-          </Space>
+        <div className="doc-library-table-host" ref={tableHostRef}>
+          <CommonTable<ManualDocItem, DocQuery>
+            ref={tableRef}
+            className="doc-library-table"
+            filters={[
+              {
+                key: 'keyword',
+                label: t('common.documentName'),
+                type: 'input',
+                placeholder: t('common.keywordSearch'),
+              },
+              {
+                key: 'phase',
+                label: t('common.documentStatus'),
+                type: 'select',
+                mode: 'multiple',
+                placeholder: t('common.all'),
+                maxTagCount: 3,
+                options: FILTER_PHASES.map((phase) => ({
+                  value: phase,
+                  label: t(PHASE_DISPLAY[phase].label),
+                })),
+              },
+            ]}
+            // 两个内置按钮都关掉：页面自己的「刷新」还要连带 onRefreshQuota，改用 toolbar 里那个；
+            // 「重置」在本页对用户没意义（筛选就两项，清空用控件自带的 allowClear 更快）
+            actions={{ refresh: false, reset: false }}
+            toolbar={
+              <>
+                {kbType === 'jonex_wiki' && <WikiCompilationControl kbId={kbId} control={compilation} compact />}
+                <Button icon={<ReloadOutlined />} onClick={() => reload()}>
+                  {t('common.refresh')}
+                </Button>
+                <Button
+                  type="primary"
+                  icon={<PlusOutlined />}
+                  disabled={!canWrite || docReached}
+                  title={
+                    !canWrite
+                      ? t('domainSpace.noManagePermission')
+                      : quotaError
+                        ? t('common.quotaLoadFailed')
+                        : docReached
+                          ? t('common.quotaDocReached')
+                          : undefined
+                  }
+                  onClick={() => setModalOpen(true)}
+                >
+                  {t('common.addDocument')}
+                </Button>
+                <Button
+                  icon={<FolderOutlined />}
+                  disabled={selectedRowKeys.length === 0}
+                  onClick={() => setMoveModal({ open: true, mode: 'batch' })}
+                >
+                  {t('common.batchMove')}
+                </Button>
+                {isAdmin && (
+                  <Button
+                    icon={<DownloadOutlined />}
+                    disabled={selectedRowKeys.length === 0}
+                    onClick={handleBatchDownload}
+                  >
+                    {downloadProgress > 0
+                      ? t('common.downloading', { i: downloadProgress, n: selectedRowKeys.length })
+                      : t('common.batchDownload')}
+                  </Button>
+                )}
+              </>
+            }
+            rowKey="id"
+            columns={columns}
+            size="middle"
+            scroll={{ x: 1100, y: tableBodyHeight }}
+            rowSelection={{ type: 'checkbox', selectedRowKeys, onChange: setSelectedRowKeys }}
+            onRow={(record) => ({
+              draggable: true,
+              onDragStart: handleRowDragStart(record),
+              onDragEnd: handleRowDragEnd,
+            })}
+            rowClassName={(record) => (draggingDocId === record.id ? 'doc-library-row--dragging' : '')}
+            onQueryChange={handleQueryChange}
+            fetch={fetchDocs}
+            onError={(err: any) => message.error(err?.message || t('common.docListLoadFailed'))}
+          />
         </div>
-
-        <Table
-          rowKey="id"
-          columns={columns}
-          dataSource={data}
-          loading={loading}
-          pagination={{
-            current: page,
-            pageSize,
-            total,
-            showSizeChanger: true,
-            showTotal: (total) => t('common.totalItems', { total }),
-            onChange: (p, ps) => {
-              setPage(p);
-              setPageSize(ps);
-              setSelectedRowKeys([]);
-            },
-          }}
-          onRow={(record) => ({
-            draggable: true,
-            onDragStart: handleRowDragStart(record),
-            onDragEnd: handleRowDragEnd,
-          })}
-          rowClassName={(record) => (draggingDocId === record.id ? 'doc-library-row--dragging' : '')}
-          rowSelection={{ type: 'checkbox', selectedRowKeys, onChange: setSelectedRowKeys }}
-          size="middle"
-          className="doc-library-table"
-          scroll={{ x: 1100 }}
-        />
       </div>
       <UploadModal
         kbId={kbId}

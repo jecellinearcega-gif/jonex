@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import { navigateCrossApp } from '@jonex/shell-sdk';
 import { Card, Typography, Button, Table, Divider, Modal, message, Flex, Input, Tag } from 'antd';
 import { SaveOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -76,9 +77,7 @@ export default function McpKeyTab({ service, visible }: McpKeyTabProps) {
     setAuthKeys([]);
     setSavedToolName('');
     // 访问授权列表
-    getData<{ items: AuthKeyItem[] }>(
-      request.get(`/platform/mcp-services/${service.id}/authorized-keys`),
-    )
+    getData<{ items: AuthKeyItem[] }>(request.get(`/platform/mcp-services/${service.id}/authorized-keys`))
       .then((data) => setAuthKeys(data?.items ?? []))
       .catch(() => setAuthKeys([]));
     // MCP 服务详情：发布状态 + 已保存的 Tool 配置（有值则回填表单，并记录比对基准）
@@ -194,9 +193,11 @@ export default function McpKeyTab({ service, visible }: McpKeyTabProps) {
   };
 
   const handleGoToKeyManagement = () => {
-    // 跳转到生态管理 MCP 服务目录，并定位到「服务访问 Key」视图（area=domain + view=access）
-    const target = window.top?.location ?? window.location;
-    target.href = '/apps/ecosystem-management/mcp-service-directory?area=domain&view=access';
+    // 跳转到生态管理 MCP 服务目录，并定位到「服务访问 Key」视图（area=domain + view=access）。
+    // 目标页归属 ecosystem-management，是另一个子应用 —— ShellContext.navigate 只会拼本应用的
+    // basePath，改走 shell-sdk 的跨应用导航：hosted 下由 shell 的 SPA 路由切过去（文档不重载），
+    // standalone / iframe fallback 下没人接管，SDK 内部回落到顶层窗口整页导航
+    navigateCrossApp('/apps/ecosystem-management/mcp-service-directory?area=domain&view=access');
   };
 
   const columns: ColumnsType<AuthKeyItem> = [
@@ -257,9 +258,7 @@ export default function McpKeyTab({ service, visible }: McpKeyTabProps) {
       key: 'actions',
       width: 100,
       render: () => (
-        <Typography.Link onClick={handleGoToKeyManagement}>
-          {t('domainManagement.mcpAuthManage')}
-        </Typography.Link>
+        <Typography.Link onClick={handleGoToKeyManagement}>{t('domainManagement.mcpAuthManage')}</Typography.Link>
       ),
     },
   ];

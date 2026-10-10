@@ -18,6 +18,7 @@ import DataSourceDocTable from '@/components/datasource/DataSourceDocTable';
 import DocumentStatusFilter from '@/components/DocumentStatusFilter';
 import DocumentStatsBar from '@/components/DocumentStatsBar';
 import { type DocPhase } from '@/utils/docPhase';
+import { PageContent } from '@jonex/shared-lib';
 import { FORMAT_DISPLAY } from '@/constants/upload';
 
 const PAGE_SIZE = 7;
@@ -96,7 +97,7 @@ export default function DomainKnowledgeDatasourceManual() {
   }, [page, keyword, phase, reloadFlag, fetchList]);
 
   return (
-    <div>
+    <PageContent showCard={false}>
       <a
         onClick={() => navigate(`/domain-knowledge/${id}/detail`)}
         style={{
@@ -114,7 +115,7 @@ export default function DomainKnowledgeDatasourceManual() {
 
       <Card
         style={{
-          borderRadius: 14,
+          borderRadius: 10,
           marginBottom: 24,
           border: '1px solid #eef2f6',
           boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
@@ -191,7 +192,7 @@ export default function DomainKnowledgeDatasourceManual() {
 
       <Card
         style={{
-          borderRadius: 14,
+          borderRadius: 10,
           border: '1px solid #eef2f6',
           boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
         }}
@@ -242,6 +243,6 @@ export default function DomainKnowledgeDatasourceManual() {
         </div>
         <DataSourceDocTable kbId={id || ''} docs={docs} loading={loading} pageSize={PAGE_SIZE} />
       </Card>
-    </div>
+    </PageContent>
   );
 }

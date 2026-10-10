@@ -1,42 +1,23 @@
 import React from 'react';
 import './index.scss';
 import { useTranslation } from 'react-i18next';
-import { Button, Table } from 'antd';
+import { Table } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
-  AppstoreOutlined,
-  PlusOutlined,
-  ImportOutlined,
   EditOutlined,
   DeleteOutlined,
   MessageOutlined,
 } from '@ant-design/icons';
 import type { OntologyAttribute, OntologyObjectDef } from '@/types/domainKnowledge';
 
-const cardStyle: React.CSSProperties = {
-  background: '#fff',
-  borderRadius: 14,
-  border: '1px solid #eef2f6',
-  padding: 24,
+// 首层卡面已由 PageContent 的卡片承担，这里只留分区之间的间距
+const sectionStyle: React.CSSProperties = {
   marginBottom: 20,
-  boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
-};
-
-const h3Style: React.CSSProperties = {
-  margin: 0,
-  fontSize: 15,
-  fontWeight: 600,
-  color: '#0b2b5c',
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
 };
 
 interface Props {
   data: OntologyObjectDef[];
   loading: boolean;
-  onCreate: () => void;
-  onImport: () => void;
   onEdit: (item: OntologyObjectDef) => void;
   onDelete: (item: OntologyObjectDef) => void;
   onPrompt: (item: OntologyObjectDef) => void;  canWrite?: boolean;
@@ -92,8 +73,6 @@ export default function OntologyObjectSection({
   canWrite = false,
   data,
   loading,
-  onCreate,
-  onImport,
   onEdit,
   onDelete,
   onPrompt,
@@ -154,27 +133,7 @@ export default function OntologyObjectSection({
   ];
 
   return (
-    <div className="config-section" style={cardStyle}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-        <h3 style={h3Style}>
-          <AppstoreOutlined style={{ color: '#3b82f6' }} /> {t('compile.tabObjectDef')}
-        </h3>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <Button type="primary" icon={<PlusOutlined />} style={{ fontSize: 13 }} onClick={onCreate}
-            disabled={!canWrite}
-            title={canWrite ? undefined : t('domainSpace.noManagePermission')}
-          >
-            {t('compile.object.createBtn')}
-          </Button>
-          <Button icon={<ImportOutlined />} style={{ fontSize: 13 }} onClick={onImport}
-            disabled={!canWrite}
-            title={canWrite ? undefined : t('domainSpace.noManagePermission')}
-          >
-            {t('compile.object.importBtn')}
-          </Button>
-        </div>
-      </div>
-      <p style={{ fontSize: 13, color: '#94a3b8', marginBottom: 16 }}>{t('compile.object.sectionDesc')}</p>
+    <div style={sectionStyle}>
       <Table
         columns={columns}
         dataSource={data}

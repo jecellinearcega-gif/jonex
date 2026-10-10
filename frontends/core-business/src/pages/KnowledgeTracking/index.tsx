@@ -16,11 +16,7 @@ import {
   toggleAnswerFeedbackAdopted,
   deleteAnswerFeedback,
 } from '@/api/knowledgeSearch';
-import type {
-  AnswerFeedbackListItem,
-  AnswerFeedbackListResponse,
-  AnswerFeedbackStats,
-} from '@/types/knowledgeSearch';
+import type { AnswerFeedbackListItem, AnswerFeedbackListResponse, AnswerFeedbackStats } from '@/types/knowledgeSearch';
 import FeedbackViewModal from './FeedbackViewModal';
 
 type TabKey = 'all' | 'like' | 'dislike';
@@ -31,7 +27,16 @@ const TAB_CONFIG: { key: TabKey; labelKey: string; icon: React.ReactNode; color:
   { key: 'dislike', labelKey: 'knowledgeSearch.unhelpful', icon: <DislikeOutlined />, color: '#dc2626' },
 ];
 
-export default function KnowledgeTracking() {
+interface KnowledgeTrackingProps {
+  /**
+   * [jonex] 嵌在知识库详情页的「情况追踪」tab 里时为 true：隐藏自带的返回按钮与标题。
+   * 那一层外层已有页头与 tab，自带一套只会重复。独立页访问时保持原样。
+   */
+  embedded?: boolean;
+}
+
+/** 问答反馈追踪：统计卡 + 反馈筛选标签 + 明细表。独立页与详情页 tab 两用 */
+export default function KnowledgeTracking({ embedded = false }: KnowledgeTrackingProps) {
   const { t } = useTranslation();
   const { id: knowledgeBaseId } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -462,68 +467,80 @@ export default function KnowledgeTracking() {
     );
   };
 
+  // 表格区（loading / error / 表格三态）：嵌 tab 与独立页两种外层容器共用同一份内容
+  const tableBlock = loading ? (
+    <div style={{ textAlign: 'center', padding: '60px 0' }}>
+      <Spin size="large" />
+    </div>
+  ) : error ? (
+    <div style={{ textAlign: 'center', padding: '60px 0' }}>
+      <div style={{ color: '#ef4444', fontSize: 14, marginBottom: 12 }}>{error}</div>
+      <Button onClick={() => void loadData()}>{t('tracking.reload')}</Button>
+    </div>
+  ) : (
+    renderTable()
+  );
+
   // ── 主渲染 ──
 
   return (
     <div>
-      {/* 头部 */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 16,
-          marginBottom: 24,
-        }}
-      >
-        <Button
-          icon={<ArrowLeftOutlined />}
-          onClick={() => navigate(-1)}
+      {/* 头部：嵌入 tab 时整块不要（外层页头 + tab 已表达同一信息） */}
+      {!embedded && (
+        <div
           style={{
-            fontSize: 14,
-            color: '#64748b',
             display: 'flex',
             alignItems: 'center',
-            gap: 6,
-            borderRadius: 8,
+            gap: 16,
+            marginBottom: 24,
           }}
         >
-          {t('common.back')}
-        </Button>
-        <h1
-          style={{
-            fontSize: 22,
-            fontWeight: 700,
-            color: '#0b2b5c',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-          }}
-        >
-          {t('route.tracking')}
-          <span style={{ fontSize: 14, fontWeight: 400, color: '#94a3b8' }}>— {kbName}</span>
-        </h1>
-      </div>
+          <Button
+            icon={<ArrowLeftOutlined />}
+            onClick={() => navigate(-1)}
+            style={{
+              fontSize: 14,
+              color: '#64748b',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              borderRadius: 8,
+            }}
+          >
+            {t('common.back')}
+          </Button>
+          <h1
+            style={{
+              fontSize: 22,
+              fontWeight: 700,
+              color: '#0b2b5c',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+            }}
+          >
+            {t('route.tracking')}
+            <span style={{ fontSize: 14, fontWeight: 400, color: '#94a3b8' }}>— {kbName}</span>
+          </h1>
+        </div>
+      )}
 
       {/* 统计卡片 */}
       {renderStats()}
 
-      {/* 标签 + 表格 */}
-      <Card style={{ borderRadius: 12 }} styles={{ body: { padding: '20px 24px' } }}>
-        {renderTabs()}
-
-        {loading ? (
-          <div style={{ textAlign: 'center', padding: '60px 0' }}>
-            <Spin size="large" />
-          </div>
-        ) : error ? (
-          <div style={{ textAlign: 'center', padding: '60px 0' }}>
-            <div style={{ color: '#ef4444', fontSize: 14, marginBottom: 12 }}>{error}</div>
-            <Button onClick={() => void loadData()}>{t('tracking.reload')}</Button>
-          </div>
-        ) : (
-          renderTable()
-        )}
-      </Card>
+      {/* 标签 + 表格 —— 嵌在详情页 tab 里时不套外层 Card：与同页「文档列表」tab 的落法一致
+          （内容直接落在页面上）；独立页没有外层页面容器承接，保留卡片 */}
+      {embedded ? (
+        <div>
+          {renderTabs()}
+          {tableBlock}
+        </div>
+      ) : (
+        <Card style={{ borderRadius: 12 }} styles={{ body: { padding: '20px 24px' } }}>
+          {renderTabs()}
+          {tableBlock}
+        </Card>
+      )}
 
       <FeedbackViewModal open={viewItem !== null} item={viewItem} onClose={handleViewClose} />
     </div>

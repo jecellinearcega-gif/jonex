@@ -5,6 +5,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useStore } from '@/store';
 import { SPACE_URL_PARAM } from '@jonex/shell-sdk';
+import { PageContent, PageHeader } from '@jonex/shared-lib';
 import type { ColumnsType } from 'antd/es/table';
 import {
   listServices,
@@ -256,16 +257,6 @@ const DomainManagement = function DomainManagement() {
       dataIndex: 'name',
       key: 'name',
       width: 140,
-      render: (v: string) => (
-        <span
-          className="yx-domain-name"
-          onClick={() => {
-            /* 可导航到领域详情 */
-          }}
-        >
-          {v}
-        </span>
-      ),
     },
     {
       title: t('domainManagement.space'),
@@ -300,9 +291,7 @@ const DomainManagement = function DomainManagement() {
       render: (v: string, r: DomainServiceItem) => {
         const cfg = getServiceStatusMap(t)[v];
         if (!cfg) return <Tag>{v}</Tag>;
-        return (
-          <Tag color={v === 'active' ? 'success' : v === 'testing' ? 'warning' : 'error'}>{cfg.label}</Tag>
-        );
+        return <Tag color={v === 'active' ? 'success' : v === 'testing' ? 'warning' : 'error'}>{cfg.label}</Tag>;
       },
     },
     {
@@ -388,84 +377,84 @@ const DomainManagement = function DomainManagement() {
   }
 
   return (
-    <div className="yx-domain-management-page">
-      {/* Page Header */}
-      <div className="yx-page-header">
-        <h1 className="yx-page-title">{t('domainManagement.title')}</h1>
-        <p className="yx-page-desc">{t('domainManagement.description')}</p>
-      </div>
+    <>
+      <PageHeader title={t('domainManagement.title')} />
+      <PageContent showCard={false}>
+        <div className="yx-domain-management-page">
+          {/* Card */}
+          <div className="yx-card">
+            <div className="yx-toolbar">
+              <Input
+                prefix={<SearchOutlined style={{ color: '#94a3b8', fontSize: 14 }} />}
+                placeholder={t('domainManagement.search')}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                style={{ width: 280 }}
+              />
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                disabled={!canManageServices}
+                title={canManageServices ? undefined : t('domainSpace.noManagePermission')}
+                onClick={openCreate}
+              >
+                {t('domainManagement.create')}
+              </Button>
+            </div>
 
-      {/* Card */}
-      <div className="yx-card">
-        <div className="yx-toolbar">
-          <Input
-            prefix={<SearchOutlined style={{ color: '#94a3b8', fontSize: 14 }} />}
-            placeholder={t('domainManagement.search')}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{ width: 280 }}
+            <Table<DomainServiceItem>
+              columns={columns}
+              dataSource={filtered}
+              rowKey="id"
+              pagination={{
+                total: filtered.length,
+                pageSize: 10,
+                showTotal: (total, range) =>
+                  t('common.totalItemsRange', {
+                    total,
+                    from: range[0],
+                    to: range[1],
+                  }),
+              }}
+              size="middle"
+              locale={{ emptyText: t('domainManagement.empty') }}
+            />
+          </div>
+
+          {/* Create/Edit Modal */}
+          <DomainFormModal
+            open={formOpen}
+            editing={editing}
+            availableKbs={availableKbs}
+            submitting={submitting}
+            onSave={handleSave}
+            onCancel={() => setFormOpen(false)}
           />
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            disabled={!canManageServices}
-            title={canManageServices ? undefined : t('domainSpace.noManagePermission')}
-            onClick={openCreate}
-          >
-            {t('domainManagement.create')}
-          </Button>
+
+          {/* Delete Confirm Modal */}
+          <DeleteConfirmModal
+            open={!!deleteTarget}
+            deleteTarget={deleteTarget}
+            submitting={submitting}
+            onCancel={() => setDeleteTarget(null)}
+            onConfirm={handleDelete}
+          />
+
+          {/* Service Config Modal */}
+          <ServiceConfigModal
+            open={srvConfigOpen}
+            canManage={canManageServices}
+            srvConfigTarget={srvConfigTarget}
+            apiKeys={apiKeys}
+            apiKeysLoading={apiKeysLoading}
+            creatingKey={creatingKey}
+            onCreateKey={handleCreateKey}
+            onDeleteKey={handleDeleteKey}
+            onCancel={() => setSrvConfigOpen(false)}
+          />
         </div>
-
-        <Table<DomainServiceItem>
-          columns={columns}
-          dataSource={filtered}
-          rowKey="id"
-          pagination={{
-            total: filtered.length,
-            pageSize: 10,
-            showTotal: (total, range) =>
-              t('common.totalItemsRange', {
-                total,
-                from: range[0],
-                to: range[1],
-              }),
-          }}
-          size="middle"
-          locale={{ emptyText: t('domainManagement.empty') }}
-        />
-      </div>
-
-      {/* Create/Edit Modal */}
-      <DomainFormModal
-        open={formOpen}
-        editing={editing}
-        availableKbs={availableKbs}
-        submitting={submitting}
-        onSave={handleSave}
-        onCancel={() => setFormOpen(false)}
-      />
-
-      {/* Delete Confirm Modal */}
-      <DeleteConfirmModal
-        open={!!deleteTarget}
-        deleteTarget={deleteTarget}
-        submitting={submitting}
-        onCancel={() => setDeleteTarget(null)}
-        onConfirm={handleDelete}
-      />
-
-      {/* Service Config Modal */}
-      <ServiceConfigModal
-        open={srvConfigOpen}
-        srvConfigTarget={srvConfigTarget}
-        apiKeys={apiKeys}
-        apiKeysLoading={apiKeysLoading}
-        creatingKey={creatingKey}
-        onCreateKey={handleCreateKey}
-        onDeleteKey={handleDeleteKey}
-        onCancel={() => setSrvConfigOpen(false)}
-      />
-    </div>
+      </PageContent>
+    </>
   );
 };
 

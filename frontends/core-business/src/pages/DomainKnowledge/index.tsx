@@ -18,15 +18,14 @@ import { useTranslation } from 'react-i18next';
 import { useStore } from '@/store';
 import { useQuota } from '@/hooks/useQuota';
 import { SPACE_URL_PARAM } from '@jonex/shell-sdk';
-import type {
-  DomainKnowledgeItem,
-  KnowledgeBaseType,
-} from '@/types/domainKnowledge';
+import { PageHeader, PageContent } from '@jonex/shared-lib';
+import type { DomainKnowledgeItem, KnowledgeBaseType } from '@/types/domainKnowledge';
 import {
   getDomainKnowledgeList,
   createKnowledgeInfo,
   updateKnowledgeInfo,
   deleteKnowledgeInfo,
+  getKbTypeOptions,
 } from '@/api/domainKnowledge';
 import { listAccessMethods } from '@/api/dataSource';
 import { accessTypeDisplayName } from '@/utils/dataSourceDisplay';
@@ -34,7 +33,8 @@ import CreateEditModal from './CreateEditModal';
 import DeleteConfirmModal from './DeleteConfirmModal';
 import './index.scss';
 
-const PAGE_SIZE = 6;
+// 一页取满后端 limit 上限（Query(le=100)），列表不再分页，底部分页器已移除
+const PAGE_SIZE = 100;
 
 const DomainKnowledge = function DomainKnowledge() {
   const { global } = useStore();
@@ -70,12 +70,28 @@ const DomainKnowledge = function DomainKnowledge() {
   // ── list state ───────────────────────────────────────
   const [list, setList] = useState<DomainKnowledgeItem[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
 
   // ── create modal state ────────────────────────────────
   const [createOpen, setCreateOpen] = useState(false);
   const [createSubmitting, setCreateSubmitting] = useState(false);
+
+  // [jonex] 本部署可创建的知识库类型（后端 env `KB_ENABLED_TYPES`）。
+  // null = 尚未拿到 —— 弹窗此时**不过滤**（fail-open）；真正的闸门在后端 create，
+  // 所以拉取失败不该把用户挡在「一个类型都建不了」的死路上（见 CreateEditModal 注释）。
+  const [kbTypeConfig, setKbTypeConfig] = useState<{
+    kbTypes: KnowledgeBaseType[];
+    default: KnowledgeBaseType;
+  } | null>(null);
+
+  const fetchKbTypes = useCallback(async () => {
+    try {
+      const config = await getKbTypeOptions();
+      if (config.kbTypes.length) setKbTypeConfig(config);
+    } catch {
+      /* 保持 null = 不过滤；后端 create 仍会拒掉被禁类型并给出可读错误 */
+    }
+  }, []);
 
   // ── edit & delete state ───────────────────────────────
   const [editingKb, setEditingKb] = useState<DomainKnowledgeItem | null>(null);
@@ -110,11 +126,11 @@ const DomainKnowledge = function DomainKnowledge() {
 
   // ── fetch helpers ────────────────────────────────────
   const fetchList = useCallback(
-    async (p: number, kw: string) => {
+    async (kw: string) => {
       setLoading(true);
       try {
         const result = await getDomainKnowledgeList({
-          page: p,
+          page: 1,
           pageSize: PAGE_SIZE,
           keyword: kw || undefined,
           spaceId: global.currentSpaceId || undefined,
@@ -134,15 +150,14 @@ const DomainKnowledge = function DomainKnowledge() {
   useEffect(() => {
     global.loadSpaces();
     fetchSourceTypeNames();
+    fetchKbTypes();
   }, []);
 
-  // ── debounced keyword input → keyword + 回到第 1 页 ─────
-  // 关键词变化时把关键词与页码一起更新（React 18 自动批处理为一次渲染）。
+  // ── debounced keyword input → keyword ────────────────
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       setKeyword(keywordInput);
-      setPage(1);
     }, 300);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -150,21 +165,15 @@ const DomainKnowledge = function DomainKnowledge() {
   }, [keywordInput]);
 
   // ── 统一的列表请求触发器 ────────────────────────────────
-  // 由 spaces 就绪、当前空间、页码、关键词共同驱动，任一变化都发起请求。
-  // 此前拆成多个 effect，且分页 effect 用 `page !== 1` 守卫，导致从第 2 页
-  // 返回第 1 页时不发请求。合并为单一入口后，回到第 1 页也会正常拉取。
+  // 由 spaces 就绪、当前空间、关键词共同驱动，任一变化都发起请求。
   useEffect(() => {
     if (global.spacesLoaded) {
-      fetchList(page, keyword);
+      fetchList(keyword);
     }
-  }, [global.spacesLoaded, global.currentSpaceId, page, keyword]);
+  }, [global.spacesLoaded, global.currentSpaceId, keyword]);
 
   // ── create handler ───────────────────────────────────
-  const handleCreate = async (values: {
-    name: string;
-    description?: string;
-    kb_type?: KnowledgeBaseType;
-  }) => {
+  const handleCreate = async (values: { name: string; description?: string; kb_type?: KnowledgeBaseType }) => {
     setCreateSubmitting(true);
     try {
       const data = {
@@ -177,12 +186,17 @@ const DomainKnowledge = function DomainKnowledge() {
         await updateKnowledgeInfo(editingKb.id, data);
         message.success(t('domainKnowledge.knowledgeBaseUpdated'));
       } else {
-        await createKnowledgeInfo({ ...data, kb_type: values.kb_type ?? 'lightrag' });
+        // [jonex] 兜底顺序：表单值 → 后端给的默认可用类型 → 'lightrag'。
+        // 直接写死 'lightrag' 会在它被 KB_ENABLED_TYPES 禁掉时提交一个必被拒的值。
+        await createKnowledgeInfo({
+          ...data,
+          kb_type: values.kb_type ?? kbTypeConfig?.default ?? 'lightrag',
+        });
         message.success(t('domainKnowledge.knowledgeBaseCreated'));
       }
       setCreateOpen(false);
       setEditingKb(null);
-      fetchList(1, keyword);
+      fetchList(keyword);
       if (!editingKb) reloadQuota(); // 新建会改变知识库数量配额 used，编辑不改变
     } catch (err: any) {
       message.error(
@@ -210,22 +224,13 @@ const DomainKnowledge = function DomainKnowledge() {
       await deleteKnowledgeInfo(deletingKb.id);
       message.success(t('common.deleteSuccess'));
       setDeletingKb(null);
-      fetchList(1, keyword);
+      fetchList(keyword);
       reloadQuota(); // 删除会释放知识库数量配额 used
     } catch (err: any) {
       message.error(err?.message || t('common.deleteFailed'));
     } finally {
       setDeleteSubmitting(false);
     }
-  };
-
-  // ── pagination helpers ───────────────────────────────
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
-  const pageNumbers = (): number[] => {
-    const pages: number[] = [];
-    for (let i = 1; i <= totalPages; i++) pages.push(i);
-    return pages;
   };
 
   // ── display list ──
@@ -242,26 +247,25 @@ const DomainKnowledge = function DomainKnowledge() {
 
   // ── render ───────────────────────────────────────────
   return (
-    <div>
-      {/* Page Header */}
-      <div className="yx-page-title">
-        <h1>{t('navigation.domainKnowledge')}</h1>
-        <p className="yx-page-subtitle">{t('domainKnowledge.pageSubtitle')}</p>
-      </div>
-
-      {/* Filter Row */}
-      <div className="yx-filter-row">
-        <label>
-          <GlobalOutlined style={{ color: '#3b82f6' }} /> {t('domainKnowledge.currentSpace')}
-        </label>
-        <span style={{ fontWeight: 500, color: '#0b2b5c' }}>
-          {global.currentSpace?.name || t('domainKnowledge.notSelected')}
-        </span>
-        <span className="yx-filter-count">{t('domainKnowledge.knowledgeBaseCount', { total })}</span>
-      </div>
+    <>
+      {/* Page Header：标题与当前空间筛选信息同行 */}
+      <PageHeader
+        title={t('navigation.domainKnowledge')}
+        extra={
+          <div className="yx-filter-row">
+            <label>
+              <GlobalOutlined style={{ color: '#3b82f6' }} /> {t('domainKnowledge.currentSpace')}
+            </label>
+            <span style={{ fontWeight: 500, color: '#0b2b5c' }}>
+              {global.currentSpace?.name || t('domainKnowledge.notSelected')}
+            </span>
+            <span className="yx-filter-count">{t('domainKnowledge.knowledgeBaseCount', { total })}</span>
+          </div>
+        }
+      />
 
       {/* Toolbar + Card Grid */}
-      <div className="yx-page-card">
+      <PageContent showCard={false}>
         <div className="yx-toolbar">
           <Input
             prefix={<SearchOutlined style={{ color: '#94a3b8', fontSize: 14 }} />}
@@ -334,14 +338,16 @@ const DomainKnowledge = function DomainKnowledge() {
                       <div className="kb-card-name" onClick={() => navigate(`/domain-knowledge/${item.id}`)}>
                         {item.name}
                       </div>
-                      {/* [jonex] 知识库类型标签：两种类型行为差别大（引用溯源/编译结果页），需可一眼区分 */}
+                      {/* [jonex] 知识库类型标签：三种类型行为差别大（引用溯源/编译结果页），需可一眼区分 */}
                       <Tag
-                        color={item.kbType === 'openkb' ? 'purple' : 'blue'}
+                        color={item.kbType === 'jonex_wiki' ? 'magenta' : item.kbType === 'openkb' ? 'purple' : 'blue'}
                         style={{ marginInlineEnd: 0, flexShrink: 0, fontSize: 12 }}
                       >
-                        {item.kbType === 'openkb'
-                          ? t('domainKnowledge.kbTypeOpenkb')
-                          : t('domainKnowledge.kbTypeLightrag')}
+                        {item.kbType === 'jonex_wiki'
+                          ? t('domainKnowledge.kbTypeJonexWiki')
+                          : item.kbType === 'openkb'
+                            ? t('domainKnowledge.kbTypeOpenkb')
+                            : t('domainKnowledge.kbTypeLightrag')}
                       </Tag>
                     </div>
                     <div className="kb-card-meta">
@@ -369,13 +375,18 @@ const DomainKnowledge = function DomainKnowledge() {
                           key: 'settings',
                           icon: <SettingOutlined />,
                           label: t('domainKnowledge.knowledgeBaseSettings'),
-                          onClick: () => navigate(`/domain-knowledge/${item.id}/detail`),
+                          // 带上来源：设置页据此把「返回」指回本列表
+                          onClick: () =>
+                            navigate(`/domain-knowledge/${item.id}/detail`, {
+                              state: { backTo: '/domain-knowledge' },
+                            }),
                         },
                         {
                           key: 'tracking',
                           icon: <LineChartOutlined />,
                           label: t('route.tracking'),
-                          onClick: () => navigate(`/domain-knowledge/${item.id}/tracking`),
+                          // 追踪已收进知识库详情页的 tab，原地跳转并直接落在那一个 tab 上
+                          onClick: () => navigate(`/domain-knowledge/${item.id}?tab=tracking`),
                         },
                         {
                           key: 'edit',
@@ -428,37 +439,7 @@ const DomainKnowledge = function DomainKnowledge() {
             ))}
           </div>
         )}
-
-        {/* Custom Pagination */}
-        {list.length > 0 && (
-          <div className="yx-pagination">
-            <span
-              className={`yx-page-btn${page <= 1 ? ' disabled' : ''}`}
-              onClick={() => page > 1 && setPage((p) => p - 1)}
-            >
-              &lt;
-            </span>
-            {pageNumbers().map((n) => (
-              <span key={n} className={`yx-page-btn${n === page ? ' active' : ''}`} onClick={() => setPage(n)}>
-                {n}
-              </span>
-            ))}
-            <span
-              className={`yx-page-btn${page >= totalPages ? ' disabled' : ''}`}
-              onClick={() => page < totalPages && setPage((p) => p + 1)}
-            >
-              &gt;
-            </span>
-            <span className="yx-page-info">
-              {t('domainKnowledge.pagination', {
-                total,
-                page,
-                pages: totalPages,
-              })}
-            </span>
-          </div>
-        )}
-      </div>
+      </PageContent>
 
       <CreateEditModal
         open={createOpen}
@@ -466,6 +447,8 @@ const DomainKnowledge = function DomainKnowledge() {
         submitting={createSubmitting}
         onOk={handleCreate}
         onCancel={() => setCreateOpen(false)}
+        kbTypes={kbTypeConfig?.kbTypes}
+        defaultKbType={kbTypeConfig?.default}
       />
 
       <DeleteConfirmModal
@@ -475,7 +458,7 @@ const DomainKnowledge = function DomainKnowledge() {
         onConfirm={handleDelete}
         onCancel={() => setDeletingKb(null)}
       />
-    </div>
+    </>
   );
 };
 
