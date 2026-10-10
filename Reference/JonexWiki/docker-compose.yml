@@ -1,0 +1,7 @@
+services:
+  api:
+    build: .
+    env_file: .env
+    ports: ["8007:8007"]
+    volumes: [data:/data/jonex-wiki]
+volumes: {data: {}}

@@ -37,9 +37,11 @@ class CapabilityProxy:
         self._static_endpoints = {
             "knowledge_base": self.config.KNOWLEDGE_BASE_URL,
             "business_domain": self.config.BUSINESS_DOMAIN_URL,
+            "task_center": self.config.TASK_CENTER_URL,
             "rag.lightrag": self.config.ATOMIC_RAG_URL,
             "platform": self.config.PLATFORM_URL,
             "openkb": self.config.OPENKB_URL,  # [jonex]
+            "jonex_wiki": self.config.JONEX_WIKI_URL,  # [jonex] Sidecar → 适配器容器
         }
 
     @property

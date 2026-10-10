@@ -56,6 +56,7 @@ class RAGClient(ABC):
         preset: Optional[str] = None,
         prompt_ids: Optional[list] = None,
         execution_mode: str = "full",
+        kb_type: str = "",
     ) -> dict:
         """插入文档到 RAG 索引，立即返回 task_id
 
@@ -63,6 +64,7 @@ class RAGClient(ABC):
             ontology_schema: per-KB compiled schema（可选，push 模式）
             storage_backend: 存储后端（"local" | "cos" | "s3"），P3
             storage_key: 对象存储键（storage_backend 为 "cos"/"s3" 时使用）
+            kb_type: lightrag | openkb | jonex_wiki（[jonex] llm-wiki 产物分支用）
 
         Returns:
             {"task_id": str, "status": "pending", "file_path": str}
@@ -349,6 +351,7 @@ class LocalRAGClient(RAGClient):
         preset: Optional[str] = None,
         prompt_ids: Optional[list] = None,
         execution_mode: str = "full",
+        kb_type: str = "",
     ) -> dict:
         tenant_id = require_tenant(tenant_id)
         knowledge_base_id = require_knowledge_base(knowledge_base_id)
@@ -358,6 +361,8 @@ class LocalRAGClient(RAGClient):
             _extra["prompt_ids"] = prompt_ids
         if execution_mode and execution_mode != "full":
             _extra["execution_mode"] = execution_mode
+        if kb_type:
+            _extra["kb_type"] = kb_type
         return await self._adapter.insert(
             file_path=file_path,
             tenant_id=tenant_id,
@@ -675,8 +680,6 @@ class RemoteRAGClient(RAGClient):
     ) -> None:
         import httpx
 
-        from jonex_core.common.config import get_config
-
         timeout = float(os.getenv("RAG_CLIENT_TIMEOUT", "120"))
         self._client = httpx.AsyncClient(
             base_url=endpoint.rstrip("/"),
@@ -712,6 +715,7 @@ class RemoteRAGClient(RAGClient):
         schema_hash: str = "",
         execution_mode: str = "full",
         idempotency_key: Optional[str] = None,  # [jonex] R1
+        kb_type: str = "",
     ) -> dict:
         knowledge_base_id = require_knowledge_base(knowledge_base_id)
         payload: dict = {
@@ -738,6 +742,8 @@ class RemoteRAGClient(RAGClient):
             payload["prompt_ids"] = prompt_ids
         if idempotency_key:                        # [jonex] R1
             payload["idempotency_key"] = idempotency_key
+        if kb_type:
+            payload["kb_type"] = kb_type
         resp = await self._invoke(payload, tenant_id)
         return resp["data"]
 
@@ -761,6 +767,7 @@ class RemoteRAGClient(RAGClient):
         schema_hash: str = "",
         old_rag_doc_ids: Optional[list] = None,
         idempotency_key: Optional[str] = None,  # [jonex] R1
+        kb_type: str = "",
     ) -> dict:
         """以 force_reparse=true 重新解析同一文件（atomic-rag action `retry`）。
 
@@ -795,6 +802,8 @@ class RemoteRAGClient(RAGClient):
             payload["prompt_ids"] = prompt_ids
         if idempotency_key:                        # [jonex] R1
             payload["idempotency_key"] = idempotency_key
+        if kb_type:
+            payload["kb_type"] = kb_type
         resp = await self._invoke(payload, tenant_id)
         return resp["data"]
 
@@ -1178,12 +1187,8 @@ class RemoteRAGClient(RAGClient):
             "payload": payload,
             "tenant_id": tenant_id,
         }
-        resp = await self._client.post(
-            "/invoke",
-            json=body,
-            headers={"X-Tenant-ID": tenant_id},
-        )
-        resp.raise_for_status()
+        from jonex_core.common.sidecar_client import post_sidecar
+        resp = await post_sidecar(self._client, body, tenant_id)
         return resp.json()
 
     @staticmethod

@@ -6,7 +6,7 @@
 - get_schema(auto_create=True)：读 active schema，缺则建默认
 - save_schema：校验 → 渲染 → CAS 留档 → apply 投影 → 更新文档 target 版本
 - render_agents_md：内置段（AGENTS_MD 快照原样）+ 注入段（§4.1 模板）
-- apply_to_openkb：调 OpenKB apply_schema action（含 sync 回写与补偿）
+- apply_schema_to_engine：按 kb_type 分流 apply（openkb/jonex_wiki，含 sync 回写与补偿）
 - update_documents_target_schema_version：schema 变更后文档过期标记
 """
 import logging
@@ -152,6 +152,15 @@ def render_agents_md(entity_types: list[dict],
     return "\n".join(parts).strip() + "\n"
 
 
+# [jonex] jonex_wiki 编译设置 = 单个 compile_main prompt（无 openkb 词表）。
+# 默认 prompt 语义对齐引擎 DEFAULT_PROMPTS["compile_main"]（platform 不 import
+# 引擎，故在此维护等价默认文本；用户可在编译设置里覆盖）。
+# jonex_wiki 编译设置 = 用户「编译偏好」suffix 的默认值。
+# 引擎 compile_main 由「固定骨架 COMPILE_MAIN_SKELETON（路径/证据/JSON 输出硬约束，
+# 代码维护、不可改）+ 用户 suffix（这里，默认空串）」拼接；空串 = 无偏好 = 纯骨架。
+DEFAULT_JONEX_WIKI_PROMPT = ""
+
+
 class LlmWikiSchemaService:
     def __init__(self) -> None:
         self._repo = LlmWikiSchemaRepository()
@@ -183,9 +192,12 @@ class LlmWikiSchemaService:
         _check(entity_types, "entity")
         _check(concept_types, "concept")
 
-    async def _require_openkb_kb(self, tenant_id: str, kb_id: str) -> None:
-        """校验 KB 存在且 kb_type=openkb（方案 §7 第 1 步）。"""
-        from .kb_type_service import get_kb_type
+    async def _require_llm_wiki_kb(self, tenant_id: str, kb_id: str) -> str:
+        """校验 KB 存在且 kb_type ∈ LLM_WIKI_TYPES{openkb, jonex_wiki}（方案 §7 第 1 步）。
+
+        返回 kb_type 供调用方按 openkb/jonex_wiki 分流（save/apply 语义不同）。
+        """
+        from .kb_type_service import LLM_WIKI_TYPES, get_kb_type
 
         kb_type = await get_kb_type(tenant_id, kb_id)
         if kb_type is None:
@@ -193,23 +205,24 @@ class LlmWikiSchemaService:
                 message=translate("err.kb.not_found", fallback="知识库不存在"),
                 details={"knowledge_base_id": kb_id},
             )
-        if kb_type != "openkb":
+        if kb_type not in LLM_WIKI_TYPES:
             raise InvalidParameterError(
                 message=translate(
                     "err.llm_wiki_schema.kb_type_mismatch",
-                    fallback="LLM-Wiki Schema 仅适用于 llm-wiki（openkb）类型知识库",
+                    fallback="LLM-Wiki Schema 仅适用于 llm-wiki（openkb/jonex_wiki）类型知识库",
                 ),
                 details={"error_code": "LLM_WIKI_SCHEMA_KB_TYPE_MISMATCH", "kb_type": kb_type},
             )
+        return kb_type
 
     async def get_schema(self, tenant_id: str, kb_id: str, *,
                          auto_create: bool = True) -> dict:
         """读 active schema；缺失且 auto_create → 建默认（方案 §15 兜底）。"""
         tenant_id = require_tenant(tenant_id)
-        await self._require_openkb_kb(tenant_id, kb_id)
+        kb_type = await self._require_llm_wiki_kb(tenant_id, kb_id)
         row = await self._repo.get_active(tenant_id, kb_id)
         if row is None and auto_create:
-            row = await self._create_default(tenant_id, kb_id)
+            row = await self._create_default(tenant_id, kb_id, kb_type=kb_type)
         if row is None:
             raise ResourceNotFoundError(
                 message=translate("err.llm_wiki_schema.not_found", fallback="LLM-Wiki Schema 不存在"),
@@ -217,13 +230,25 @@ class LlmWikiSchemaService:
             )
         return row.to_dict()
 
-    async def _create_default(self, tenant_id: str, kb_id: str) -> LlmWikiSchema:
-        """创建默认 schema（DB 行 + 同步 apply 失败不阻断）。"""
-        entity_types = [dict(t) for t in DEFAULT_ENTITY_TYPES]
-        concept_types: list = []
-        agents_md_extra = DEFAULT_AGENTS_MD_EXTRA
-        agents_md = render_agents_md(entity_types, concept_types, agents_md_extra)
-        config = {"language": "zh-CN", "entity_types": [t["code"] for t in entity_types]}
+    async def _create_default(self, tenant_id: str, kb_id: str,
+                              kb_type: str = "openkb") -> LlmWikiSchema:
+        """创建默认 schema（DB 行 + 同步 apply 失败不阻断）。
+
+        jonex_wiki 编译设置只有 compile_main 的「编译偏好 suffix」（无词表）：
+        agents_md 即 suffix（默认空串 DEFAULT_JONEX_WIKI_PROMPT），entity/concept 词表留空。
+        """
+        if kb_type == "jonex_wiki":
+            entity_types: list = []
+            concept_types: list = []
+            agents_md = DEFAULT_JONEX_WIKI_PROMPT
+            agents_md_extra = DEFAULT_JONEX_WIKI_PROMPT  # 前端编辑态 = prompt 全文
+            config = {"language": "zh-CN"}
+        else:
+            entity_types = [dict(t) for t in DEFAULT_ENTITY_TYPES]
+            concept_types = []
+            agents_md_extra = DEFAULT_AGENTS_MD_EXTRA
+            agents_md = render_agents_md(entity_types, concept_types, agents_md_extra)
+            config = {"language": "zh-CN", "entity_types": [t["code"] for t in entity_types]}
         row = await self._repo.create_active(
             tenant_id, kb_id,
             schema_version=1, schema_name="default", language="zh-CN",
@@ -231,7 +256,7 @@ class LlmWikiSchemaService:
             agents_md_extra=agents_md_extra, agents_md=agents_md,
             config_snapshot=config,
         )
-        await self.apply_to_openkb(tenant_id, kb_id, row.schema_version)
+        await self.apply_schema_to_engine(tenant_id, kb_id, row.schema_version)
         return row
 
     async def save_schema(self, tenant_id: str, request: SaveLlmWikiSchemaRequest | dict,
@@ -240,7 +265,8 @@ class LlmWikiSchemaService:
         tenant_id = require_tenant(tenant_id)
         req = SaveLlmWikiSchemaRequest(**_payload(request))
         kb_id = req.knowledge_base_id
-        await self._require_openkb_kb(tenant_id, kb_id)
+        kb_type = await self._require_llm_wiki_kb(tenant_id, kb_id)
+        is_jonex = kb_type == "jonex_wiki"
 
         # ① 校验 expected_schema_version（CAS 前置：active 版本必须一致）
         current = await self._repo.get_active(tenant_id, kb_id)
@@ -263,8 +289,9 @@ class LlmWikiSchemaService:
             )
 
         # ② code 格式强校验（方案 §7 第 3 步，DTO 已做；此处防御性复查 other 存在）
+        #    jonex_wiki 无词表语义，跳过 other 校验（entity/concept 不渲染进 prompt）。
         codes = [t.code for t in req.entity_types]
-        if "other" not in codes:
+        if not is_jonex and "other" not in codes:
             raise InvalidParameterError(
                 message=translate(
                     "err.llm_wiki_schema.invalid_entity_type",
@@ -280,15 +307,24 @@ class LlmWikiSchemaService:
         )
 
         # ③ 渲染 + 构建投影
-        entity_types = [t.dict() for t in req.entity_types]
-        concept_types = [c.dict() for c in req.concept_types]
-        agents_md_extra = req.agents_md_extra
-        agents_md = render_agents_md(entity_types, concept_types, agents_md_extra)
-        config = {
-            "model": req.model,
-            "language": req.language,
-            "entity_types": codes,
-        }
+        if is_jonex:
+            # jonex_wiki 编译设置 = 用户「编译偏好」suffix（agents_md_extra 复用为前端
+            # 编辑态；不渲染 openkb 词表段）。空串合法 = 无偏好 = 引擎用纯固定骨架。
+            entity_types: list = []
+            concept_types: list = []
+            agents_md = (req.agents_md_extra or "").strip()
+            agents_md_extra = agents_md
+            config = {"model": req.model, "language": req.language}
+        else:
+            entity_types = [t.dict() for t in req.entity_types]
+            concept_types = [c.dict() for c in req.concept_types]
+            agents_md_extra = req.agents_md_extra
+            agents_md = render_agents_md(entity_types, concept_types, agents_md_extra)
+            config = {
+                "model": req.model,
+                "language": req.language,
+                "entity_types": codes,
+            }
 
         # ④ CAS 留档（UPDATE 旧行钉 CAS → INSERT 新行，同事务）
         new_version = current.schema_version + 1
@@ -302,7 +338,7 @@ class LlmWikiSchemaService:
         )
 
         # ⑤ apply 投影（失败不阻断：sync_status=apply_failed，编译前补偿）
-        await self.apply_to_openkb(tenant_id, kb_id, new_version)
+        await self.apply_schema_to_engine(tenant_id, kb_id, new_version)
 
         # ⑥ 更新文档 target 版本（不复用 stale，方案 §7 第 8 步）
         affected = await self.update_documents_target_schema_version(
@@ -312,9 +348,13 @@ class LlmWikiSchemaService:
         result["affected_documents"] = affected
         return result
 
-    async def apply_to_openkb(self, tenant_id: str, kb_id: str,
+    async def apply_schema_to_engine(self, tenant_id: str, kb_id: str,
                               schema_version: Optional[int] = None) -> dict:
-        """调 OpenKB apply_schema；结果回写 sync_status（方案 §7 第 7 步）。"""
+        """按 kb_type 分流 apply；结果回写 sync_status（方案 §7 第 7 步）。
+
+        openkb → OpenKB apply_schema；jonex_wiki → jonex_wiki apply_schema
+        （AGENTS.md → 引擎 compile_main prompt，无词表投影）。
+        """
         row = await self._repo.get_active(tenant_id, kb_id)
         if row is None:
             raise ResourceNotFoundError(
@@ -329,25 +369,37 @@ class LlmWikiSchemaService:
                 details={"error_code": "LLM_WIKI_SCHEMA_NOT_APPLIED"},
             )
 
-        from jonex_core.capability.atomic.openkb.client import get_openkb_client
+        from .kb_type_service import get_kb_type
+
+        kb_type = await get_kb_type(tenant_id, kb_id)
 
         try:
-            result = await get_openkb_client().apply_schema(
-                kb_name=kb_id, tenant_id=tenant_id, kb_id=kb_id,
-                schema_version=version,
-                config={
-                    "model": row.model,
-                    "language": row.language,
-                    "entity_types": [t["code"] for t in (row.entity_types or [])],
-                },
-                agents_md=row.agents_md,
-            )
+            if kb_type == "jonex_wiki":
+                from jonex_core.capability.atomic.jonex_wiki.client import get_jonex_wiki_client
+                result = await get_jonex_wiki_client().apply_schema(
+                    kb_name=kb_id, tenant_id=tenant_id, kb_id=kb_id,
+                    schema_version=version,
+                    config={"model": row.model, "language": row.language},
+                    agents_md=row.agents_md,
+                )
+            else:
+                from jonex_core.capability.atomic.openkb.client import get_openkb_client
+                result = await get_openkb_client().apply_schema(
+                    kb_name=kb_id, tenant_id=tenant_id, kb_id=kb_id,
+                    schema_version=version,
+                    config={
+                        "model": row.model,
+                        "language": row.language,
+                        "entity_types": [t["code"] for t in (row.entity_types or [])],
+                    },
+                    agents_md=row.agents_md,
+                )
             await self._repo.mark_sync(tenant_id, kb_id, version,
                                        sync_status=SYNC_SYNCED, applied=True)
             return result
         except Exception as exc:
-            logger.warning("LLM-Wiki Schema apply 失败 kb=%s ver=%s: %s",
-                           kb_id, version, exc)
+            logger.warning("LLM-Wiki Schema apply 失败 kb=%s type=%s ver=%s: %s",
+                           kb_id, kb_type, version, exc)
             await self._repo.mark_sync(tenant_id, kb_id, version,
                                        sync_status=SYNC_APPLY_FAILED)
             return {"applied": False, "schema_version": version,
@@ -474,7 +526,7 @@ class LlmWikiSchemaService:
         from sqlalchemy import text
 
         kb_id = str(request.get("knowledge_base_id") or "")
-        await self._require_openkb_kb(tenant_id, kb_id)
+        await self._require_llm_wiki_kb(tenant_id, kb_id)
         only_outdated = bool(request.get("only_outdated", True))
 
         # 读 active schema（submit 需要版本）

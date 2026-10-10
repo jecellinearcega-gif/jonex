@@ -35,6 +35,7 @@ from jonex_core.common import (
     error_response,
     register_exception_handlers,
     install_locale_middleware,
+    passthrough_upstream_response,
     MissingApiKeyError,
     CapabilityInvokeError,
     InvalidParameterError,
@@ -43,7 +44,10 @@ from jonex_core.common import (
     require_tenant,
     setup_logging,
 )
+from jonex_core.common.tenant import require_test_token_allowed
+from jonex_core.common.exceptions import RateLimitExceededError
 from jonex_core.common.config import get_config
+from jonex_core.common.security_guards import assert_secure_jwt_secret
 from jonex_core.security.user_auth import get_user_auth
 
 logger = logging.getLogger(__name__)
@@ -64,12 +68,21 @@ class CapabilityInvokeRequest(BaseModel):
 
 
 class InvokeResult(BaseModel):
-    """调用结果"""
+    """调用结果。
+
+    `data` 故意是 `Any`、不是 `dict`：Sidecar 是**转发层**，不该对下游能力的
+    业务数据做形状裁决。设计文档 §4.3 明确 `data` 可为**对象或列表**（`runner.list` /
+    `def.catalog_list` / `def.catalog_steps` / `task.subtask_list` 这四个不设分页的接口
+    就是直接回裸数组，doc §4.0「不设分页的接口」）。写死成 `dict` 会让这几个 action
+    经 `/invoke` 反代时被 FastAPI 的 `response_model` 校验拦下、冒出一个 500 ——
+    数据本身没问题，纯粹是这张模型写窄了。形状由能力自己的契约负责。
+    """
+
     request_id: str
     success: bool
     code: int
     message: str
-    data: Optional[dict] = None
+    data: Optional[Any] = None
     details: Optional[dict] = None
     params: Optional[dict] = None
     latency_ms: float
@@ -86,7 +99,8 @@ class UserInfo(BaseModel):
 
 TENANT_REQUIRED_AUTH_PATHS = {
     "auth/login",
-    "auth/refresh",
+    # auth/refresh 不在其中：refresh token 自包含租户（issuer 反查），首登后仅持 httpOnly cookie、
+    # 无 access token / X-Tenant-ID，强制 require 会误拦为 TenantIsolationError。
     "auth/login-ticket",
 }
 
@@ -95,6 +109,7 @@ TENANT_REQUIRED_PLATFORM_PREFIXES = (
     "platform/roles",
     "platform/audit-logs",
     "platform/task-schedules",
+    "platform/identity-integration",
 )
 
 
@@ -103,8 +118,12 @@ def _normalize_proxy_path(path: str) -> str:
 
 
 async def _read_json_body(request: Request) -> dict[str, Any] | None:
-    """读取代理请求体。空 body 允许通过，非对象 JSON 直接拒绝。"""
+    """读取代理请求体。空 body 允许通过，非对象 JSON 直接拒绝。form 编码返回 None（由调用方透传原始字节）。"""
     if request.method not in ("POST", "PUT", "PATCH"):
+        return None
+
+    content_type = request.headers.get("content-type", "")
+    if "application/x-www-form-urlencoded" in content_type:
         return None
 
     raw = await request.body()
@@ -132,11 +151,69 @@ def _tenant_from_authorization(auth_header: str | None) -> str | None:
         return None
 
     if token.startswith("jonex_test_"):
+        require_test_token_allowed()
         return require_tenant(token.removeprefix("jonex_test_"))
 
     user_auth = get_user_auth()
     payload = user_auth.decode_token(token)
     return require_tenant(payload.get("tenant_id"))
+
+
+def _gateway_api_key_matches(api_key: Optional[str]) -> bool:
+    """精确比对网关内部 X-API-Key（脱钩 startswith("jonex_")）。
+
+    与 `jonex_test_` 租户测试 token（Bearer 兜底）脱钩：前者是网关内部
+    X-API-Key，后者是 Bearer 兜底，字符串相似纯属巧合，二者独立处理。
+    只有与配置值完全一致才通过，前缀匹配已被废除。
+    """
+    if not api_key:
+        return False
+    expected = get_config().GATEWAY_API_KEY
+    if not expected:
+        return False
+    return api_key == expected
+
+
+def _assert_gateway_api_key_configured(config) -> None:
+    """生产环境守卫：GATEWAY_API_KEY 必须已从默认哨兵值修改。
+
+    生产漏配时 Sidecar 会接受公开可知的哨兵字符串 "change-me-in-production"
+    为合法内部 X-API-Key，攻击者直连 Sidecar 发送该哨兵 + 任意 X-Tenant-ID
+    即可任意租户身份调用能力，造成租户隔离旁路。fail-closed：生产未正确
+    配置则抛 RuntimeError，让 uvicorn 启动失败拒绝服务。
+    """
+    if not config.is_production:
+        return
+    gateway_key = config.GATEWAY_API_KEY
+    if not gateway_key or gateway_key == "change-me-in-production":
+        raise RuntimeError(
+            "GATEWAY_API_KEY 未配置或仍为默认哨兵值。"
+            "生产环境必须在 .env 或环境变量中设置 GATEWAY_API_KEY 为真实随机 key，"
+            "否则 Gateway→Sidecar 内部认证可被伪造。"
+        )
+
+
+def _assert_keycloak_client_secret_configured(config) -> None:
+    """生产环境守卫：KEYCLOAK_CLIENT_SECRET 必须已从默认哨兵值覆盖。
+
+    生产漏配时服务会静默使用公开可知的哨兵字符串 "change-me-in-production"
+    作为 Keycloak confidential client secret，攻击者可据此伪造 client 身份
+    （Admin API / backchannel 调用）。fail-closed：生产未正确配置则抛
+    RuntimeError，让 uvicorn 启动失败拒绝服务。
+    """
+    if not config.is_production:
+        return
+    # SSO 未启用的部署不消费该密钥（全仓运行时唯一读取者即本守卫），
+    # 不得让与 SSO 无关的部署因哨兵值而启动失败。
+    if not config.sso_enabled:
+        return
+    client_secret = config.KEYCLOAK_CLIENT_SECRET
+    if not client_secret or client_secret == "change-me-in-production":
+        raise RuntimeError(
+            "KEYCLOAK_CLIENT_SECRET 未配置或仍为默认哨兵值。"
+            "生产环境必须在 .env 或环境变量中设置 KEYCLOAK_CLIENT_SECRET 为真实随机 secret，"
+            "否则 Keycloak confidential client secret 可被攻击者猜到。"
+        )
 
 
 def _candidate_tenant(value: Any, source: str) -> str | None:
@@ -318,6 +395,7 @@ async def _proxy_to_platform(request: Request, path: str, auth: dict | None = No
     metering = get_metering()
 
     auth_header = request.headers.get("Authorization", "")
+    content_type = request.headers.get("content-type", "")
     body = await _read_json_body(request)
     tenant_id = _resolve_platform_tenant(
         request,
@@ -330,7 +408,7 @@ async def _proxy_to_platform(request: Request, path: str, auth: dict | None = No
     allowed, retry_after = await limiter.check(metering_tenant_id, path)
     if not allowed:
         resp = error_response(
-            code=429,
+            code=RateLimitExceededError.code,
             message=f"Rate limit exceeded. Retry after {retry_after} seconds.",
             status_code=429,
         )
@@ -344,6 +422,10 @@ async def _proxy_to_platform(request: Request, path: str, auth: dict | None = No
         headers["Authorization"] = auth_header
     if tenant_id:
         headers["X-Tenant-ID"] = tenant_id
+    # 透传 Cookie：refresh/logout 的 httpOnly refresh token 经 cookie 携带，不落 header。
+    cookie_header = request.headers.get("cookie")
+    if cookie_header:
+        headers["cookie"] = cookie_header
 
     from jonex_core.common import transmit_locale_header
     transmit_locale_header(headers)
@@ -366,9 +448,35 @@ async def _proxy_to_platform(request: Request, path: str, auth: dict | None = No
             kwargs = {"headers": headers, "params": request.query_params}
             if body is not None:
                 kwargs["json"] = body
+            elif "application/x-www-form-urlencoded" in content_type:
+                raw = await request.body()
+                if raw:
+                    kwargs["content"] = raw
+                    headers["Content-Type"] = content_type
             resp = await client.request(request.method, target, **kwargs)
             status_code = resp.status_code
+
+            # 3xx 重定向（OIDC 授权码回调 302 + Set-Cookie）必须透传而非报错：
+            # httpx raise_for_status() 对 3xx 也抛 HTTPStatusError，且空 body 的
+            # resp.json() 会抛 JSONDecodeError。先于 raise_for_status 判断并透传。
+            if 300 <= status_code < 400:
+                await _record_platform_metrics(
+                    metering_tenant_id, path, request, status_code, start,
+                    audit_user_id, audit_username, client_ip,
+                    impersonated, original_tenant_id,
+                )
+                return passthrough_upstream_response(resp)
+
             resp.raise_for_status()
+            # 2xx 且带 Set-Cookie（refresh 旋转 / logout 删 cookie）→ 透传（含 content-type + body），
+            # 否则解析 JSON；resp.json() 会丢弃 Set-Cookie。
+            if resp.headers.get_list("set-cookie"):
+                await _record_platform_metrics(
+                    metering_tenant_id, path, request, status_code, start,
+                    audit_user_id, audit_username, client_ip,
+                    impersonated, original_tenant_id,
+                )
+                return passthrough_upstream_response(resp)
             result = resp.json()
             await _record_platform_metrics(
                 metering_tenant_id, path, request, status_code, start,
@@ -429,6 +537,13 @@ class SidecarApp:
 
         @self.app.on_event("startup")
         async def _start_audit_forwarder():
+            # 安全守卫：生产环境 GATEWAY_API_KEY 必须已从默认哨兵修改。
+            # 放在 try 块外，确保 RuntimeError 不被吞掉，fail-closed 拒绝启动。
+            _assert_gateway_api_key_configured(get_config())
+            # 安全守卫：JWT_SECRET 必须为真实随机值（无条件；Sidecar 用它对用户 JWT
+            # 验签，使用公开默认值即可被伪造管理员 token）。
+            assert_secure_jwt_secret(get_config())
+            _assert_keycloak_client_secret_configured(get_config())
             try:
                 setup_logging(enable_file=True)
                 logger.info("[Sidecar] 本地文件日志已启用")
@@ -470,6 +585,7 @@ class SidecarApp:
             if authorization and authorization.startswith("Bearer "):
                 token = authorization[7:]
                 if token.startswith("jonex_test_"):
+                    require_test_token_allowed()
                     return {
                         "auth_type": "test",
                         "tenant_id": require_tenant(token.removeprefix("jonex_test_")),
@@ -484,7 +600,7 @@ class SidecarApp:
                     "original_tenant_id": payload.get("original_tenant_id"),
                     "perms": payload.get("perms") or [],
                 }
-            if api_key and api_key.startswith("jonex_"):
+            if _gateway_api_key_matches(api_key):
                 tenant_id = require_tenant(x_tenant_id) if x_tenant_id else None
                 return {"auth_type": "apikey", "tenant_id": tenant_id}
             raise MissingApiKeyError()
@@ -520,6 +636,17 @@ class SidecarApp:
         async def auth_login(request: Request):
             return await _proxy_to_platform(request, "auth/login")
 
+        @self.app.get("/auth/login-config")
+        async def auth_login_config(request: Request):
+            """登录页启动配置（默认租户 / 是否隐藏租户框）。
+
+            必须免鉴权：登录页在拿到 token 之前就要用它渲染，且不带租户头
+            （`TENANT_REQUIRED_AUTH_PATHS` 里只有 auth/login 与
+            auth/login-ticket，本路径不在其中，故不会走租户强制）。
+            未认证请求按客户端 IP 走匿名限流。
+            """
+            return await _proxy_to_platform(request, "auth/login-config")
+
         @self.app.get("/auth/me")
         async def auth_me(request: Request):
             return await _proxy_to_platform(request, "auth/me")
@@ -535,6 +662,22 @@ class SidecarApp:
         @self.app.post("/auth/exchange-ticket")
         async def auth_exchange_ticket(request: Request):
             return await _proxy_to_platform(request, "auth/exchange-ticket")
+
+        @self.app.get("/auth/oidc/authorize")
+        async def auth_oidc_authorize(request: Request):
+            return await _proxy_to_platform(request, "auth/oidc/authorize")
+
+        @self.app.get("/auth/oidc/callback")
+        async def auth_oidc_callback_get(request: Request):
+            return await _proxy_to_platform(request, "auth/oidc/callback")
+
+        @self.app.post("/auth/oidc/callback")
+        async def auth_oidc_callback_post(request: Request):
+            return await _proxy_to_platform(request, "auth/oidc/callback")
+
+        @self.app.post("/auth/oidc/backchannel-logout")
+        async def auth_oidc_backchannel_logout(request: Request):
+            return await _proxy_to_platform(request, "auth/oidc/backchannel-logout")
 
         @self.app.post("/auth/logout")
         async def auth_logout(request: Request):
@@ -605,10 +748,17 @@ class SidecarApp:
             # 从 capability_id 提取服务名用于熔断
             service_name = invoke_request.capability_id.split(".")[1] if "." in invoke_request.capability_id else invoke_request.capability_id
 
-            allowed, retry_after = await limiter.check(tenant_id, invoke_request.capability_id, user_id)
+            # Only authenticated service calls without an end-user identity
+            # use the internal bucket. User traffic retains the tenant ingress
+            # limit, including calls forwarded by the gateway's service key.
+            internal_hop = (auth.get("auth_type") == "apikey" and not user_id
+                            and invoke_request.capability_id.startswith("atomic."))
+            bucket = f"internal:{service_name}" if internal_hop else "invoke"
+            allowed, retry_after = await limiter.check(
+                tenant_id, invoke_request.capability_id, user_id, bucket=bucket)
             if not allowed:
                 resp = error_response(
-                    code=429,
+                    code=RateLimitExceededError.code,
                     message=f"Rate limit exceeded. Retry after {retry_after} seconds.",
                     status_code=429,
                 )

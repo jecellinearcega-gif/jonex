@@ -37,7 +37,21 @@ class SourceLocation(BaseModel):
     # [jonex] §image-refs P0-3/P2-1: 图片本体的访问 URL（COS 预签名；
     # local 后端为空串，走 gateway 图片 raw 路由；无 aext 的存量 chunk 为 None）
     asset_url: Optional[str] = None
+    # [jonex] §image-refs B2: 图片资产扩展名（jpg/png/...，白名单化）。
+    # 检索响应透出、历史快照持久化；前端 resolve 回传 image_idx + asset_ext
+    # 供后端重新推导对象键并生成 asset_url（asset_url 是预签名、会过期，
+    # 不持久化，asset_ext 才是持久标识）。
+    asset_ext: Optional[str] = None
     text: Optional[str] = None  # 命中片段的原文文本（RAG 链路带 chunk content 时填充）
+    # [jonex] S3（§3.3 #4）：统一分显式字段，消灭影子字段。
+    # 口径 `score = w_r*rerank + w_e*evidence_prior + w_s*subject_prior`，见
+    # docs/ontology/ontology-rag-scoring-unification-and-routing-plan.md §3.2。
+    # `RAG_UNIFIED_SCORE_ENABLED=false`（默认）时恒为 None——旧响应形状不变。
+    score: Optional[float] = None
+    # 分数语义：`rerank` = 真 reranker 相关性（0~1，可比较可判阈值）；
+    # `order_decay` = rerank 缺项时的位次衰减占位（**只排序、不得做阈值判定**）。
+    # 前端据此区分「相关性分」与「仅为排序的占位分」，不要再靠猜。
+    score_kind: Optional[str] = None
 
 
 class SourceReference(BaseModel):
@@ -53,9 +67,14 @@ class SourceReference(BaseModel):
     file_name: str
     mime_type: Optional[str] = None
     file_size: Optional[int] = None
-    media_type: str = "other"  # text | pdf | audio | video | image | other
+    media_type: str = "other"  # text | pdf | audio | video | image | office | other
     raw_url: Optional[str] = None  # COS 预签名 URL（P0 阶段为 null，P3 COS 改造后可用）
     wiki_path: Optional[str] = None  # [jonex] OpenKB wiki 页路径（如 summaries/<uuid>.md）
+    # [jonex] S3（§3.3 #4）：文档级统一分——取**组内 location 最高分**。
+    # 统一到 chunk 级打分后，doc 分不再依赖 `locations[0].text[:1024]` 这个
+    # 代表文本取舍（已删除的旧引用重排自承的局限）。
+    score: Optional[float] = None
+    score_kind: Optional[str] = None  # rerank | order_decay，语义同 SourceLocation
     locations: List[SourceLocation] = Field(default_factory=list)
 
 

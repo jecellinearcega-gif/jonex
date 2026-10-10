@@ -826,10 +826,11 @@ async def create_knowledge_info(request: Request):
 
 
 @router.get("/knowledge-info/{kb_id}", summary="知识库详情")
-async def get_knowledge_info(kb_id: str, request: Request):
+async def get_knowledge_info(kb_id: str, request: Request,
+                             with_stats: bool = Query(False)):
     tenant_id = extract_tenant_id(request)
     try:
-        result = await _service.knowledge_infos.get(kb_id, tenant_id)
+        result = await _service.knowledge_infos.get(kb_id, tenant_id, with_stats=with_stats)
         return success_response(data=result)
     except JonexException as e:
         return error_response(code=e.code, message=e.message, status_code=e.status_code, details=e.details)

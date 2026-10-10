@@ -58,14 +58,16 @@ class RateLimiter:
             logger.info("RateLimiter Redis 连接池已初始化: %s", redis_url)
         return self._redis
 
-    async def check(self, tenant_id: str, api_path: str, user_id: Optional[str] = None) -> tuple[bool, int]:
+    async def check(self, tenant_id: str, api_path: str, user_id: Optional[str] = None,
+                    *, bucket: str = "invoke") -> tuple[bool, int]:
         """
         检查是否允许请求。返回 (allowed, retry_after_seconds)。
 
         Fixed Window 算法：同一分钟窗口内统计 tenant_id 维度请求数，
         超过 RATE_LIMIT_TENANT_PER_MINUTE 阈值时拒绝。
 
-        api_path 和 user_id 保留签名兼容性，不在限流 key 中使用。
+        Internal capability hops use a separate bounded bucket so one incoming
+        business request is not charged repeatedly against the ingress quota.
 
         Redis 故障时降级放行（fail-open）：记录 ERROR 日志并返回 (True, 0)，
         避免 Redis 不可达导致全站 500。
@@ -75,7 +77,7 @@ class RateLimiter:
 
         limit = self.config.RATE_LIMIT_TENANT_PER_MINUTE
         window = int(time.time() / 60)
-        key = f"{self.KEY_PREFIX}:{tenant_id}:invoke:{window}"
+        key = f"{self.KEY_PREFIX}:{tenant_id}:{bucket}:{window}"
 
         try:
             redis = await self._get_redis()

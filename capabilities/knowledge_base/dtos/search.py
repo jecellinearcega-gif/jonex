@@ -115,6 +115,25 @@ class LlmWikiSearchRequest(BaseModel):
     domain_space_id: Optional[str] = Field(default=None, max_length=64)
 
 
+class JonexWikiSearchRequest(BaseModel):
+    """jonex_wiki 管线检索请求（只查 jonex_wiki 管线）"""
+    query: str = Field(..., min_length=1, max_length=2000)
+    mode: str = Field(default="hybrid", min_length=1, max_length=32)
+
+    @validator("mode")
+    def validate_mode(cls, v):
+        v = v.lower()
+        v = _MODE_ALIASES.get(v, v)
+        if v not in _VALID_MODES:
+            raise ValueError(f"mode 必须为 {sorted(_VALID_MODES)} 之一，当前值: {v}")
+        return v
+    top_k: int = Field(default=5, ge=1, le=50)
+    knowledge_base_ids: list[str] = Field(default_factory=list)
+    save_history: bool = True
+    with_reasoning: bool = False
+    domain_space_id: Optional[str] = Field(default=None, max_length=64)
+
+
 class MixSearchRequest(BaseModel):
     """混合管线检索请求（统一入口，可接受任意 pipeline_type 组合）
 

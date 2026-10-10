@@ -38,7 +38,7 @@ logger = get_logger("api_internal")
 router = APIRouter()
 
 # ── Action whitelist ──────────────────────────────────────────────
-_ALLOWED_ACTIONS = frozenset({"deep_query", "generate_upload_url", "get_document_status", "get_raw_url", "get_service", "list_documents", "list_services", "query_with_ontology", "search_llmwiki", "search_mix", "upload_document"})
+_ALLOWED_ACTIONS = frozenset({"deep_query", "generate_upload_url", "get_document_status", "get_raw_url", "get_service", "list_documents", "list_services", "query_with_ontology", "search_jonex_wiki", "search_llmwiki", "search_mix", "upload_document"})
 
 
 # ── Error sanitization ────────────────────────────────────────────
