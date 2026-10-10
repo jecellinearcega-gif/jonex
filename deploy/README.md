@@ -204,7 +204,7 @@ docker exec -i jonex-postgres psql -U jonex -d jonex < postgres/migrations/004_k
 
 ### 增量 DDL（存量库迭代，不重建数据）
 
-生产/已初始化的数据库在后续版本迭代时，表结构或字段变更不会自动应用（`/docker-entrypoint-initdb.d` 只在数据卷首次初始化执行）。所有增量变更沉淀为 `postgres/update/NNN_*.sql`，按编号顺序幂等执行，同时同步进 `postgres/migrations/`（全新库直接建齐，无需执行 update/）。
+生产/已初始化的数据库在后续版本迭代时，表结构或字段变更不会自动应用（`/docker-entrypoint-initdb.d` 只在数据卷首次初始化执行）。所有增量变更沉淀为 `postgres/update/NNN_*.sql`，按编号顺序幂等执行；部分脚本会同步进 `postgres/migrations/` 全量 DDL，但**并非全部**（近期脚本按发布先例可能只留在 `update/`，如 `045_knowledge_info_ingest_backend.sql`）——因此**全新库首次部署后也必须执行一次 `make db-migrate`**，否则 schema 会缺列 / 缺表（典型表现：接口 500、`column ... does not exist`）。
 
 迁移须**人工显式触发**（`make up` 不会自动执行迁移）。执行状态记录在 `public.schema_migrations` 版本表：已应用文件跳过、不重复执行；执行成功才登记，失败中断不登记（修复后重跑将重试）。
 
@@ -446,9 +446,11 @@ make logs-service SERVICE=knowledge-base-service
 ## 快速部署步骤
 
 ```bash
-make init                # 初始化 .env / .env.rag（首次）
-# 编辑 deploy/.env、deploy/.env.rag，确保两边 LIGHTRAG_API_KEY 一致
+make init                # 初始化全部 .env 模板（.env / .env.rag / .env.mcp / .env.openkb / .env.jonex_wiki，首次）
+# 编辑 deploy/.env、deploy/.env.rag，确保两边 LIGHTRAG_API_KEY 一致；
+# .env.mcp 的 JWT_SECRET / INTERNAL_API_KEY 须与 .env 逐字一致
 make build && make up    # 构建并启动本地 Docker 部署（加载 override）
+make db-migrate          # 应用增量 DDL —— 全新库也须执行一次（幂等，可先 make db-migrate-dry 预览）
 make ps                  # 验证状态
 make logs                # 查看日志
 ```

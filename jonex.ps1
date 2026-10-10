@@ -29,7 +29,7 @@
          .\jonex.ps1 dev-frontend-shell   # 仅 shell (http://localhost:5173)
 
 【3. 本地容器构建 / 启动（整套跑在 Docker 里）】
-  .\jonex.ps1 init            # 首次: 生成 deploy/.env 与 deploy/.env.rag
+  .\jonex.ps1 init            # 首次: 生成 deploy/.env、.env.rag、.env.mcp、.env.openkb、.env.jonex_wiki
   .\jonex.ps1 build           # 构建镜像（自动先建 jonex/python-base:local）
   .\jonex.ps1 up              # 启动整套（中间件+后端+前端+RAG）
   .\jonex.ps1 ps              # 状态
@@ -393,7 +393,7 @@ switch ($Command) {
         Write-Host "  .\jonex.ps1 dev-frontend-platform       Platform Management: http://localhost:5177"
         Write-Host ""
         Write-Host "本地 Docker 联调:"
-        Write-Host "  .\jonex.ps1 init                        初始化 deploy/.env、deploy/.env.rag、deploy/.env.mcp 与前端 .env"
+        Write-Host "  .\jonex.ps1 init                        初始化 deploy/.env、deploy/.env.rag、deploy/.env.mcp、deploy/.env.openkb、deploy/.env.jonex_wiki 与前端 .env"
         Write-Host "  .\jonex.ps1 build-base                  强制重建 jonex/python-base 基础镜像"
         Write-Host "  .\jonex.ps1 build                       构建镜像"
         Write-Host "  .\jonex.ps1 up                          启动整套服务"
@@ -455,7 +455,25 @@ switch ($Command) {
         } else {
             Write-Host "MCP 配置已存在: deploy\.env.mcp" -ForegroundColor Yellow
         }
-        Write-Host "下一步: 按需修改 deploy\.env、deploy\.env.rag 和 deploy\.env.mcp" -ForegroundColor Yellow
+
+        $envOpenkbFile = Join-Path $DeployDir ".env.openkb"
+        $envOpenkbExample = Join-Path $DeployDir ".env.openkb.example"
+        if (-not (Test-Path $envOpenkbFile)) {
+            Copy-Item $envOpenkbExample $envOpenkbFile
+            Write-Host "已创建 OpenKB 配置: deploy\.env.openkb" -ForegroundColor Green
+        } else {
+            Write-Host "OpenKB 配置已存在: deploy\.env.openkb" -ForegroundColor Yellow
+        }
+
+        $envWikiFile = Join-Path $DeployDir ".env.jonex_wiki"
+        $envWikiExample = Join-Path $DeployDir ".env.jonex_wiki.example"
+        if (-not (Test-Path $envWikiFile)) {
+            Copy-Item $envWikiExample $envWikiFile
+            Write-Host "已创建 Jonex Wiki 配置: deploy\.env.jonex_wiki" -ForegroundColor Green
+        } else {
+            Write-Host "Jonex Wiki 配置已存在: deploy\.env.jonex_wiki" -ForegroundColor Yellow
+        }
+        Write-Host "下一步: 按需修改 deploy\.env、deploy\.env.rag、deploy\.env.mcp、deploy\.env.openkb 和 deploy\.env.jonex_wiki" -ForegroundColor Yellow
 
         # 同时初始化前端 .env
         & $PSCommandPath "frontends-env"
